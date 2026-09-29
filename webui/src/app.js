@@ -130,10 +130,10 @@ import {
   prefsReadiness,
   serverPrefs,
 } from "./state/prefs.ts";
-import { Board } from "./components/Board.js";
+import { Board } from "./components/Board.tsx";
 import { TaskDetail } from "./components/TaskDetail.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
-import { Sidebar } from "./components/Sidebar.js";
+import { Sidebar } from "./components/Sidebar.tsx";
 import { TerminalPane } from "./components/TerminalPane.tsx";
 import {
   DeleteProjectDialog,

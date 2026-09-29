@@ -1,11 +1,14 @@
 /* Positions are project-scoped, so the board intentionally has no cross-project ordering. Task rows
  * arrive from events; write responses merge into the same revision-ordered app state. */
 
-import { html } from "htm/preact";
+import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { errorMessage } from "../lib/api.ts";
 import { joinPath, normalizePath } from "../lib/paths.ts";
 import { navigate, sessionPath, taskPath } from "../lib/router.ts";
+import type { Route } from "../lib/router.ts";
+import type { Session } from "../lib/sessions.ts";
+import type { Project, Task, TaskMove, TaskState } from "../lib/tasks.ts";
 import {
   TASK_STATES,
   compareTasksByBoardOrder,
@@ -18,6 +21,83 @@ import {
 import { Dialog } from "./dialogs.js";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
 import { TaskCard } from "./TaskCard.tsx";
+
+interface BoardProps {
+  tasks?: readonly Task[];
+  sessions?: readonly Session[];
+  route?: Route | null;
+  projects?: readonly Project[];
+  projectId?: string | null;
+  basePath?: string;
+  newTaskRequest?: number;
+  newProjectRequest?: number;
+  drawerOpen?: boolean;
+  sidebarCollapsed?: boolean;
+  onTaskRow?: (row: Task) => void;
+  onProjectCreated?: (project: Project | null) => void | Promise<void>;
+  onToggleDrawer: JSX.MouseEventHandler<HTMLButtonElement>;
+  onToggleSidebar: JSX.MouseEventHandler<HTMLButtonElement>;
+  onOpenPalette: (mode: "leader") => void;
+  onAnnounce?: (text: string, error?: boolean) => void;
+}
+
+interface BoardColumn {
+  state: TaskState;
+  label: string;
+  entries: Task[];
+}
+
+interface DropTarget {
+  state: string;
+  beforeRef: string | null;
+}
+
+interface DragLayout {
+  shifts: Map<string, number>;
+  slot: { state: string; top: number; height: number } | null;
+}
+
+type CardRect = Pick<DOMRect, "left" | "top" | "width" | "height">;
+
+interface DragPreview extends CardRect {
+  ref: string;
+  deltaX: number;
+  deltaY: number;
+}
+
+interface DragGesture {
+  id: number;
+  pointerId: number;
+  ref: string;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  claimed: boolean;
+  element: HTMLDivElement;
+  target: DropTarget | null;
+  targetColumn: HTMLElement | null;
+  frameRequest: number | null;
+  lastFrameTimestamp: number | null;
+  lostPointerCapture: ((event: PointerEvent) => void) | null;
+  aborted: boolean;
+  cardRect?: CardRect;
+}
+
+type BoardForm = { kind: "task" | "project" };
+type AbortGesture = (expected?: DragGesture | null) => void;
+
+interface NewTaskFormProps {
+  project: Project | null;
+  onCreate: (title: string, body: string) => Promise<void>;
+  onClose: () => void;
+}
+
+interface NewProjectFormProps {
+  basePath?: string;
+  onCreate: (path: string, name: string | null) => Promise<void>;
+  onClose: () => void;
+}
 
 export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
   state: state,
@@ -42,7 +122,7 @@ const PHONE_QUERY = "(max-width: 720px)";
 /** Must match PROJECT_NAME_MAX_LENGTH in ProjectFile.kt. */
 const PROJECT_NAME_MAX_LENGTH = 100;
 
-const EMPTY_DRAG_LAYOUT = { shifts: new Map(), slot: null };
+const EMPTY_DRAG_LAYOUT: DragLayout = { shifts: new Map(), slot: null };
 
 function phoneNow() {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" &&
@@ -50,19 +130,22 @@ function phoneNow() {
 }
 
 /** Resolve column ownership by paint order, then card order from transform-free layout geometry. */
-function dropResolutionAt(x, y, draggedRef) {
+function dropResolutionAt(x: number, y: number, draggedRef: string): {
+  column: HTMLElement | null;
+  target: DropTarget | null;
+} {
   if (typeof document === "undefined" || typeof document.elementFromPoint !== "function") {
     return { column: null, target: null };
   }
   const hit = document.elementFromPoint(x, y);
-  const column = hit && hit.closest ? hit.closest(".board-column") : null;
+  const column = hit && hit.closest ? hit.closest<HTMLElement>(".board-column") : null;
   if (!column) return { column: null, target: null };
 
   const state = column.getAttribute("data-state");
   if (!state) return { column: null, target: null };
   const rect = column.getBoundingClientRect();
   const contentY = y - rect.top + column.scrollTop;
-  const cards = Array.prototype.slice.call(column.querySelectorAll(".task-card"));
+  const cards = Array.from(column.querySelectorAll<HTMLElement>(".task-card"));
   for (const card of cards) {
     const ref = card.getAttribute("data-ref");
     if (!ref || ref === draggedRef) continue;
@@ -73,13 +156,13 @@ function dropResolutionAt(x, y, draggedRef) {
   return { column: column, target: { state: state, beforeRef: null } };
 }
 
-function sameDropTarget(left, right) {
+function sameDropTarget(left: DropTarget | null, right: DropTarget | null) {
   return left === right || Boolean(left && right &&
     left.state === right.state && left.beforeRef === right.beforeRef);
 }
 
-function verticalScrollerFor(column) {
-  let element = column;
+function verticalScrollerFor(column: HTMLElement) {
+  let element: HTMLElement | null = column;
   while (element) {
     const overflowY = getComputedStyle(element).overflowY;
     if ((overflowY === "auto" || overflowY === "scroll") &&
@@ -89,7 +172,7 @@ function verticalScrollerFor(column) {
   return null;
 }
 
-function autoscrollVelocityAt(y, rect) {
+function autoscrollVelocityAt(y: number, rect: DOMRect) {
   if (y < rect.top + AUTOSCROLL_EDGE_PX) {
     const proximity = Math.min(1, Math.max(0, (rect.top + AUTOSCROLL_EDGE_PX - y) /
       AUTOSCROLL_EDGE_PX));
@@ -103,8 +186,14 @@ function autoscrollVelocityAt(y, rect) {
   return 0;
 }
 
-function previewShifts(cardsByState, sourceState, draggedRef, target, slotSize) {
-  const shifts = new Map();
+function previewShifts(
+  cardsByState: Map<string, string[]>,
+  sourceState: string,
+  draggedRef: string,
+  target: DropTarget | null,
+  slotSize: number,
+) {
+  const shifts = new Map<string, number>();
   if (!target) return shifts;
 
   const source = cardsByState.get(sourceState) || [];
@@ -118,32 +207,33 @@ function previewShifts(cardsByState, sourceState, draggedRef, target, slotSize) 
     : destination.length;
   if (desiredIndex < 0) return shifts;
 
-  const add = (ref, offset) => shifts.set(ref, (shifts.get(ref) || 0) + offset);
+  const add = (ref: string, offset: number) => shifts.set(ref, (shifts.get(ref) || 0) + offset);
   for (let index = draggedIndex + 1; index < source.length; index += 1) {
-    add(source[index], -slotSize);
+    add(source[index]!, -slotSize);
   }
   for (let index = desiredIndex; index < destination.length; index += 1) {
-    add(destination[index], slotSize);
+    add(destination[index]!, slotSize);
   }
   return shifts;
 }
 
-function measureDragLayout(draggedRef, target) {
+function measureDragLayout(draggedRef: string, target: DropTarget | null): DragLayout {
   if (typeof document === "undefined" || !draggedRef || !target) return EMPTY_DRAG_LAYOUT;
 
-  const columns = Array.prototype.slice.call(document.querySelectorAll(".board-column"));
-  const cardsByState = new Map();
-  const elementsByState = new Map();
-  let draggedCard = null;
-  let sourceState = null;
-  let destinationColumn = null;
+  const columns = Array.from(document.querySelectorAll<HTMLElement>(".board-column"));
+  const cardsByState = new Map<string, string[]>();
+  const elementsByState = new Map<string, HTMLElement[]>();
+  let draggedCard: HTMLElement | null = null;
+  let sourceState: string | null = null;
+  let destinationColumn: HTMLElement | null = null;
 
   for (const column of columns) {
     const state = column.getAttribute("data-state");
     if (!state) continue;
-    const cards = Array.prototype.slice.call(column.querySelectorAll(".task-card"));
+    const cards = Array.from(column.querySelectorAll<HTMLElement>(".task-card"));
     elementsByState.set(state, cards);
-    cardsByState.set(state, cards.map((card) => card.getAttribute("data-ref")).filter(Boolean));
+    cardsByState.set(state, cards.map((card) => card.getAttribute("data-ref"))
+      .filter((ref): ref is string => Boolean(ref)));
     if (state === target.state) destinationColumn = column;
     for (const card of cards) {
       if (card.getAttribute("data-ref") !== draggedRef) continue;
@@ -171,14 +261,14 @@ function measureDragLayout(draggedRef, target) {
 
   let top;
   if (desiredIndex > 0) {
-    const previous = rendered[desiredIndex - 1];
+    const previous = rendered[desiredIndex - 1]!;
     const ref = previous.getAttribute("data-ref");
-    top = previous.offsetTop + (shifts.get(ref) || 0) + previous.offsetHeight + CARD_GAP_PX;
+    top = previous.offsetTop + ((ref && shifts.get(ref)) || 0) + previous.offsetHeight + CARD_GAP_PX;
   } else if (allDestinationCards.length > 0) {
     // The unfiltered first card is the source placeholder when it already owns the first slot.
-    top = allDestinationCards[0].offsetTop;
+    top = allDestinationCards[0]!.offsetTop;
   } else {
-    const head = destinationColumn.querySelector(".board-column-head");
+    const head = destinationColumn.querySelector<HTMLElement>(".board-column-head");
     if (!head) return EMPTY_DRAG_LAYOUT;
     top = head.offsetTop + head.offsetHeight + CARD_GAP_PX;
   }
@@ -190,7 +280,7 @@ function measureDragLayout(draggedRef, target) {
 }
 
 /** Plan the minimal PATCH-state then /move sequence; the endpoints cannot change both at once. */
-export function dropPlan(entry, target, columnEntries) {
+export function dropPlan(entry: Task | null, target: DropTarget | null, columnEntries: readonly Task[]) {
   if (!entry || !target || !target.state) return null;
   const others = columnEntries.filter((row) => row.ref !== entry.ref);
   const desired = target.beforeRef
@@ -211,10 +301,10 @@ export function dropPlan(entry, target, columnEntries) {
   const needsMove = desired !== current;
   if (!stateChanged && !needsMove) return null;
 
-  let move = null;
+  let move: TaskMove | null = null;
   if (needsMove) {
     if (target.beforeRef) move = { before: target.beforeRef };
-    else if (others.length > 0) move = { after: others[others.length - 1].ref };
+    else if (others.length > 0) move = { after: others[others.length - 1]!.ref };
     // Empty columns have no neighbor, so only the backlog bottom is expressible.
     else move = { bottom: true };
   }
@@ -238,23 +328,23 @@ export function Board({
   onToggleSidebar,
   onOpenPalette,
   onAnnounce,
-}) {
-  const [form, setForm] = useState(null);
+}: BoardProps) {
+  const [form, setForm] = useState<BoardForm | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
   const [showAllDone, setShowAllDone] = useState(false);
   const [phone, setPhone] = useState(phoneNow);
-  const [activeColumn, setActiveColumn] = useState(BOARD_COLUMNS[0].state);
-  const [dragPreview, setDragPreview] = useState(null);
-  const [dropTarget, setDropTarget] = useState(null);
+  const [activeColumn, setActiveColumn] = useState(BOARD_COLUMNS[0]!.state);
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dragLayout, setDragLayout] = useState(EMPTY_DRAG_LAYOUT);
   const draggingRef = dragPreview ? dragPreview.ref : null;
 
-  const say = useCallback((text, error) => {
+  const say = useCallback((text: string, error?: boolean) => {
     if (onAnnounce) onAnnounce(text, error);
   }, [onAnnounce]);
 
-  const publishRow = useCallback((row) => {
+  const publishRow = useCallback((row: Task | null) => {
     if (row && row.ref && onTaskRow) onTaskRow(row);
   }, [onTaskRow]);
 
@@ -300,7 +390,7 @@ export function Board({
   entriesRef.current = entries;
 
   const sessionsByTask = useMemo(() => {
-    const map = new Map();
+    const map = new Map<string, Session[]>();
     for (const session of sessions) {
       if (!session.taskRef) continue;
       const held = map.get(session.taskRef);
@@ -316,9 +406,9 @@ export function Board({
     entries: entries.filter((entry) => entry.state === column.state),
   })), [entries]);
 
-  const openTask = useCallback((ref) => navigate(taskPath(ref)), []);
-  const openSession = useCallback((id) => navigate(sessionPath(id)), []);
-  const applyDrop = useCallback(async (ref, target) => {
+  const openTask = useCallback((ref: string) => navigate(taskPath(ref)), []);
+  const openSession = useCallback((id: string) => navigate(sessionPath(id)), []);
+  const applyDrop = useCallback(async (ref: string, target: DropTarget | null) => {
     const entry = entriesRef.current.find((row) => row.ref === ref);
     if (!entry || !target) return;
     const column = entriesRef.current.filter((row) => row.state === target.state);
@@ -326,18 +416,18 @@ export function Board({
     if (!plan) return;
     try {
       // State must land before position is resolved in the destination column.
-      if (plan.state) publishRow(await patchTask(ref, { state: plan.state }));
-      if (plan.move) publishRow(await moveTask(ref, plan.move));
+      if (plan.state) publishRow(await patchTask(ref, { state: plan.state }) as Task | null);
+      if (plan.move) publishRow(await moveTask(ref, plan.move) as Task | null);
     } catch (e) {
       say("Could not move " + ref + ": " + errorMessage(e), true);
     }
   }, [publishRow, say]);
 
-  const submitTask = useCallback(async (title, body) => {
+  const submitTask = useCallback(async (title: string, body: string) => {
     const submittedForm = formRef.current;
     let created;
     try {
-      created = await createTask(shownProjectId, title, body);
+      created = await createTask(shownProjectId, title, body) as Task | null;
       publishRow(created);
     } catch (e) {
       // A dismissed or replaced form cannot display the outcome of its still-running request.
@@ -349,11 +439,11 @@ export function Board({
     say("Created " + ((created && created.ref) || "the task") + ".");
   }, [shownProjectId, publishRow, say]);
 
-  const submitProject = useCallback(async (path, name) => {
+  const submitProject = useCallback(async (path: string, name: string | null) => {
     const submittedForm = formRef.current;
     let created;
     try {
-      created = await createProject(path, name);
+      created = await createProject(path, name) as Project | null;
       if (onProjectCreated) await onProjectCreated(created);
     } catch (e) {
       // A dismissed or replaced form cannot display the outcome of its still-running request.
@@ -365,10 +455,10 @@ export function Board({
     say("Project " + ((created && created.name) || path) + " is ready.");
   }, [onProjectCreated, say]);
 
-  const gestureRef = useRef(null);
+  const gestureRef = useRef<DragGesture | null>(null);
   const gestureIdRef = useRef(0);
-  const abortGestureRef = useRef(null);
-  const frameTickRef = useRef(null);
+  const abortGestureRef = useRef<AbortGesture | null>(null);
+  const frameTickRef = useRef<((gestureId: number, timestamp: number) => void) | null>(null);
 
   const abortGesture = useCallback((expected = gestureRef.current) => {
     const gesture = expected;
@@ -398,7 +488,7 @@ export function Board({
   }, []);
   abortGestureRef.current = abortGesture;
 
-  const resolveGestureTarget = useCallback((gesture, x, y) => {
+  const resolveGestureTarget = useCallback((gesture: DragGesture, x: number, y: number) => {
     gesture.lastX = x;
     gesture.lastY = y;
     const resolution = dropResolutionAt(x, y, gesture.ref);
@@ -409,11 +499,11 @@ export function Board({
     return resolution.target;
   }, []);
 
-  const scheduleGestureFrame = useCallback((gesture) => {
+  const scheduleGestureFrame = useCallback((gesture: DragGesture) => {
     if (gesture.frameRequest !== null || typeof requestAnimationFrame !== "function") return;
     const gestureId = gesture.id;
     gesture.frameRequest = requestAnimationFrame((timestamp) => {
-      frameTickRef.current(gestureId, timestamp);
+      frameTickRef.current!(gestureId, timestamp);
     });
   }, []);
 
@@ -422,7 +512,7 @@ export function Board({
     if (!gesture || gesture.id !== gestureId || gesture.aborted) return;
     gesture.frameRequest = null;
     if (!gesture.element || !gesture.element.isConnected) {
-      abortGestureRef.current(gesture);
+      abortGestureRef.current!(gesture);
       return;
     }
 
@@ -443,19 +533,19 @@ export function Board({
     scheduleGestureFrame(gesture);
   };
 
-  useEffect(() => () => abortGestureRef.current(), []);
+  useEffect(() => () => abortGestureRef.current!(), []);
 
   useEffect(() => {
-    abortGestureRef.current();
+    abortGestureRef.current!();
   }, [sidebarCollapsed]);
 
-  const dragPointerDown = useCallback((event, entry) => {
+  const dragPointerDown = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>, entry: Task) => {
     if (event.isPrimary === false) return;
     if (event.button !== undefined && event.button !== 0) return;
     if (event.cancelable) event.preventDefault();
     if (gestureRef.current) return;
     const element = event.currentTarget;
-    const gesture = {
+    const gesture: DragGesture = {
       id: ++gestureIdRef.current,
       pointerId: event.pointerId,
       ref: entry.ref,
@@ -477,7 +567,7 @@ export function Board({
     if (element && element.setPointerCapture) element.setPointerCapture(event.pointerId);
   }, []);
 
-  const dragPointerMove = useCallback((event) => {
+  const dragPointerMove = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     if (!gesture.claimed) {
@@ -496,25 +586,26 @@ export function Board({
         height: rect.height,
       };
       gesture.lostPointerCapture = (lost) => {
-        if (lost.pointerId === gesture.pointerId) abortGestureRef.current(gesture);
+        if (lost.pointerId === gesture.pointerId) abortGestureRef.current!(gesture);
       };
       document.addEventListener("lostpointercapture", gesture.lostPointerCapture, true);
       scheduleGestureFrame(gesture);
     }
     if (event.cancelable) event.preventDefault();
+    const cardRect = gesture.cardRect!;
     setDragPreview({
       ref: gesture.ref,
-      left: gesture.cardRect.left,
-      top: gesture.cardRect.top,
-      width: gesture.cardRect.width,
-      height: gesture.cardRect.height,
+      left: cardRect.left,
+      top: cardRect.top,
+      width: cardRect.width,
+      height: cardRect.height,
       deltaX: event.clientX - gesture.startX,
       deltaY: event.clientY - gesture.startY,
     });
     resolveGestureTarget(gesture, event.clientX, event.clientY);
   }, [resolveGestureTarget, scheduleGestureFrame]);
 
-  const dragPointerUp = useCallback((event) => {
+  const dragPointerUp = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     // Commit the resolution the preview drew rather than resolving again; moves and autoscroll ticks
@@ -524,7 +615,7 @@ export function Board({
     if (target) applyDrop(gesture.ref, target);
   }, [applyDrop, abortGesture]);
 
-  const dragPointerCancel = useCallback((event) => {
+  const dragPointerCancel = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     abortGesture(gesture);
@@ -553,7 +644,7 @@ export function Board({
     transform: "translate(" + dragPreview.deltaX + "px, " + dragPreview.deltaY + "px)",
   } : null;
 
-  const renderColumn = (column) => {
+  const renderColumn = (column: BoardColumn) => {
     const capped = column.state === "done" && !showAllDone &&
       column.entries.length > DONE_VISIBLE_LIMIT;
     const visible = capped
@@ -563,127 +654,127 @@ export function Board({
     const slot = dragLayout.slot && dragLayout.slot.state === column.state
       ? dragLayout.slot
       : null;
-    return html`
-      <section key=${column.state} class=${"board-column" + (over ? " board-drop-target" : "")}
-               data-state=${column.state} aria-label=${column.label}>
+    return (
+      <section key={column.state} class={"board-column" + (over ? " board-drop-target" : "")}
+               data-state={column.state} aria-label={column.label}>
         <header class="board-column-head">
-          <h2>${column.label}</h2>
-          <span>${column.entries.length}</span>
+          <h2>{column.label}</h2>
+          <span>{column.entries.length}</span>
         </header>
-        ${slot && html`
+        {slot && (
           <div class="board-drop-slot" aria-hidden="true"
-               style=${{ top: slot.top + "px", height: slot.height + "px" }}></div>`}
-        ${visible.map((entry) => html`
-            <${TaskCard}
-              key=${entry.ref}
-              entry=${entry}
-              sessions=${sessionsByTask.get(entry.ref) || []}
-              active=${routeId === entry.ref}
-              dragging=${draggingRef === entry.ref}
-              dragOffset=${dragLayout.shifts.get(entry.ref) || 0}
-              onOpen=${openTask}
-              onOpenSession=${openSession}
-              onDragPointerDown=${dragPointerDown}
-              onDragPointerMove=${dragPointerMove}
-              onDragPointerUp=${dragPointerUp}
-              onDragPointerCancel=${dragPointerCancel}
-            />`)}
-        ${column.state === "done" && column.entries.length > DONE_VISIBLE_LIMIT && html`
+               style={{ top: slot.top + "px", height: slot.height + "px" }}></div>)}
+        {visible.map((entry) => (
+            <TaskCard
+              key={entry.ref}
+              entry={entry}
+              sessions={sessionsByTask.get(entry.ref) || []}
+              active={routeId === entry.ref}
+              dragging={draggingRef === entry.ref}
+              dragOffset={dragLayout.shifts.get(entry.ref) || 0}
+              onOpen={openTask}
+              onOpenSession={openSession}
+              onDragPointerDown={dragPointerDown}
+              onDragPointerMove={dragPointerMove}
+              onDragPointerUp={dragPointerUp}
+              onDragPointerCancel={dragPointerCancel}
+            />))}
+        {column.state === "done" && column.entries.length > DONE_VISIBLE_LIMIT && (
           <button type="button" class="button button-quiet board-show-all-done"
-                  onClick=${() => setShowAllDone((shown) => !shown)}>
-            ${showAllDone
+                  onClick={() => setShowAllDone((shown) => !shown)}>
+            {showAllDone
               ? "Show the last " + DONE_VISIBLE_LIMIT
               : "Show all " + column.entries.length}
-          </button>`}
-      </section>`;
+          </button>)}
+      </section>);
   };
 
-  return html`
-    <main class=${"board" + (draggingRef ? " is-dragging" : "")} aria-label="Task board">
+  return (
+    <main class={"board" + (draggingRef ? " is-dragging" : "")} aria-label="Task board">
       <header class="board-head">
         <button
           id="drawer-toggle"
           class="icon-button icon-button-small drawer-toggle"
           type="button"
           aria-label="Show the project list"
-          aria-expanded=${drawerOpen ? "true" : "false"}
+          aria-expanded={drawerOpen ? "true" : "false"}
           aria-controls="sidebar"
           title="Projects"
-          onClick=${onToggleDrawer}
+          onClick={onToggleDrawer}
         >☰</button>
         <button
           id="sidebar-toggle"
           class="icon-button icon-button-small sidebar-toggle"
           type="button"
-          aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded=${sidebarCollapsed ? "false" : "true"}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={sidebarCollapsed ? "false" : "true"}
           aria-controls="sidebar"
-          title=${sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
-          onClick=${onToggleSidebar}
-        >${sidebarCollapsed ? "›" : "‹"}</button>
+          title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
+          onClick={onToggleSidebar}
+        >{sidebarCollapsed ? "›" : "‹"}</button>
         <div class="board-identity">
-          <span class="board-project">${project ? (project.name || project.id) : "No project"}</span>
-          <span class="board-project-path" title=${(project && project.path) || ""}>
-            ${(project && project.path) || "Adopt a directory to start a backlog"}
+          <span class="board-project">{project ? (project.name || project.id) : "No project"}</span>
+          <span class="board-project-path" title={(project && project.path) || ""}>
+            {(project && project.path) || "Adopt a directory to start a backlog"}
           </span>
         </div>
-        <button type="button" class="button board-new-task" disabled=${!project}
-                onClick=${() => setForm({ kind: "task" })}>New task</button>
+        <button type="button" class="button board-new-task" disabled={!project}
+                onClick={() => setForm({ kind: "task" })}>New task</button>
         <button
           id="palette-button"
           class="icon-button icon-button-small palette-button"
           type="button"
           aria-label="Open command palette"
           title="Commands"
-          onClick=${() => onOpenPalette("leader")}
+          onClick={() => onOpenPalette("leader")}
         >⋯</button>
       </header>
 
-      ${phone && html`
+      {phone && (
         <nav class="board-column-switch" aria-label="Column">
-          ${columns.map((column) => html`
-            <button key=${column.state} type="button" class="button" data-state=${column.state}
-                    aria-pressed=${column.state === activeColumn ? "true" : "false"}
-                    onClick=${() => setActiveColumn(column.state)}>
-              <span>${column.label}</span> <span>${column.entries.length}</span>
-            </button>`)}
-        </nav>`}
+          {columns.map((column) => (
+            <button key={column.state} type="button" class="button" data-state={column.state}
+                    aria-pressed={column.state === activeColumn ? "true" : "false"}
+                    onClick={() => setActiveColumn(column.state)}>
+              <span>{column.label}</span> <span>{column.entries.length}</span>
+            </button>))}
+        </nav>)}
 
       <div class="board-columns">
-        ${shownColumns.map(renderColumn)}
+        {shownColumns.map(renderColumn)}
       </div>
 
-      ${draggedEntry && html`
-        <${TaskCard}
-          entry=${draggedEntry}
-          sessions=${sessionsByTask.get(draggedEntry.ref) || []}
-          active=${routeId === draggedEntry.ref}
-          lifted=${true}
-          style=${liftedStyle}
-          onOpen=${openTask}
-          onOpenSession=${openSession}
-        />`}
+      {draggedEntry && (
+        <TaskCard
+          entry={draggedEntry}
+          sessions={sessionsByTask.get(draggedEntry.ref) || []}
+          active={routeId === draggedEntry.ref}
+          lifted={true}
+          style={liftedStyle}
+          onOpen={openTask}
+          onOpenSession={openSession}
+        />)}
 
-      ${form && form.kind === "task" && html`
-        <${NewTaskForm} project=${project}
-                        onCreate=${submitTask} onClose=${() => setForm(null)} />`}
-      ${form && form.kind === "project" && html`
-        <${NewProjectForm} basePath=${basePath} onCreate=${submitProject}
-                           onClose=${() => setForm(null)} />`}
+      {form && form.kind === "task" && (
+        <NewTaskForm project={project}
+                        onCreate={submitTask} onClose={() => setForm(null)} />)}
+      {form && form.kind === "project" && (
+        <NewProjectForm basePath={basePath} onCreate={submitProject}
+                           onClose={() => setForm(null)} />)}
     </main>
-  `;
+  );
 }
 
-function NewTaskForm({ project, onCreate, onClose }) {
+function NewTaskForm({ project, onCreate, onClose }: NewTaskFormProps) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const titleRef = useRef(null);
+  const [error, setError] = useState<string | null>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (titleRef.current) titleRef.current.focus(); }, []);
 
-  const submit = async (event) => {
+  const submit = async (event: JSX.TargetedSubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmed = title.trim();
     if (!trimmed) {
@@ -697,51 +788,51 @@ function NewTaskForm({ project, onCreate, onClose }) {
     try {
       await onCreate(trimmed, body);
     } catch (e) {
-      setError(errorMessage(e));
+      setError(errorMessage(e) as string);
       setBusy(false);
     }
   };
 
-  return html`
-    <${Dialog} id="new-task-dialog" labelledBy="new-task-title" lightDismiss=${!busy} onClose=${onClose}>
-      <form id="new-task-form" onSubmit=${submit}>
+  return (
+    <Dialog id="new-task-dialog" labelledBy="new-task-title" lightDismiss={!busy} onClose={onClose}>
+      <form id="new-task-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="new-task-title">New task</h2>
-            <p>${project ? "In " + (project.name || project.id) : "Pick a project first"}</p>
+            <p>{project ? "In " + (project.name || project.id) : "Pick a project first"}</p>
           </div>
-          <button class="icon-button" type="button" aria-label="Close" onClick=${onClose}>×</button>
+          <button class="icon-button" type="button" aria-label="Close" onClick={onClose}>×</button>
         </div>
 
         <label class="field">
           <span>Title</span>
-          <input id="new-task-title-input" type="text" required maxlength="200" ref=${titleRef}
-                 value=${title} disabled=${busy} onInput=${(e) => setTitle(e.target.value)} />
+          <input id="new-task-title-input" type="text" required maxlength={200} ref={titleRef}
+                 value={title} disabled={busy} onInput={(e) => setTitle((e.target as HTMLInputElement).value)} />
         </label>
 
         <label class="field">
           <span>Description <small>optional</small></span>
-          <textarea id="new-task-body" rows="5" value=${body} disabled=${busy}
-                    onInput=${(e) => setBody(e.target.value)}></textarea>
+          <textarea id="new-task-body" rows={5} value={body} disabled={busy}
+                    onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}></textarea>
         </label>
 
-        ${error && html`<p class="form-error" role="alert">${error}</p>`}
+        {error && (<p class="form-error" role="alert">{error}</p>)}
 
         <div class="dialog-actions">
-          <button class="button button-quiet" type="button" onClick=${onClose}>
-            ${busy ? "Close" : "Cancel"}
+          <button class="button button-quiet" type="button" onClick={onClose}>
+            {busy ? "Close" : "Cancel"}
           </button>
-          <button class="button button-primary" type="submit" disabled=${busy}>
-            ${busy ? "Creating…" : "Create task"}
+          <button class="button button-primary" type="submit" disabled={busy}>
+            {busy ? "Creating…" : "Create task"}
           </button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
 /** Match directory completion's lexical base join; this is not a containment check. */
-export function resolveProjectPath(typed, basePath) {
+export function resolveProjectPath(typed: unknown, basePath: unknown) {
   const input = String(typed || "").trim();
   if (input.charAt(0) === "/") return normalizePath(input);
   const base = normalizePath(basePath);
@@ -749,14 +840,14 @@ export function resolveProjectPath(typed, basePath) {
   return normalizePath(joinPath(base, [input]));
 }
 
-function NewProjectForm({ basePath = "", onCreate, onClose }) {
+function NewProjectForm({ basePath = "", onCreate, onClose }: NewProjectFormProps) {
   // Freeze the base so cross-tab preference updates cannot reinterpret an open draft.
   const [base] = useState(() => normalizePath(basePath));
   const [path, setPath] = useState(base.charAt(0) === "/" ? base : "");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const pathRef = useRef(null);
+  const [error, setError] = useState<string | null>(null);
+  const pathRef = useRef<HTMLInputElement>(null);
   const picker = usePathSuggestions({
     id: "new-project-path",
     basePath: base,
@@ -766,7 +857,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
 
   useEffect(() => { if (pathRef.current) pathRef.current.focus(); }, []);
 
-  const submit = async (event) => {
+  const submit = async (event: JSX.TargetedSubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const typed = resolveProjectPath(path, base);
     if (typed.charAt(0) !== "/") {
@@ -779,57 +870,60 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     try {
       await onCreate(typed, name.trim() || null);
     } catch (e) {
-      setError(errorMessage(e));
+      setError(errorMessage(e) as string);
       setBusy(false);
     }
   };
 
   const placeholder = base.charAt(0) === "/" ? joinPath(base, ["name"]) : "/path/to/project";
 
-  return html`
-    <${Dialog} id="new-project-dialog" labelledBy="new-project-title" lightDismiss=${!busy}
-               onClose=${onClose}>
-      <form id="new-project-form" onSubmit=${submit}>
+  return (
+    <Dialog id="new-project-dialog" labelledBy="new-project-title" lightDismiss={!busy}
+               onClose={onClose}>
+      <form id="new-project-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="new-project-title">New project</h2>
             <p>Writes <code>.kotgent.json</code> there. An existing one is adopted, never overwritten.</p>
           </div>
-          <button class="icon-button" type="button" aria-label="Close" onClick=${onClose}>×</button>
+          <button class="icon-button" type="button" aria-label="Close" onClick={onClose}>×</button>
         </div>
 
         <div class="field">
           <label for="new-project-path">Directory</label>
           <div class="path-autocomplete">
-            <input id="new-project-path" type="text" required spellcheck=${false} autocomplete="off"
-                   ...${picker.fieldProps}
-                   placeholder=${placeholder}
-                   ref=${pathRef} value=${path} disabled=${busy}
-                   onInput=${(e) => { setPath(e.target.value); picker.onType(e.target.value); }} />
-            <${PathSuggestions} picker=${picker} />
+            <input id="new-project-path" type="text" required spellcheck={false} autocomplete="off"
+                   {...picker.fieldProps}
+                   placeholder={placeholder}
+                   ref={pathRef} value={path} disabled={busy}
+                   onInput={(e) => {
+                     setPath((e.target as HTMLInputElement).value);
+                     picker.onType((e.target as HTMLInputElement).value);
+                   }} />
+            <PathSuggestions picker={picker} />
           </div>
-          ${base.charAt(0) === "/" && html`
+          {base.charAt(0) === "/" && (
             <small id="new-project-base-hint" class="field-hint">
-              Starts at the Preferences base path ${base}; a name without a leading / resolves against it.
-            </small>`}
+              Starts at the Preferences base path {base}; a name without a leading / resolves against it.
+            </small>)}
         </div>
 
         <label class="field">
           <span>Name <small>optional, defaults to the directory name</small></span>
-          <input id="new-project-name" type="text" maxlength=${PROJECT_NAME_MAX_LENGTH}
-                 value=${name} disabled=${busy}
-                 onInput=${(e) => setName(e.target.value)} />
+          <input id="new-project-name" type="text" maxlength={PROJECT_NAME_MAX_LENGTH}
+                 value={name} disabled={busy}
+                 onInput={(e) => setName((e.target as HTMLInputElement).value)} />
         </label>
 
-        ${error && html`<p class="form-error" role="alert">${error}</p>`}
+        {error && (<p class="form-error" role="alert">{error}</p>)}
 
         <div class="dialog-actions">
-          <button class="button button-quiet" type="button" onClick=${onClose}>Cancel</button>
-          <button class="button button-primary" type="submit" disabled=${busy}>
-            ${busy ? "Creating…" : "Create project"}
+          <button class="button button-quiet" type="button" onClick={onClose}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled={busy}>
+            {busy ? "Creating…" : "Create project"}
           </button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }

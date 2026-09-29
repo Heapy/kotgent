@@ -1,8 +1,10 @@
-import { html } from "htm/preact";
+import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { UsageStrip } from "./UsageStrip.tsx";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.ts";
+import type { SessionGroup as SessionGroupData } from "../lib/paths.ts";
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.ts";
+import type { Preferences } from "../lib/prefs.ts";
 import {
   groupingEnabled,
   loadAttentionCollapsed,
@@ -11,7 +13,9 @@ import {
   persistCollapsedGroups,
 } from "../lib/prefs.ts";
 import { FAILED, IDLE_STATUS, READY } from "../lib/readiness.ts";
+import type { ReadinessStatus } from "../lib/readiness.ts";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.ts";
+import type { PushTransition } from "../lib/push.ts";
 import {
   PUSH_REPAIR_SIGNAL_KEY,
   refreshActive as refreshPush,
@@ -34,34 +38,121 @@ import {
   routePath,
   taskPath,
 } from "../lib/router.ts";
+import type { Route } from "../lib/router.ts";
+import type { Session } from "../lib/sessions.ts";
+import type { Project, Task } from "../lib/tasks.ts";
+import type { StatusAnnouncement } from "../state/status.ts";
+
+type MarkSession = (event: JSX.TargetedMouseEvent<HTMLButtonElement>, session: Session) => void;
+type MarkFolder = (event: JSX.TargetedMouseEvent<HTMLButtonElement>, path: string, adhd: boolean) => void;
+type PushOperation = (context: PushTransition) => Promise<boolean> | undefined;
+
+interface SidebarProps {
+  screen?: Route["screen"];
+  sessions: readonly Session[];
+  tasks: readonly Task[];
+  projects?: readonly Project[];
+  projectId?: string | null;
+  activeId: string | null;
+  prefs: Preferences;
+  status: StatusAnnouncement;
+  currentVersion: string | null;
+  drawerOpen: boolean;
+  collapsed: boolean;
+  showDone: boolean;
+  sessionsReady: boolean;
+  prefsStatus?: ReadinessStatus;
+  onRetryPrefs: JSX.MouseEventHandler<HTMLButtonElement>;
+  onSelect: (id: string) => void;
+  onSelectProject: (id: string) => void;
+  onNewSession: (path: string | null) => void;
+  onNewProject: () => void;
+  onOpenPrefs: JSX.MouseEventHandler<HTMLButtonElement>;
+  onRestore: (id: string) => void;
+  onCloseDrawer: JSX.MouseEventHandler<HTMLButtonElement>;
+  onToggleShowDone: JSX.MouseEventHandler<HTMLButtonElement>;
+  onMarkSession: (id: string, adhd: boolean) => void | Promise<unknown>;
+  onMarkFolder: (path: string, adhd: boolean) => void | Promise<unknown>;
+  adhdMode?: boolean;
+  onToggleAdhdMode: JSX.MouseEventHandler<HTMLButtonElement>;
+  onAnnounce: (text: string) => void;
+}
+
+interface NavSwitchProps {
+  screen: Route["screen"];
+  sessionsPath: string;
+}
+
+interface ToggleIconProps {
+  on: boolean;
+}
+
+interface ProjectRowProps {
+  project: Project;
+  open: number;
+  active: boolean;
+  onSelect: (id: string) => void;
+}
+
+interface TaskBadgeProps {
+  session: Session;
+  tasks: readonly Task[];
+}
+
+interface SessionRowProps extends TaskBadgeProps {
+  active: boolean;
+  onSelect: (id: string) => void;
+  onRestore?: ((id: string) => void) | undefined;
+  onMark?: MarkSession | undefined;
+  prefs?: Preferences;
+}
+
+interface ChevronProps {
+  collapsed: boolean;
+}
+
+interface SessionGroupProps {
+  group: SessionGroupData<Session>;
+  tasks: readonly Task[];
+  activeId: string | null;
+  collapsedGroups: Set<string>;
+  onSelect: (id: string) => void;
+  onToggle: (path: string) => void;
+  onNewSession?: ((path: string | null) => void) | undefined;
+  onRestore?: ((id: string) => void) | undefined;
+  onMark?: MarkSession | undefined;
+  onMarkFolder?: MarkFolder | undefined;
+  prefs: Preferences;
+  done?: boolean;
+}
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
 
 /** Preserve real links; route only plain clicks in-app. */
-function NavSwitch({ screen, sessionsPath }) {
+function NavSwitch({ screen, sessionsPath }: NavSwitchProps) {
   const links = [
     { screen: SCREEN_SESSIONS, path: sessionsPath, label: "Sessions" },
     { screen: SCREEN_TASKS, path: TASKS_PATH, label: "Tasks" },
   ];
-  const go = (path) => (event) => {
+  const go = (path: string) => (event: JSX.TargetedMouseEvent<HTMLAnchorElement>) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     if (event.button !== undefined && event.button !== 0) return;
     event.preventDefault();
     navigate(path);
   };
-  return html`
+  return (
     <nav class="nav-switch" aria-label="Screen">
-      ${links.map((link) => html`
+      {links.map((link) => (
         <a
-          key=${link.screen}
-          class=${"nav-link" + (screen === link.screen ? " active" : "")}
-          href=${link.path}
-          aria-current=${screen === link.screen ? "page" : null}
-          onClick=${go(link.path)}
-        >${link.label}</a>`)}
-    </nav>`;
+          key={link.screen}
+          class={"nav-link" + (screen === link.screen ? " active" : "")}
+          href={link.path}
+          aria-current={screen === link.screen ? "page" : undefined}
+          onClick={go(link.path)}
+        >{link.label}</a>))}
+    </nav>);
 }
 
 const NOTIFY_MUTE_SLASH = "M4.7 4.7L19.7 19.7";
@@ -71,36 +162,36 @@ const NOTIFY_BELL_BODY =
   "1.8h14c1 0 1.5-1.1.75-1.8-1.25-1.2-1.9-3.3-1.9-6.7 0-3.1-1.45-5.35-4.5-6.1A1.35 1.35 0 0 0 12 2.65z";
 const NOTIFY_BELL_CLAPPER = "M9.75 19.9a2.25 2.25 0 0 0 4.5 0z";
 
-const notifyBell = (mask) => html`
-  <g mask=${mask}>
-    <path d=${NOTIFY_BELL_BODY} />
-    <path d=${NOTIFY_BELL_CLAPPER} />
-  </g>`;
+const notifyBell = (mask: string | null) => (
+  <g mask={mask ?? undefined}>
+    <path d={NOTIFY_BELL_BODY} />
+    <path d={NOTIFY_BELL_CLAPPER} />
+  </g>);
 
-function NotifyIcon({ on }) {
-  return html`
+function NotifyIcon({ on }: ToggleIconProps) {
+  return (
     <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true" fill="currentColor">
-      ${on ? notifyBell(null) : html`
+      {on ? notifyBell(null) : (<>
         <mask id="notify-mute-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
           <rect x="0" y="0" width="24" height="24" fill="#fff" />
-          <path d=${NOTIFY_MUTE_SLASH} fill="none" stroke="#000" stroke-width="4.4" stroke-linecap="round" />
+          <path d={NOTIFY_MUTE_SLASH} fill="none" stroke="#000" stroke-width="4.4" stroke-linecap="round" />
         </mask>
-        ${notifyBell("url(#notify-mute-cut)")}
+        {notifyBell("url(#notify-mute-cut)")}
         <path
-          d=${NOTIFY_MUTE_SLASH}
+          d={NOTIFY_MUTE_SLASH}
           fill="none"
           stroke="currentColor"
           stroke-width="1.9"
           stroke-linecap="round"
-        />`}
-    </svg>`;
+        /></>)}
+    </svg>);
 }
 
 const ADHD_PIN_HEAD =
   "M19.25,10,14,4.75a3,3,0,0,0-.5,2.75l-3,3a3.4,3.4,0,0,0-4,0l7,7c.81-1.33,1-2.78,0-4l3-3A2.79,2.79,0,0,0,19.25,10Z";
 
-function AdhdIcon({ on }) {
-  return html`
+function AdhdIcon({ on }: ToggleIconProps) {
+  return (
     <svg
       viewBox="0 0 24 24"
       focusable="false"
@@ -111,12 +202,12 @@ function AdhdIcon({ on }) {
       stroke-linecap="round"
       stroke-linejoin="round"
     >
-      <path d=${ADHD_PIN_HEAD} fill=${on ? "currentColor" : "none"} />
+      <path d={ADHD_PIN_HEAD} fill={on ? "currentColor" : "none"} />
       <line x1="9.87" y1="14.12" x2="4.75" y2="19.25" />
-    </svg>`;
+    </svg>);
 }
 
-function stopRowActivation(event) {
+function stopRowActivation(event: JSX.TargetedMouseEvent<HTMLButtonElement>) {
   event.stopPropagation();
 }
 
@@ -125,54 +216,59 @@ const DONE_BOX_LID =
 const DONE_BOX_BODY = "M4.3 10.6h15.4v7.2a2.2 2.2 0 0 1-2.2 2.2H6.5a2.2 2.2 0 0 1-2.2-2.2z";
 const DONE_BOX_SLOT = "M9.6 13.9h4.8";
 
-function DoneIcon() {
-  return html`
+function DoneIcon(_props: Record<string, never>) {
+  return (
     <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true" fill="currentColor">
       <mask id="done-slot-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
         <rect x="0" y="0" width="24" height="24" fill="#fff" />
-        <path d=${DONE_BOX_SLOT} fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" />
+        <path d={DONE_BOX_SLOT} fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" />
       </mask>
-      <path d=${DONE_BOX_LID} />
-      <path d=${DONE_BOX_BODY} mask="url(#done-slot-cut)" />
-    </svg>`;
+      <path d={DONE_BOX_LID} />
+      <path d={DONE_BOX_BODY} mask="url(#done-slot-cut)" />
+    </svg>);
 }
 
 /** Project counts include only open tasks and derive from the live task list. */
-function ProjectRow({ project, open, active, onSelect }) {
+function ProjectRow({ project, open, active, onSelect }: ProjectRowProps) {
   const select = () => onSelect(project.id);
-  const onKeyDown = (event) => {
+  const onKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLLIElement>) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       select();
     }
   };
   const name = project.name || project.id;
-  return html`
+  return (
     <li
-      class=${"project-row" + (active ? " active" : "")}
-      data-id=${project.id}
-      tabIndex="0"
+      class={"project-row" + (active ? " active" : "")}
+      data-id={project.id}
+      tabIndex={0}
       role="button"
-      aria-label=${"Show the backlog of " + name}
-      aria-current=${active ? "true" : null}
-      title=${project.path || ""}
-      onClick=${select}
-      onKeyDown=${onKeyDown}
+      aria-label={"Show the backlog of " + name}
+      aria-current={active ? "true" : undefined}
+      title={project.path || ""}
+      onClick={select}
+      onKeyDown={onKeyDown}
     >
       <div class="project-main">
-        <div class="project-name">${name}</div>
-        <div class="project-sub">${project.path || ""}</div>
+        <div class="project-name">{name}</div>
+        <div class="project-sub">{project.path || ""}</div>
       </div>
-      ${open > 0 &&
-        html`<span class="pill project-count" title=${open + " open task(s)"}>${open}</span>`}
+      {open > 0 &&
+        (<span class="pill project-count" title={open + " open task(s)"}>{open}</span>)}
     </li>
-  `;
+  );
 }
 
 /** Time out serialized push work without making it stale; only a newer generation does that. */
-function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {
+function boundedPushTransition(
+  operation: PushOperation,
+  isGenerationCurrent: () => boolean,
+  repairLatest: () => void,
+  onController: (controller: AbortController | null, owner: AbortController) => void,
+) {
   const controller = new AbortController();
-  let timeout = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
   const context = {
     isCurrent: isGenerationCurrent,
     repairLatest: repairLatest,
@@ -182,7 +278,7 @@ function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onC
   const task = Promise.resolve()
     .then(() => operation(context))
     .finally(() => onController(null, controller));
-  const deadline = new Promise((_, reject) => {
+  const deadline = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
       reject(new Error("push subscription transition timed out"));
     }, PUSH_TRANSITION_TIMEOUT_MS);
@@ -197,30 +293,30 @@ function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onC
 }
 
 /** Stop task-badge clicks from also selecting the containing session row. */
-function TaskBadge({ session, tasks }) {
+function TaskBadge({ session, tasks }: TaskBadgeProps) {
   const task = taskBadge(session, tasks);
   if (!task) return null;
-  const open = (event) => {
+  const open = (event: JSX.TargetedMouseEvent<HTMLAnchorElement>) => {
     event.stopPropagation();
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     navigate(taskPath(task.ref));
   };
-  return html`
+  return (
     <a
-      class=${"task-badge" + (task.known ? "" : " task-badge-unknown")}
-      href=${taskPath(task.ref)}
-      title=${task.tooltip}
-      onClick=${open}
+      class={"task-badge" + (task.known ? "" : " task-badge-unknown")}
+      href={taskPath(task.ref)}
+      title={task.tooltip}
+      onClick={open}
     >
-      <span class="task-session-dot" data-state=${session.state}></span>${task.label}
+      <span class="task-session-dot" data-state={session.state}></span>{task.label}
     </a>
-  `;
+  );
 }
 
 // A session under a marked folder head is listed without its own mark. Its pin says so, instead of offering
 // to add something that is already in, and a click gives it a mark that outlives the folder's.
-function adhdPinState(session, prefs) {
+function adhdPinState(session: Session, prefs: Preferences) {
   const name = displayName(session);
   if (session.adhd === true) {
     return {
@@ -242,11 +338,11 @@ function adhdPinState(session, prefs) {
   return { cls: "", on: false, label: "Add " + name + " to ADHD mode", title: "Add to ADHD mode" };
 }
 
-function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs }) {
+function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs }: SessionRowProps) {
   const badge = stateBadge(session.state);
-  const pin = onMark ? adhdPinState(session, prefs) : null;
+  const pin = onMark ? adhdPinState(session, prefs!) : null;
   const select = () => onSelect(session.id);
-  const onKeyDown = (event) => {
+  const onKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLLIElement>) => {
     // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
     if (event.target !== event.currentTarget) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -255,55 +351,55 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
     }
   };
 
-  return html`
+  return (
     <li
-      class=${"session-row" + (active ? " active" : "")}
-      data-id=${session.id}
-      tabIndex="0"
+      class={"session-row" + (active ? " active" : "")}
+      data-id={session.id}
+      tabIndex={0}
       role="button"
-      aria-label=${"Open " + displayName(session) + ", " + badge.label}
-      aria-current=${active ? "true" : null}
-      title=${session.cwd || ""}
-      onClick=${select}
-      onKeyDown=${onKeyDown}
+      aria-label={"Open " + displayName(session) + ", " + badge.label}
+      aria-current={active ? "true" : undefined}
+      title={session.cwd || ""}
+      onClick={select}
+      onKeyDown={onKeyDown}
     >
       <div class="session-main">
-        <div class="session-name">${displayName(session)}</div>
-        <div class="session-sub">${sessionSubline(session)}</div>
-        <${TaskBadge} session=${session} tasks=${tasks} />
+        <div class="session-name">{displayName(session)}</div>
+        <div class="session-sub">{sessionSubline(session)}</div>
+        <TaskBadge session={session} tasks={tasks} />
       </div>
-      ${session.unread > 0 &&
-        html`<span class="pill unread-pill" title=${session.unread + " unread event(s)"}>
-          ${session.unread}
-        </span>`}
-      ${pin && html`
+      {session.unread > 0 &&
+        (<span class="pill unread-pill" title={session.unread + " unread event(s)"}>
+          {session.unread}
+        </span>)}
+      {pin && (
         <div class="row-actions">
           <button
             type="button"
-            class=${"icon-button icon-button-small row-adhd" + pin.cls}
-            aria-pressed=${session.adhd === true ? "true" : "false"}
-            aria-label=${pin.label}
-            title=${pin.title}
-            onClick=${(e) => { stopRowActivation(e); onMark(e, session); }}
-          ><${AdhdIcon} on=${pin.on} /></button>
-        </div>`}
-      ${onRestore
-        ? html`<button
+            class={"icon-button icon-button-small row-adhd" + pin.cls}
+            aria-pressed={session.adhd === true ? "true" : "false"}
+            aria-label={pin.label}
+            title={pin.title}
+            onClick={(e) => { stopRowActivation(e); onMark!(e, session); }}
+          ><AdhdIcon on={pin.on} /></button>
+        </div>)}
+      {onRestore
+        ? (<button
             type="button"
             class="button button-quiet button-small session-restore"
             title="Bring this session back to the sidebar"
-            onClick=${(e) => { e.stopPropagation(); onRestore(session.id); }}
-          >Restore</button>`
-        : html`<span class=${"pill badge " + badge.cls}>${badge.label}</span>`}
+            onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
+          >Restore</button>)
+        : (<span class={"pill badge " + badge.cls}>{badge.label}</span>)}
     </li>
-  `;
+  );
 }
 
-function Chevron({ collapsed }) {
-  return html`<span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>`;
+function Chevron({ collapsed }: ChevronProps) {
+  return (<span class="group-chevron" aria-hidden="true">{collapsed ? "▸" : "▾"}</span>);
 }
 
-function groupNeedsAttention(group) {
+function groupNeedsAttention(group: SessionGroupData<Session>): boolean {
   return group.sessions.some((s) => isNeedsAttention(s.state)) ||
     group.children.some(groupNeedsAttention);
 }
@@ -311,78 +407,78 @@ function groupNeedsAttention(group) {
 function SessionGroup({
   group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
   onMarkFolder, prefs, done = false,
-}) {
+}: SessionGroupProps) {
   const folderMarked = isPathAdhd(group.path, prefs.adhdPaths);
   // The archive tree mirrors the live one, so its folders need collapse keys of their own.
   const collapseKey = (done ? "done:" : "") + group.path;
   const collapsed = collapsedGroups.has(collapseKey);
   const hidingAttention = !done && collapsed && groupNeedsAttention(group);
 
-  return html`
-    <li class=${"session-group" + (collapsed ? " collapsed" : "")}>
+  return (
+    <li class={"session-group" + (collapsed ? " collapsed" : "")}>
       <div class="group-head">
         <button
           type="button"
           class="group-toggle"
-          aria-expanded=${collapsed ? "false" : "true"}
-          title=${(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
-          onClick=${() => onToggle(collapseKey)}
+          aria-expanded={collapsed ? "false" : "true"}
+          title={(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
+          onClick={() => onToggle(collapseKey)}
         >
-          <${Chevron} collapsed=${collapsed} />
-          <span class="group-title" title=${group.path || group.label}>${group.label}</span>
-          <span class="group-count">${group.sessionCount}</span>
-          ${hidingAttention &&
-            html`<span class="attn-dot" title="A session in this group needs attention"></span>`}
+          <Chevron collapsed={collapsed} />
+          <span class="group-title" title={group.path || group.label}>{group.label}</span>
+          <span class="group-count">{group.sessionCount}</span>
+          {hidingAttention &&
+            (<span class="attn-dot" title="A session in this group needs attention"></span>)}
         </button>
-        ${onMarkFolder && group.path &&
-          html`<button
+        {onMarkFolder && group.path &&
+          (<button
             type="button"
-            class=${"icon-button icon-button-small group-adhd" + (folderMarked ? " active" : "")}
-            aria-pressed=${folderMarked ? "true" : "false"}
-            aria-label=${folderMarked
+            class={"icon-button icon-button-small group-adhd" + (folderMarked ? " active" : "")}
+            aria-pressed={folderMarked ? "true" : "false"}
+            aria-label={folderMarked
               ? "Remove " + group.path + " from ADHD mode"
               : "Add " + group.path + " to ADHD mode"}
-            title=${folderMarked
+            title={folderMarked
               ? group.path + " is in ADHD mode — click to remove"
               : "Add " + group.path + " to ADHD mode"}
-            onClick=${(e) => onMarkFolder(e, group.path, !folderMarked)}
-          ><${AdhdIcon} on=${folderMarked} /></button>`}
-        ${!done && group.path &&
-          html`<button
+            onClick={(e) => onMarkFolder(e, group.path, !folderMarked)}
+          ><AdhdIcon on={folderMarked} /></button>)}
+        {!done && group.path &&
+          (<button
             type="button"
             class="icon-button icon-button-small group-new"
-            title=${"New session in " + group.path}
-            aria-label=${"New session in " + group.path}
-            onClick=${() => onNewSession(group.path)}
-          >+</button>`}
+            title={"New session in " + group.path}
+            aria-label={"New session in " + group.path}
+            onClick={() => onNewSession!(group.path)}
+          >+</button>)}
       </div>
-      ${!collapsed && html`
+      {!collapsed && (
         <ul class="session-list group-contents">
-          ${groupEntries(group).map((entry) => (entry.session
-            ? html`
-              <${SessionRow} key=${entry.session.id} session=${entry.session} tasks=${tasks}
-                             active=${entry.session.id === activeId} onSelect=${onSelect}
-                             onRestore=${onRestore} onMark=${onMark} prefs=${prefs} />`
-            : html`
-              <${SessionGroup}
-                key=${entry.group.path}
-                group=${entry.group}
-                tasks=${tasks}
-                activeId=${activeId}
-                collapsedGroups=${collapsedGroups}
-                onSelect=${onSelect}
-                onToggle=${onToggle}
-                onNewSession=${onNewSession}
-                onRestore=${onRestore}
-                onMark=${onMark}
-                onMarkFolder=${onMarkFolder}
-                prefs=${prefs}
-                done=${done}
-              />`))}
+          {groupEntries(group).map((entry) => (entry.session
+            ? (
+              <SessionRow key={entry.session.id} session={entry.session} tasks={tasks}
+                             active={entry.session.id === activeId} onSelect={onSelect}
+                             onRestore={onRestore} onMark={onMark} prefs={prefs} />)
+            : (
+              <SessionGroup
+                key={entry.group.path}
+                group={entry.group}
+                tasks={tasks}
+                activeId={activeId}
+                collapsedGroups={collapsedGroups}
+                onSelect={onSelect}
+                onToggle={onToggle}
+                onNewSession={onNewSession}
+                onRestore={onRestore}
+                onMark={onMark}
+                onMarkFolder={onMarkFolder}
+                prefs={prefs}
+                done={done}
+              />)))}
         </ul>
-      `}
+      )}
     </li>
-  `;
+  );
 }
 
 export function Sidebar({
@@ -391,22 +487,26 @@ export function Sidebar({
   drawerOpen, collapsed, showDone, sessionsReady, prefsStatus = IDLE_STATUS, onRetryPrefs,
   onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
   onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode, onAnnounce,
-}) {
+}: SidebarProps) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [attentionCollapsed, setAttentionCollapsed] = useState(loadAttentionCollapsed);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
   const notifyOnRef = useRef(notifyOn);
-  const pushTransitionRef = useRef(Promise.resolve());
+  const pushTransitionRef = useRef<Promise<boolean | void>>(Promise.resolve());
   const pushTransitionIdRef = useRef(0);
-  const pushTransitionAbortRef = useRef(new Set());
-  const pushRepairGenerationRef = useRef(null);
-  const pushPermissionRef = useRef({ transition: 0, request: null });
+  const pushTransitionAbortRef = useRef(new Set<AbortController>());
+  const pushRepairGenerationRef = useRef<string | null>(null);
+  const pushPermissionRef = useRef<{ transition: number; request: Promise<boolean> | null }>({
+    transition: 0, request: null,
+  });
   const repairPushRef = useRef(() => {});
-  const adhdToggleRef = useRef(null);
+  const adhdToggleRef = useRef<HTMLButtonElement>(null);
   // A passive effect runs after paint, so a reload right after a toggle could drop the write.
   useLayoutEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   useLayoutEffect(() => { persistAttentionCollapsed(attentionCollapsed); }, [attentionCollapsed]);
-  const queuePushTransition = useCallback((transition, desired, operation, warning) => {
+  const queuePushTransition = useCallback((
+    transition: number, desired: boolean, operation: PushOperation, warning: string,
+  ) => {
     // Local generations order this tab; the stored preference orders tabs.
     const isGenerationCurrent = () =>
       transition === pushTransitionIdRef.current && notifyEnabled() === desired;
@@ -454,7 +554,7 @@ export function Sidebar({
       "kotgent: push subscription repair failed",
     );
   };
-  const toggleGroup = useCallback((path) => {
+  const toggleGroup = useCallback((path: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (!next.delete(path)) next.add(path);
@@ -463,7 +563,7 @@ export function Sidebar({
   }, []);
   // Reconcile dropped subscriptions through the same queue as clicks and cross-tab storage changes.
   useEffect(() => {
-    const syncNotificationPreference = (event = null) => {
+    const syncNotificationPreference = (event: StorageEvent | null = null) => {
       const next = notifyEnabled();
       syncWorkerPushPreference();
       const repairSignalled = event && event.key === PUSH_REPAIR_SIGNAL_KEY;
@@ -515,7 +615,9 @@ export function Sidebar({
   };
   // An unpin in ADHD mode can hide the row or head holding the focused pin, and focus would fall to the
   // body. Preact commits the answer in a microtask, so one task later the DOM says whether the pin left.
-  const unpin = (event, name, work) => {
+  const unpin = (
+    event: JSX.TargetedMouseEvent<HTMLButtonElement>, name: string, work: () => void | Promise<unknown>,
+  ) => {
     const pin = event.currentTarget;
     const hadFocus = pin === document.activeElement;
     if (!adhdMode) return work();
@@ -526,10 +628,10 @@ export function Sidebar({
       if (hadFocus && toggle && document.activeElement === document.body) toggle.focus();
     }, 0));
   };
-  const markSession = (event, session) => (session.adhd === true
+  const markSession: MarkSession = (event, session) => (session.adhd === true
     ? unpin(event, displayName(session), () => onMarkSession(session.id, false))
     : onMarkSession(session.id, true));
-  const markFolder = (event, path, adhd) => (adhd
+  const markFolder: MarkFolder = (event, path, adhd) => (adhd
     ? onMarkFolder(path, true)
     : unpin(event, path, () => onMarkFolder(path, false)));
   const onTasks = screen === SCREEN_TASKS;
@@ -551,8 +653,8 @@ export function Sidebar({
   );
   // Every live frame replaces the sessions array, so the archive derivations below key on this
   // signature instead: it moves only when an archived row does. The id length keeps it unambiguous.
-  const [doneSessions, doneSignature] = useMemo(() => {
-    const done = [];
+  const [doneSessions, doneSignature] = useMemo<[Session[], string]>(() => {
+    const done: Session[] = [];
     let signature = "";
     for (const session of sessions) {
       if (!session.archived) continue;
@@ -584,7 +686,7 @@ export function Sidebar({
     [doneSignature, grouped, onTasks, showDone],
   );
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
-  const openPerProject = new Map();
+  const openPerProject = new Map<string, number>();
   if (onTasks) {
     for (const task of tasks) {
       if (!task || !task.project || task.state === "done") continue;
@@ -592,63 +694,63 @@ export function Sidebar({
     }
   }
 
-  return html`
+  return (
     <aside id="sidebar"
-           class=${[drawerOpen ? "open" : "", collapsed ? "collapsed" : ""].filter(Boolean).join(" ")}>
+           class={[drawerOpen ? "open" : "", collapsed ? "collapsed" : ""].filter(Boolean).join(" ")}>
       <header id="sidebar-head">
         <div class="brand-row">
           <h1>Kotgent</h1>
           <div class="brand-actions">
-            ${!onTasks && doneSessions.length > 0 && html`
+            {!onTasks && doneSessions.length > 0 && (
               <button
                 id="show-done-toggle"
-                class=${"icon-button icon-button-small show-done-toggle" + (showDone ? " active" : "")}
+                class={"icon-button icon-button-small show-done-toggle" + (showDone ? " active" : "")}
                 type="button"
-                aria-pressed=${showDone ? "true" : "false"}
-                aria-label=${"Done sessions (" + doneSessions.length + ")"}
-                title=${"Done sessions (" + doneSessions.length + ")"}
-                onClick=${onToggleShowDone}
-              ><${DoneIcon} /></button>
-            `}
-            ${!onTasks && html`
+                aria-pressed={showDone ? "true" : "false"}
+                aria-label={"Done sessions (" + doneSessions.length + ")"}
+                title={"Done sessions (" + doneSessions.length + ")"}
+                onClick={onToggleShowDone}
+              ><DoneIcon /></button>
+            )}
+            {!onTasks && (
               <button
                 id="adhd-toggle"
-                ref=${adhdToggleRef}
-                class=${"icon-button icon-button-small adhd-toggle" + (adhdMode ? " active" : "")}
+                ref={adhdToggleRef}
+                class={"icon-button icon-button-small adhd-toggle" + (adhdMode ? " active" : "")}
                 type="button"
-                aria-pressed=${adhdMode ? "true" : "false"}
-                aria-label=${adhdMode ? "Leave ADHD mode" : "Enter ADHD mode"}
-                title=${adhdMode
+                aria-pressed={adhdMode ? "true" : "false"}
+                aria-label={adhdMode ? "Leave ADHD mode" : "Enter ADHD mode"}
+                title={adhdMode
                   ? "ADHD mode on — click to show every session"
                   : "ADHD mode off — click to show only pinned sessions and folders"}
-                onClick=${onToggleAdhdMode}
-              ><${AdhdIcon} on=${adhdMode} /></button>
-            `}
+                onClick={onToggleAdhdMode}
+              ><AdhdIcon on={adhdMode} /></button>
+            )}
             <button
               id="notify-toggle"
-              class=${"icon-button icon-button-small notify-toggle" + (notifyOn ? " active" : "")}
+              class={"icon-button icon-button-small notify-toggle" + (notifyOn ? " active" : "")}
               type="button"
-              aria-label=${notifyOn ? "Turn notifications off" : "Turn notifications on"}
-              aria-pressed=${notifyOn ? "true" : "false"}
-              title=${notifyOn ? "Notifications on (this device) — click to turn off"
+              aria-label={notifyOn ? "Turn notifications off" : "Turn notifications on"}
+              aria-pressed={notifyOn ? "true" : "false"}
+              title={notifyOn ? "Notifications on (this device) — click to turn off"
                 : "Notifications off — click to turn on for this device"}
-              onClick=${toggleNotifications}
-            ><${NotifyIcon} on=${notifyOn} /></button>
+              onClick={toggleNotifications}
+            ><NotifyIcon on={notifyOn} /></button>
             <button
               id="drawer-close"
               class="icon-button icon-button-small drawer-close"
               type="button"
               aria-label="Close the sidebar"
               title="Close the sidebar"
-              onClick=${onCloseDrawer}
+              onClick={onCloseDrawer}
             >✕</button>
           </div>
         </div>
-        <${NavSwitch} screen=${screen} sessionsPath=${sessionsPath} />
+        <NavSwitch screen={screen} sessionsPath={sessionsPath} />
       </header>
 
       <div id="sidebar-scroll">
-        ${onTasks && html`
+        {onTasks && (
           <section id="projects-section">
             <h2 class="section-title">
               <span>Projects</span>
@@ -657,180 +759,180 @@ export function Sidebar({
                 class="button button-quiet button-small"
                 type="button"
                 title="Adopt a directory as a project"
-                onClick=${() => onNewProject()}
+                onClick={() => onNewProject()}
               >+ New</button>
             </h2>
             <ul id="project-list" class="project-list">
-              ${projects.map((project) => html`
-                <${ProjectRow}
-                  key=${project.id}
-                  project=${project}
-                  open=${openPerProject.get(project.id) || 0}
-                  active=${project.id === projectId}
-                  onSelect=${onSelectProject}
-                />`)}
+              {projects.map((project) => (
+                <ProjectRow
+                  key={project.id}
+                  project={project}
+                  open={openPerProject.get(project.id) || 0}
+                  active={project.id === projectId}
+                  onSelect={onSelectProject}
+                />))}
             </ul>
-            ${projects.length === 0 && html`
+            {projects.length === 0 && (
               <div id="empty-projects" class="empty-sessions">
                 <p>No projects yet. Adopt a directory to start a backlog in it.</p>
                 <button id="empty-new-project-button" class="button button-primary" type="button"
-                        onClick=${() => onNewProject()}>New project</button>
+                        onClick={() => onNewProject()}>New project</button>
               </div>
-            `}
+            )}
           </section>
-        `}
+        )}
 
-      ${!onTasks && attention.length > 0 && html`
-        <section id="attention-section" class=${attentionCollapsed ? "collapsed" : ""}>
+      {!onTasks && attention.length > 0 && (
+        <section id="attention-section" class={attentionCollapsed ? "collapsed" : ""}>
           <h2 class="section-title attn">
             <button
               id="attention-toggle"
               class="group-toggle section-toggle"
               type="button"
-              aria-expanded=${attentionCollapsed ? "false" : "true"}
-              title=${attentionCollapsed ? "Show sessions needing attention" : "Hide sessions needing attention"}
-              onClick=${() => setAttentionCollapsed((c) => !c)}
+              aria-expanded={attentionCollapsed ? "false" : "true"}
+              title={attentionCollapsed ? "Show sessions needing attention" : "Hide sessions needing attention"}
+              onClick={() => setAttentionCollapsed((c) => !c)}
             >
-              <${Chevron} collapsed=${attentionCollapsed} />
+              <Chevron collapsed={attentionCollapsed} />
               <span>Needs attention</span>
-              <span id="attention-num" class="pill attn-num">${attention.length}</span>
+              <span id="attention-num" class="pill attn-num">{attention.length}</span>
             </button>
           </h2>
-          ${!attentionCollapsed && html`
+          {!attentionCollapsed && (
             <ul id="attention-list" class="session-list">
-              ${attention.map((s) => html`
-                <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                               active=${s.id === activeId} onSelect=${onSelect}
-                               onMark=${markSession} prefs=${prefs} />
-              `)}
+              {attention.map((s) => (
+                <SessionRow key={s.id} session={s} tasks={tasks}
+                               active={s.id === activeId} onSelect={onSelect}
+                               onMark={markSession} prefs={prefs} />
+              ))}
             </ul>
-          `}
+          )}
         </section>
-      `}
+      )}
 
-      ${!onTasks && html`
+      {!onTasks && (
       <section id="all-section">
         <h2 class="section-title">
           <span>Sessions</span>
-          ${grouped && html`
+          {grouped && (
             <button
               id="base-path-note"
               class="base-note"
               type="button"
-              title=${"Directory tree under " + prefs.basePath + ", up to " + prefs.groupingLevel +
+              title={"Directory tree under " + prefs.basePath + ", up to " + prefs.groupingLevel +
                 " level(s) deep — click to change"}
-              onClick=${onOpenPrefs}
-            >${prefs.basePath}</button>
-          `}
+              onClick={onOpenPrefs}
+            >{prefs.basePath}</button>
+          )}
         </h2>
 
-        <ul id="session-list" class=${"session-list" + (grouped ? " grouped" : "")}>
-          ${grouped
-            ? liveGroups.map((g) => html`
-                <${SessionGroup}
-                  key=${g.path}
-                  group=${g}
-                  tasks=${tasks}
-                  activeId=${activeId}
-                  collapsedGroups=${collapsedGroups}
-                  onSelect=${onSelect}
-                  onToggle=${toggleGroup}
-                  onNewSession=${onNewSession}
-                  onMark=${markSession}
-                  onMarkFolder=${markFolder}
-                  prefs=${prefs}
+        <ul id="session-list" class={"session-list" + (grouped ? " grouped" : "")}>
+          {grouped
+            ? liveGroups.map((g) => (
+                <SessionGroup
+                  key={g.path}
+                  group={g}
+                  tasks={tasks}
+                  activeId={activeId}
+                  collapsedGroups={collapsedGroups}
+                  onSelect={onSelect}
+                  onToggle={toggleGroup}
+                  onNewSession={onNewSession}
+                  onMark={markSession}
+                  onMarkFolder={markFolder}
+                  prefs={prefs}
                 />
-              `)
-            : visible.map((s) => html`
-                <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                               active=${s.id === activeId} onSelect=${onSelect}
-                               onMark=${markSession} prefs=${prefs} />
-              `)}
+              ))
+            : visible.map((s) => (
+                <SessionRow key={s.id} session={s} tasks={tasks}
+                               active={s.id === activeId} onSelect={onSelect}
+                               onMark={markSession} prefs={prefs} />
+              ))}
         </ul>
 
-        ${live.length === 0 && !sessionsReady && html`
+        {live.length === 0 && !sessionsReady && (
           <div id="sessions-loading" class="empty-sessions">
             <p>Loading sessions…</p>
           </div>
-        `}
-        ${live.length === 0 && sessionsReady && html`
+        )}
+        {live.length === 0 && sessionsReady && (
           <div id="empty-sessions" class="empty-sessions">
             <p>No sessions yet. Start one to attach it here.</p>
             <button id="empty-new-session-button" class="button button-primary" type="button"
-                    onClick=${() => onNewSession(null)}>Start a session</button>
+                    onClick={() => onNewSession(null)}>Start a session</button>
           </div>
-        `}
-        ${awaitingPins && live.length > 0 && prefsStatus.state !== FAILED && html`
+        )}
+        {awaitingPins && live.length > 0 && prefsStatus.state !== FAILED && (
           <div id="adhd-loading" class="empty-sessions">
             <p>Loading pinned sessions…</p>
           </div>
-        `}
-        ${awaitingPins && live.length > 0 && prefsStatus.state === FAILED && html`
+        )}
+        {awaitingPins && live.length > 0 && prefsStatus.state === FAILED && (
           <div id="adhd-failed" class="empty-sessions">
-            <p>${prefsStatus.error}</p>
+            <p>{prefsStatus.error}</p>
             <p>ADHD mode cannot tell what is pinned until preferences load.</p>
-            <button id="adhd-retry" class="button" type="button" onClick=${onRetryPrefs}>Try again</button>
+            <button id="adhd-retry" class="button" type="button" onClick={onRetryPrefs}>Try again</button>
           </div>
-        `}
-        ${adhdMode && prefsReady && live.length > 0 && nothingPinned && html`
+        )}
+        {adhdMode && prefsReady && live.length > 0 && nothingPinned && (
           <div id="empty-adhd" class="empty-sessions">
-            <p>No live session is pinned. ADHD mode is hiding ${live.length - visible.length} session(s).</p>
+            <p>No live session is pinned. ADHD mode is hiding {live.length - visible.length} session(s).</p>
             <button id="empty-adhd-show-all" class="button button-primary" type="button"
-                    onClick=${onToggleAdhdMode}>Show all</button>
+                    onClick={onToggleAdhdMode}>Show all</button>
           </div>
-        `}
+        )}
       </section>
-      `}
+      )}
 
-      ${!onTasks && showDone && doneSessions.length > 0 && html`
+      {!onTasks && showDone && doneSessions.length > 0 && (
         <section id="done-section">
           <h2 class="section-title">
             <span>Done</span>
-            <span id="done-count" class="done-count">${doneSessions.length}</span>
+            <span id="done-count" class="done-count">{doneSessions.length}</span>
           </h2>
-          <ul id="done-list" class=${"session-list done-list" + (grouped ? " grouped" : "")}>
-            ${grouped
-              ? doneGroups.map((g) => html`
-                  <${SessionGroup}
-                    key=${g.path}
-                    group=${g}
-                    tasks=${tasks}
-                    activeId=${activeId}
-                    collapsedGroups=${collapsedGroups}
-                    onSelect=${onSelect}
-                    onToggle=${toggleGroup}
-                    onRestore=${onRestore}
-                    prefs=${prefs}
-                    done=${true}
+          <ul id="done-list" class={"session-list done-list" + (grouped ? " grouped" : "")}>
+            {grouped
+              ? doneGroups.map((g) => (
+                  <SessionGroup
+                    key={g.path}
+                    group={g}
+                    tasks={tasks}
+                    activeId={activeId}
+                    collapsedGroups={collapsedGroups}
+                    onSelect={onSelect}
+                    onToggle={toggleGroup}
+                    onRestore={onRestore}
+                    prefs={prefs}
+                    done={true}
                   />
-                `)
-              : flatDoneSessions.map((s) => html`
-                  <${SessionRow}
-                    key=${s.id}
-                    session=${s}
-                    tasks=${tasks}
-                    active=${s.id === activeId}
-                    onSelect=${onSelect}
-                    onRestore=${onRestore}
+                ))
+              : flatDoneSessions.map((s) => (
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    tasks={tasks}
+                    active={s.id === activeId}
+                    onSelect={onSelect}
+                    onRestore={onRestore}
                   />
-                `)}
+                ))}
           </ul>
         </section>
-      `}
+      )}
 
       </div>
 
       <footer id="sidebar-footer">
-        <${UsageStrip} />
+        <UsageStrip />
         <div class="sidebar-footer-row">
-          ${!onTasks && html`
-            <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
-               role="status" aria-live="polite">${status.text}</p>`}
-          ${currentVersion && html`
-            <span id="current-version" title="Kotgent version">${currentVersion}</span>
-          `}
+          {!onTasks && (
+            <p id="status-line" class={"status-line" + (status.error ? " error" : "")}
+               role="status" aria-live="polite">{status.text}</p>)}
+          {currentVersion && (
+            <span id="current-version" title="Kotgent version">{currentVersion}</span>
+          )}
         </div>
       </footer>
     </aside>
-  `;
+  );
 }
