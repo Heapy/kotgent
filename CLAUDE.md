@@ -196,8 +196,8 @@ the common workflow and links to those guides; implementation invariants belong 
   sticky at `ready`; a failed revalidation keeps usable rows, while an initial failure stays visible.
 - One typeahead-listbox primitive answers the command palette, both directory-path pickers and the
   session/task link picker. Keep rules framework-free in `lib/typeahead.ts`, bind them in
-  `components/Typeahead.js`, compare rows by key, and share path-picker behavior through
-  `components/PathSuggestions.js`.
+  `components/Typeahead.tsx`, compare rows by key, and share path-picker behavior through
+  `components/PathSuggestions.tsx`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
   uppercase `I` differently. Keep `webuitest/js/turkish-fold.js` coverage for every matching rule.
 - In htm templates use `spellcheck=${false}`, `autoCorrect="off"`, and `autocapitalize="off"`; served-DOM

@@ -24,8 +24,8 @@ import {
   taskStateRank,
 } from "../lib/tasks.ts";
 import { qrSvg } from "../lib/qr.ts";
-import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
-import { useTypeahead } from "./Typeahead.js";
+import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
+import { useTypeahead } from "./Typeahead.tsx";
 
 const SWIPE_SLOP_PX = 8;
 const SWIPE_DISMISS_PX = 96;

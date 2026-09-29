@@ -132,7 +132,7 @@ import {
 } from "./state/prefs.ts";
 import { Board } from "./components/Board.js";
 import { TaskDetail } from "./components/TaskDetail.js";
-import { CommandPalette } from "./components/CommandPalette.js";
+import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
 import {

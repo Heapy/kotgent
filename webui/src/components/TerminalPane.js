@@ -8,7 +8,7 @@ import { resizeFrame, wsUrl } from "../lib/api.ts";
 import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
 import { navigate, taskPath } from "../lib/router.ts";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
-import { KeyBar } from "./KeyBar.js";
+import { KeyBar } from "./KeyBar.tsx";
 
 function debounce(fn, ms) {
   let handle;

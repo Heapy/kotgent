@@ -1,5 +1,5 @@
 import { h, render } from "preact";
-import { useTypeahead } from "../../webui/src/components/Typeahead.js";
+import { useTypeahead } from "../../webui/src/components/Typeahead.tsx";
 
 // Identical option keys ensure resolveActiveKey cannot hide a shared signal behind its fallback.
 const KEYS = ["local:1", "local:2", "local:3"];

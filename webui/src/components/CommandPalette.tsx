@@ -1,25 +1,33 @@
-import { html } from "htm/preact";
+import type { TargetedKeyboardEvent } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { filterCommands } from "../lib/commands.ts";
+import type { Command } from "../lib/commands.ts";
 import { Dialog } from "./dialogs.js";
-import { useTypeahead } from "./Typeahead.js";
+import { useTypeahead } from "./Typeahead.tsx";
+
+export interface CommandPaletteProps {
+  commands: readonly Command[];
+  mode?: "leader" | "search";
+  onModeChange: (mode: "leader" | "search") => void;
+  onClose: () => void;
+}
 
 const LISTBOX_ID = "command-palette-results";
 const OPTION_ID_PREFIX = "command-palette-option-";
 
-function optionId(index) {
+function optionId(index: number) {
   return OPTION_ID_PREFIX + index;
 }
 
-export function CommandPalette({ commands, mode = "leader", onModeChange, onClose }) {
-  const [query, setQuery] = useState("");
-  const [leaderMessage, setLeaderMessage] = useState("");
-  const queryRef = useRef(null);
-  const shellRef = useRef(null);
-  const results = useMemo(() => filterCommands(commands, query), [commands, query]);
-  const leaderCommands = commands.filter((item) => item.chord);
+export function CommandPalette({ commands, mode = "leader", onModeChange, onClose }: CommandPaletteProps) {
+  const [query, setQuery] = useState<string>("");
+  const [leaderMessage, setLeaderMessage] = useState<string>("");
+  const queryRef = useRef<HTMLInputElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const results = useMemo<Command[]>(() => filterCommands(commands, query), [commands, query]);
+  const leaderCommands = commands.filter((item): item is Command & { chord: string } => !!item.chord);
   // A disabled row is drawn but never navigated to, so it is not one of the keys.
-  const enabledIds = useMemo(
+  const enabledIds = useMemo<string[]>(
     () => results.filter((item) => !item.disabled).map((item) => item.id),
     [results],
   );
@@ -34,10 +42,10 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
     }
   }, [mode]);
 
-  const closeThenRun = (item) => {
+  const closeThenRun = (item: Command | null | undefined) => {
     if (!item || item.disabled) return;
     // Close synchronously so clipboard commands retain the initiating user gesture.
-    const dialog = document.getElementById("command-palette");
+    const dialog = document.getElementById("command-palette") as HTMLDialogElement | null;
     if (dialog && dialog.open) dialog.close();
     else onClose();
     item.run();
@@ -51,7 +59,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
   const activeIndex = results.findIndex((item) => item.id === typeahead.activeKey);
   const activeOptionId = activeIndex >= 0 ? optionId(activeIndex) : null;
 
-  const runLeaderCommand = (item) => {
+  const runLeaderCommand = (item: Command) => {
     if (item.disabled) {
       setLeaderMessage(item.title + ": " + item.disabled);
       return;
@@ -59,7 +67,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
     closeThenRun(item);
   };
 
-  const leaderKeyDown = (event) => {
+  const leaderKeyDown = (event: TargetedKeyboardEvent<HTMLDivElement>) => {
     if (mode !== "leader") return;
     // Suppress Space on the focused shell, but not on its buttons.
     if (event.code === "Space" && event.target === event.currentTarget) {
@@ -82,24 +90,24 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
     runLeaderCommand(item);
   };
 
-  return html`
-    <${Dialog} id="command-palette" labelledBy="command-palette-title" onClose=${onClose}>
-      <div class=${"command-palette-shell " + mode} ref=${shellRef} tabIndex="-1"
-           onKeyDown=${leaderKeyDown}>
+  return (
+    <Dialog id="command-palette" labelledBy="command-palette-title" onClose={onClose}>
+      <div class={"command-palette-shell " + mode} ref={shellRef} tabIndex={-1}
+           onKeyDown={leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
         <div class="command-palette-top">
-          ${mode === "leader"
-            ? html`
+          {mode === "leader"
+            ? (
               <button
                 id="command-palette-search-mode"
                 class="command-palette-search-mode"
                 type="button"
-                onClick=${() => onModeChange("search")}
+                onClick={() => onModeChange("search")}
               >
                 <span>Search commands and sessions</span>
                 <kbd>K</kbd>
-              </button>`
-            : html`
+              </button>)
+            : (
               <input
                 id="command-palette-query"
                 class="command-palette-query"
@@ -108,71 +116,71 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
                 placeholder="Search commands and sessions"
                 autoComplete="off"
                 autoFocus
-                ref=${queryRef}
+                ref={queryRef}
                 aria-autocomplete="list"
-                aria-controls=${LISTBOX_ID}
+                aria-controls={LISTBOX_ID}
                 aria-expanded="true"
-                aria-activedescendant=${activeOptionId}
-                value=${query}
-                onInput=${(event) => setQuery(event.target.value)}
-                onKeyDown=${typeahead.keyDown}
-              />`}
+                aria-activedescendant={activeOptionId ?? undefined}
+                value={query}
+                onInput={(event) => setQuery(event.currentTarget.value)}
+                onKeyDown={typeahead.keyDown}
+              />)}
           <button id="command-palette-close" class="icon-button command-palette-close" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+                  aria-label="Close" onClick={onClose}>×</button>
         </div>
-        ${mode === "leader"
-          ? html`
+        {mode === "leader"
+          ? <>
             <div class="command-palette-leader-grid" role="group" aria-label="Command shortcuts">
-              ${leaderCommands.map((item) => html`
+              {leaderCommands.map((item) => (
                 <button
-                  key=${item.id}
-                  class=${"command-palette-leader-command" + (item.disabled ? " disabled" : "")}
+                  key={item.id}
+                  class={"command-palette-leader-command" + (item.disabled ? " disabled" : "")}
                   type="button"
-                  aria-disabled=${item.disabled ? "true" : null}
-                  onClick=${() => runLeaderCommand(item)}
+                  aria-disabled={item.disabled ? "true" : undefined}
+                  onClick={() => runLeaderCommand(item)}
                 >
-                  <kbd class="command-palette-leader-key">${item.chord}</kbd>
-                  <span>${item.title}</span>
+                  <kbd class="command-palette-leader-key">{item.chord}</kbd>
+                  <span>{item.title}</span>
                 </button>
-              `)}
+              ))}
             </div>
             <p class="command-palette-footer" role="status" aria-live="polite">
-              ${leaderMessage || "Press a letter, K to search, or Esc to close."}
-            </p>`
-          : html`
-            <ul id=${LISTBOX_ID} class="command-palette-list" role="listbox">
-              ${results.map((item, index) => html`
+              {leaderMessage || "Press a letter, K to search, or Esc to close."}
+            </p></>
+          : (
+            <ul id={LISTBOX_ID} class="command-palette-list" role="listbox">
+              {results.map((item, index) => (
                 <li
-                  key=${item.id}
-                  id=${optionId(index)}
-                  class=${"command-palette-option" +
+                  key={item.id}
+                  id={optionId(index)}
+                  class={"command-palette-option" +
                     (index === activeIndex ? " active" : "") +
                     (item.disabled ? " disabled" : "")}
                   role="option"
-                  aria-selected=${index === activeIndex ? "true" : "false"}
-                  aria-disabled=${item.disabled ? "true" : null}
-                  ref=${typeahead.optionRef(item.id)}
-                  onMouseMove=${() => { if (!item.disabled) typeahead.activate(item.id); }}
-                  onClick=${() => closeThenRun(item)}
+                  aria-selected={index === activeIndex ? "true" : "false"}
+                  aria-disabled={item.disabled ? "true" : undefined}
+                  ref={typeahead.optionRef(item.id)}
+                  onMouseMove={() => { if (!item.disabled) typeahead.activate(item.id); }}
+                  onClick={() => closeThenRun(item)}
                 >
                   <span class="command-palette-copy">
-                    <strong>${item.title}</strong>
-                    ${item.subtitle && html`<small>${item.subtitle}</small>`}
-                    ${item.disabled && html`
-                      <small class="command-palette-disabled-reason">${item.disabled}</small>`}
+                    <strong>{item.title}</strong>
+                    {item.subtitle && <small>{item.subtitle}</small>}
+                    {item.disabled && (
+                      <small class="command-palette-disabled-reason">{item.disabled}</small>)}
                   </span>
                   <span class="command-palette-hint">
-                    ${item.chord
-                      ? html`<kbd class="command-palette-chord"
-                                  title=${"Press Command-K, then " + item.chord.toUpperCase()}>
-                          ${item.chord}
-                        </kbd>`
+                    {item.chord
+                      ? <kbd class="command-palette-chord"
+                             title={"Press Command-K, then " + item.chord.toUpperCase()}>
+                          {item.chord}
+                        </kbd>
                       : item.hint}
                   </span>
                 </li>
-              `)}
-            </ul>`}
+              ))}
+            </ul>)}
       </div>
-    <//>
-  `;
+    </Dialog>
+  );
 }

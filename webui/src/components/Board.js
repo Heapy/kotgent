@@ -16,8 +16,8 @@ import {
   taskStateLabel,
 } from "../lib/tasks.ts";
 import { Dialog } from "./dialogs.js";
-import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
-import { TaskCard } from "./TaskCard.js";
+import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
+import { TaskCard } from "./TaskCard.tsx";
 
 export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
   state: state,

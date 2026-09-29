@@ -1,6 +1,6 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
-import { UsageStrip } from "./UsageStrip.js";
+import { UsageStrip } from "./UsageStrip.tsx";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.ts";
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.ts";
 import {
