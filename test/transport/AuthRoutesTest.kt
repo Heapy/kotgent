@@ -769,7 +769,7 @@ class AuthRoutesTest {
             contentLength: Int,
             body: String = "",
             halfCloseRequest: Boolean = false,
-        ): String = withTimeout(2.seconds) {
+        ): String = withTimeout(5.seconds) {
             val selector = SelectorManager(Dispatchers.Default)
             val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
             try {

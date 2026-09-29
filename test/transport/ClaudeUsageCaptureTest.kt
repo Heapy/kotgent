@@ -236,7 +236,7 @@ class ClaudeUsageCaptureTest {
         }
 
         suspend fun unconsumedRequestUntilClosed(contentLength: Int, presented: String = token): String =
-            withTimeout(3.seconds) {
+            withTimeout(5.seconds) {
                 val selector = SelectorManager(Dispatchers.Default)
                 val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
                 try {

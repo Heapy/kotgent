@@ -3,7 +3,6 @@ package io.kotgent.transport
 import io.kotgent.core.SessionId
 import io.kotgent.store.EventStore
 import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.contentLength
@@ -24,8 +23,6 @@ import kotlinx.cinterop.set
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -274,17 +271,6 @@ private suspend fun ApplicationCall.rejectUnconsumedUploadAndClose(
     body: ByteReadChannel,
     text: String,
     status: HttpStatusCode,
-) {
-    // CIO can otherwise retain the raw parser/socket after an early response with unread body bytes.
-    response.headers.append(HttpHeaders.Connection, "close")
-    try {
-        respondText(text, status = status)
-    } finally {
-        body.cancel(null)
-        withContext(NonCancellable) {
-            closePinnedCioConnectionAfterFlush("closing unconsumed file upload request body")
-        }
-    }
-}
+) = respondToUnconsumedBodyAndClose(text, status, body, "closing unconsumed file upload request body")
 
 private const val UPLOAD_BUFFER_BYTES: Int = 64 * 1024
