@@ -4,7 +4,7 @@ import {
   applyUsageSnapshot, atUsageReceipt, providerUsageStaleAt, upsertUsageIfNewer,
   usageTimeLeft, usageWindowSeconds, usageWindowTime,
 } from "../../webui/src/lib/usage.ts";
-import { mergeUsageWindow, replaceUsage, usage, usageClockOffset } from "../../webui/src/state/usage.js";
+import { mergeUsageWindow, replaceUsage, usage, usageClockOffset } from "../../webui/src/state/usage.ts";
 import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
 
 function window(overrides = {}) {

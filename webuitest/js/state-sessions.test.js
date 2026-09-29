@@ -13,7 +13,7 @@ import {
   replaceSessions,
   sessions,
   sessionsReadiness,
-} from "../../webui/src/state/sessions.js";
+} from "../../webui/src/state/sessions.ts";
 import {
   dropTask,
   findTask,
@@ -22,7 +22,7 @@ import {
   replaceTasks,
   tasks,
   tasksReadiness,
-} from "../../webui/src/state/tasks.js";
+} from "../../webui/src/state/tasks.ts";
 import {
   applyProjectRow,
   findProject,
@@ -31,7 +31,7 @@ import {
   projectsReadiness,
   removeProjectRow,
   replaceProjects,
-} from "../../webui/src/state/projects.js";
+} from "../../webui/src/state/projects.ts";
 import { patchFrame, sessionRow, taskRow } from "./fixtures.js";
 
 // Reset singleton values between tests.

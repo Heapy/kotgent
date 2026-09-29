@@ -1,6 +1,6 @@
 import { html } from "htm/preact";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { usage, usageClockOffset } from "../state/usage.js";
+import { usage, usageClockOffset } from "../state/usage.ts";
 import { providerUsageStaleAt, usageTimeLeft, usageWindowSeconds, usageWindowTime } from "../lib/usage.ts";
 
 function usageLabel(window) {

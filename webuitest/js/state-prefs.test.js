@@ -11,7 +11,7 @@ import {
   applyServerPreferences,
   prefs,
   prefsReadiness,
-} from "../../webui/src/state/prefs.js";
+} from "../../webui/src/state/prefs.ts";
 
 const known = () => prefsReadiness.status.value.state === READY;
 

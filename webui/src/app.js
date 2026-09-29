@@ -87,7 +87,7 @@ import {
   replaceSessions,
   sessions as sessionsSignal,
   sessionsReadiness,
-} from "./state/sessions.js";
+} from "./state/sessions.ts";
 import {
   dropTask,
   findTask,
@@ -96,7 +96,7 @@ import {
   replaceTasks,
   tasks as tasksSignal,
   tasksReadiness,
-} from "./state/tasks.js";
+} from "./state/tasks.ts";
 import {
   applyProjectRow,
   findProject,
@@ -105,22 +105,22 @@ import {
   projectsReadiness,
   removeProjectRow,
   replaceProjects,
-} from "./state/projects.js";
+} from "./state/projects.ts";
 import {
   activeSession as activeSessionSignal,
   activeSessionId,
   markSelection,
   pruneSelection,
   selectSessionId,
-} from "./state/selection.js";
+} from "./state/selection.ts";
 import {
   closeDialog,
   closeDialogFrom,
   dialog as dialogSignal,
   openDialog,
-} from "./state/dialog.js";
-import { announcementHolds, say, status as statusSignal } from "./state/status.js";
-import { mergeUsageWindow, replaceUsage } from "./state/usage.js";
+} from "./state/dialog.ts";
+import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
+import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
 import {
   PREFS_SUPERSEDED,
   PREFS_UNREADABLE,
@@ -129,7 +129,7 @@ import {
   prefs as prefsSignal,
   prefsReadiness,
   serverPrefs,
-} from "./state/prefs.js";
+} from "./state/prefs.ts";
 import { Board } from "./components/Board.js";
 import { TaskDetail } from "./components/TaskDetail.js";
 import { CommandPalette } from "./components/CommandPalette.js";
