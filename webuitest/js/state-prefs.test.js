@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { READY } from "../../resources/webui/lib/readiness.js";
+import { READY } from "../../webui/src/lib/readiness.js";
 import {
   PREFS_APPLIED,
   PREFS_SUPERSEDED,
@@ -11,7 +11,7 @@ import {
   applyServerPreferences,
   prefs,
   prefsReadiness,
-} from "../../resources/webui/state/prefs.js";
+} from "../../webui/src/state/prefs.js";
 
 const known = () => prefsReadiness.status.value.state === READY;
 

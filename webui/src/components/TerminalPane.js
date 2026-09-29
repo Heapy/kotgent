@@ -1,5 +1,7 @@
 /* xterm owns terminal-host DOM and its WebSocket outside the vdom; one attachment effect owns both. */
 
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
@@ -296,7 +298,7 @@ export function TerminalPane({
       // Preserve macOS Alt-drag selection while a TUI has mouse reporting enabled.
       macOptionClickForcesSelection: true,
     });
-    const fit = new FitAddon.FitAddon();
+    const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
 

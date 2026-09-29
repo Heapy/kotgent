@@ -14,8 +14,8 @@ import {
   resolveActiveKey,
   stepActiveKey,
   typeaheadIntent,
-} from "../../resources/webui/lib/typeahead.js";
-import { filterCommands } from "../../resources/webui/lib/commands.js";
+} from "../../webui/src/lib/typeahead.js";
+import { filterCommands } from "../../webui/src/lib/commands.js";
 import { underTurkishFold } from "./turkish-fold.js";
 
 const KEYS = ["local:1", "local:2", "local:3"];

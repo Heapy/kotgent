@@ -1,6 +1,6 @@
 /*
  * Unicode width must match tmux's layout, so addons are opt-in and device-local. Dynamic imports are the
- * download gate and inherit this module's content-revision path.
+ * download gate.
  */
 
 export const BUILT_IN_UNICODE_VERSION = "6";
@@ -13,7 +13,7 @@ export const TERMINAL_UNICODE_MODES = [
     value: DEFAULT_TERMINAL_UNICODE,
     label: "Built-in — Unicode 6 widths",
     hint: "What xterm.js measures with out of the box, and what kotgent has always shipped.",
-    module: null,
+    load: null,
     export: null,
     version: BUILT_IN_UNICODE_VERSION,
   },
@@ -21,7 +21,7 @@ export const TERMINAL_UNICODE_MODES = [
     value: "11",
     label: "Unicode 11 widths",
     hint: "Modern double-width ranges — CJK and most emoji stop being measured one cell wide.",
-    module: "../vendor/addon-unicode11.module.js",
+    load: () => import("@xterm/addon-unicode11"),
     export: "Unicode11Addon",
     version: "11",
   },
@@ -29,7 +29,7 @@ export const TERMINAL_UNICODE_MODES = [
     value: "15-graphemes",
     label: "Unicode 15 widths + grapheme clusters",
     hint: "Adds Unicode 15 and joins combining marks, flags and ZWJ emoji into one cell each.",
-    module: "../vendor/addon-unicode-graphemes.module.js",
+    load: () => import("@xterm/addon-unicode-graphemes"),
     export: "UnicodeGraphemesAddon",
     version: "15-graphemes",
   },
@@ -46,11 +46,11 @@ export function terminalUnicodeMode(value) {
 // Loading and installation stay separate so the caller can reject an out-of-order dynamic import.
 export async function loadTerminalUnicode(value) {
   const mode = terminalUnicodeMode(value);
-  if (!mode.module) return null;
-  const namespace = await import(mode.module);
+  if (!mode.load) return null;
+  const namespace = await mode.load();
   const Addon = namespace[mode.export];
   if (typeof Addon !== "function") {
-    throw new Error("vendored " + mode.module + " does not export " + mode.export);
+    throw new Error("Unicode mode " + mode.value + " does not export " + mode.export);
   }
   return { mode: mode, Addon: Addon };
 }

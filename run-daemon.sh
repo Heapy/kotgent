@@ -54,6 +54,7 @@ build_binary() {
         Linux/x86_64) export KOTGENT_TARGET_PLATFORM=linuxX64; local module=kotgent-linux ;;
         *) printf 'unsupported build host; use a release archive on Linux ARM64\n' >&2; return 1 ;;
     esac
+    npm run build --prefix webui || return
     ./kotlin build -p "$KOTGENT_TARGET_PLATFORM" -m "$module" || return
     ./kotlin "do" kexePath || return
 
@@ -114,6 +115,9 @@ wait_for_action() {
 
     return 2
 }
+
+printf 'installing Web UI dependencies...\n'
+npm ci --prefix webui || exit 1
 
 printf 'building initial daemon...\n'
 if ! build_binary; then

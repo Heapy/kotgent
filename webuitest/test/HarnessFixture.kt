@@ -9,6 +9,7 @@ import com.microsoft.playwright.CDPSession
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
+import com.microsoft.playwright.Route
 import com.microsoft.playwright.Tracing
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions
@@ -67,13 +68,10 @@ class Harness(scenario: String) : AutoCloseable {
     val baseUrl: String
 
     init {
+        val webUiDir = requireWebUiBuild(repoRoot)
         // A cold Playwright download can outlive the harness watchdog, so install before spawning it.
         preparePlaywrightOnce()
         val binary = harnessBinary()
-        val webUiDir = repoRoot.resolve(WEB_UI_RELATIVE).toAbsolutePath().normalize()
-        if (!Files.isDirectory(webUiDir)) {
-            fail("the Web UI directory is missing: $webUiDir")
-        }
         process = ProcessBuilder(
             binary.toString(),
             "--scenario=$scenario",
@@ -396,6 +394,67 @@ fun Browser.fineContext(
 
 fun testResultsDir(): Path = repoRoot.resolve(TEST_RESULTS_RELATIVE).also { Files.createDirectories(it) }
 
+fun Page.routeWebUiProbe(entry: String): String {
+    val webUiRoot = repoRoot.resolve("webui")
+    check(Files.isDirectory(webUiRoot.resolve("node_modules/vite"))) {
+        "missing Vite for the Web UI component probe; run npm ci in webui/"
+    }
+    val output = Files.createTempDirectory(Files.createDirectories(repoRoot.resolve("build")), "webui-probe-")
+    val bundle = try {
+        val log = output.resolve("build.log")
+        val process = try {
+            ProcessBuilder(
+                "node", "--input-type=module", "--eval", BUILD_WEB_UI_PROBE,
+                repoRoot.resolve("webuitest/probes").resolve(entry).toString(), output.toString(),
+            )
+                .directory(webUiRoot.toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(log.toFile())
+                .start()
+        } catch (e: IOException) {
+            fail("could not start the Web UI component probe build; install Node v24+ on PATH: ${e.message}")
+        }
+        try {
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                fail("the Web UI component probe build timed out:\n${Files.readString(log)}")
+            }
+            check(process.exitValue() == 0) {
+                "the Web UI component probe build exited with ${process.exitValue()}:\n${Files.readString(log)}"
+            }
+            Files.readString(output.resolve("probe.js"))
+        } finally {
+            if (process.isAlive) {
+                process.destroyForcibly()
+                val _ = process.waitFor(5, TimeUnit.SECONDS)
+            }
+        }
+    } finally {
+        Files.walk(output).use { paths ->
+            paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+        }
+    }
+    val path = "/__webuitest/$entry"
+    route("**$path") { route ->
+        route.fulfill(Route.FulfillOptions().setContentType("text/javascript").setBody(bundle))
+    }
+    return path
+}
+
+private val BUILD_WEB_UI_PROBE = """
+    import { build } from "vite";
+    await build({
+      configFile: false,
+      publicDir: false,
+      logLevel: "warn",
+      resolve: { dedupe: ["preact"] },
+      build: {
+        outDir: process.argv[2],
+        emptyOutDir: false,
+        lib: { entry: process.argv[1], formats: ["es"], fileName: () => "probe.js" },
+      },
+    });
+""".trimIndent()
+
 // Capture uncaught errors from every page in the traced context; DOM assertions alone can miss a late
 // handler failure after its visible effect has committed.
 fun BrowserContext.traced(name: String, block: () -> Unit) {
@@ -574,6 +633,15 @@ internal fun harnessBinaries(os: String, arch: String): List<String> {
     }
 }
 
+internal fun requireWebUiBuild(root: Path): Path {
+    val webUiDir = root.resolve(WEB_UI_RELATIVE).toAbsolutePath().normalize()
+    check(
+        Files.isRegularFile(webUiDir.resolve("index.html")) &&
+            Files.isDirectory(webUiDir.resolve("assets")),
+    ) { "missing Web UI build at $root; run npm ci and npm run build in webui/" }
+    return webUiDir
+}
+
 private const val WEB_UI_RELATIVE = "resources/webui"
 private const val TEST_RESULTS_RELATIVE = "webuitest/test-results"
 private const val PORT_PREFIX = "PORT="
@@ -623,14 +691,13 @@ private fun locateRepoRoot(): Path {
         var dir: Path? = start
         while (dir != null) {
             val hasManifest = Files.isRegularFile(dir.resolve("project.yaml"))
-            val hasWebUi = Files.isRegularFile(dir.resolve(WEB_UI_RELATIVE).resolve("index.html"))
-            if (hasManifest && hasWebUi) return dir
+            if (hasManifest) return dir
             dir = dir.parent
         }
     }
     fail(
-        "could not locate the kotgent checkout (looked for a directory holding both project.yaml and " +
-            "$WEB_UI_RELATIVE/index.html, walking up from ${starts.joinToString()})",
+        "could not locate the kotgent checkout (looked for project.yaml walking up from " +
+            "${starts.joinToString()})",
     )
 }
 

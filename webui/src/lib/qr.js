@@ -1,6 +1,6 @@
 // Keep QR output black-on-white; dark-inverted codes fail on some phone scanners.
 
-import { QrCode } from "qrcode";
+import { QrCode } from "./qrcode.js";
 
 export function qrSvg(text, options) {
   const opts = options || {};

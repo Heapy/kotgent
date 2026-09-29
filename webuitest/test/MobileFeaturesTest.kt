@@ -11,6 +11,7 @@ import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.FilePayload
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -184,21 +185,16 @@ class MobileFeaturesTest {
 
     @Test
     fun theUnicodeAddonIsFetchedOnlyWhenThePreferenceSelectsItAndThenBecomesTheActiveVersion() {
-        onMobileTerminal("mobile-unicode") { harness, context, page ->
+        onMobileTerminal("mobile-unicode") { harness, _, page ->
             val fetched = CopyOnWriteArrayList<String>()
             page.onRequest { fetched.add(it.url()) }
-            context.addInitScript(CAPTURE_TERMINAL_CONSTRUCTIONS)
 
             page.navigate(harness.baseUrl + SESSION_ROUTE)
             assertThat(page.locator(TERMINAL_ROWS)).containsText(TERMINAL_BANNER)
 
-            assertEquals(
-                BUILT_IN_UNICODE_VERSION,
-                activeUnicodeVersion(page),
-                "a terminal opens on xterm's built-in Unicode 6 table",
-            )
+            assertUnicodeWidth(page, "built-in", 2.0)
             assertTrue(
-                fetched.any { it.contains("/vendor/xterm.js") },
+                fetched.any { it.contains("/assets/index-") && it.endsWith(".js") },
                 "the request log does see this page's script fetches, so the absence below can fail",
             )
             val beforeTheChoice = fetched.filter { it.contains(UNICODE_ADDON_MARKER) }
@@ -213,12 +209,7 @@ class MobileFeaturesTest {
             page.locator("#prefs-submit").click()
             assertThat(page.locator("#prefs-dialog")).hasCount(0)
 
-            page.waitForFunction(WAIT_FOR_UNICODE_11)
-            assertEquals(
-                UNICODE_11_MODE,
-                activeUnicodeVersion(page),
-                "the selected provider is made ACTIVE, not merely registered",
-            )
+            assertUnicodeWidth(page, "unicode11", 3.0)
 
             val addons = fetched.filter { it.contains(UNICODE_ADDON_MARKER) }
             assertEquals(
@@ -228,8 +219,8 @@ class MobileFeaturesTest {
                     "$addons",
             )
             assertTrue(
-                REVISIONED_UNICODE_11.containsMatchIn(addons[0]),
-                "the relative specifier resolved under the content-revision prefix: ${addons[0]}",
+                UNICODE_11_CHUNK.containsMatchIn(addons[0]),
+                "the selected addon is fetched as a hashed lazy chunk: ${addons[0]}",
             )
 
             runLeaderCommand(page, "Preferences")
@@ -238,12 +229,7 @@ class MobileFeaturesTest {
             page.locator("#prefs-submit").click()
             assertThat(page.locator("#prefs-dialog")).hasCount(0)
 
-            page.waitForFunction(WAIT_FOR_BUILT_IN_UNICODE)
-            assertEquals(
-                BUILT_IN_UNICODE_VERSION,
-                activeUnicodeVersion(page),
-                "turning the preference off restores the version the install captured",
-            )
+            assertUnicodeWidth(page, "restored", 2.0)
             assertEquals(
                 1,
                 fetched.count { it.contains(UNICODE_ADDON_MARKER) },
@@ -277,7 +263,30 @@ class MobileFeaturesTest {
 
     private fun focusedElement(page: Page): String = page.evaluate(FOCUSED_ELEMENT) as String
 
-    private fun activeUnicodeVersion(page: Page): String = page.evaluate(ACTIVE_UNICODE_VERSION) as String
+    private fun assertUnicodeWidth(page: Page, label: String, expectedCells: Double) {
+        // U+1F9D1 takes one cell with the built-in widths and two with Unicode 11.
+        val probe = "$label A🧑B"
+        assertEquals(true, page.evaluate(FOCUS_XTERM_TEXTAREA))
+        page.keyboard().insertText(probe)
+        val row = page.locator("$TERMINAL_ROWS > div")
+            .filter(com.microsoft.playwright.Locator.FilterOptions().setHasText(probe))
+        page.waitForCondition {
+            val cells = row.evaluateAll(
+                """
+                (rows, probe) => {
+                  const row = rows.at(-1);
+                  if (!row || getComputedStyle(row).visibility !== "visible") return null;
+                  const rect = row.getBoundingClientRect();
+                  if (rect.width === 0 || rect.height === 0) return null;
+                  return ($MEASURE_UNICODE_WIDTH)(row, probe);
+                }
+                """.trimIndent(),
+                probe,
+            ) as? Number
+            cells != null && abs(cells.toDouble() - expectedCells) < 0.15
+        }
+        page.keyboard().press("Enter")
+    }
 
     private fun uploadedName(request: Request): String = request.url().substringAfter("name=")
 
@@ -294,11 +303,10 @@ class MobileFeaturesTest {
         const val TERMINAL_WS_PATH = "/terminal"
         const val UPLOAD_PATH = "/files?name="
 
-        const val BUILT_IN_UNICODE_VERSION = "6"
         const val DEFAULT_UNICODE_MODE = "default"
         const val UNICODE_11_MODE = "11"
         const val UNICODE_ADDON_MARKER = "addon-unicode"
-        val REVISIONED_UNICODE_11 = Regex("/_v/[0-9a-f]{12}/vendor/addon-unicode11\\.module\\.js")
+        val UNICODE_11_CHUNK = Regex("/assets/addon-unicode11-[A-Za-z0-9_-]+\\.js$")
 
         // Control-C is last because the tty line discipline may flush earlier queued echo on INTR.
         val SPECIAL_KEYS = listOf(
@@ -326,50 +334,26 @@ class MobileFeaturesTest {
         const val FRESH_NAME = "kotgent-fresh.txt"
         val FRESH_BYTES = "the one file this batch had not sent before\n".toByteArray()
 
-        val CAPTURE_TERMINAL_CONSTRUCTIONS = """
-            (() => {
-              let real = null;
-              window.__kotgentTerminals = [];
-              Object.defineProperty(window, "Terminal", {
-                configurable: true,
-                get() {
-                  if (!real) return undefined;
-                  if (!window.__kotgentTerminalProxy) {
-                    window.__kotgentTerminalProxy = new Proxy(real, {
-                      construct(target, args) {
-                        const term = Reflect.construct(target, args);
-                        window.__kotgentTerminals.push(term);
-                        return term;
-                      },
-                    });
+        val MEASURE_UNICODE_WIDTH = """
+            (row, probe) => {
+              const start = row.textContent.indexOf(probe) + probe.indexOf("A🧑B");
+              function rectAt(offset) {
+                const nodes = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = nodes.nextNode())) {
+                  if (offset < node.length) {
+                    const range = document.createRange();
+                    range.setStart(node, offset);
+                    range.setEnd(node, offset + 1);
+                    return range.getBoundingClientRect();
                   }
-                  return window.__kotgentTerminalProxy;
-                },
-                set(value) { real = value; },
-              });
-            })();
-        """.trimIndent()
-
-        val ACTIVE_UNICODE_VERSION = """
-            () => {
-              const terms = window.__kotgentTerminals || [];
-              if (terms.length === 0) return "no-terminal-was-constructed";
-              return String(terms[terms.length - 1].unicode.activeVersion);
-            }
-        """.trimIndent()
-
-        val WAIT_FOR_UNICODE_11 = """
-            () => {
-              const terms = window.__kotgentTerminals || [];
-              return terms.length > 0 && terms[terms.length - 1].unicode.activeVersion === "$UNICODE_11_MODE";
-            }
-        """.trimIndent()
-
-        val WAIT_FOR_BUILT_IN_UNICODE = """
-            () => {
-              const terms = window.__kotgentTerminals || [];
-              return terms.length > 0 &&
-                terms[terms.length - 1].unicode.activeVersion === "$BUILT_IN_UNICODE_VERSION";
+                  offset -= node.length;
+                }
+                throw new Error("Unicode probe is missing from the terminal row");
+              }
+              const a = rectAt(start);
+              const b = rectAt(start + "A🧑".length);
+              return (b.left - a.left) / a.width;
             }
         """.trimIndent()
 

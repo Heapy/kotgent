@@ -1,7 +1,7 @@
 // Projects have no revision or event frame. Refresh ordering lives in lib/refresh.js; confirmed rows apply
 // verbatim here.
 
-import { computed, signal } from "../vendor/signals-core.module.js";
+import { computed, signal } from "@preact/signals-core";
 import { READY, createReadiness } from "../lib/readiness.js";
 
 export const projects = signal([]);

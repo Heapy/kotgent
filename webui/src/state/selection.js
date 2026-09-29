@@ -1,6 +1,6 @@
 // Selection generation records user navigation even across an A→B→A round trip.
 
-import { computed, signal } from "../vendor/signals-core.module.js";
+import { computed, signal } from "@preact/signals-core";
 import { findSession } from "./sessions.js";
 
 export const activeSessionId = signal(null);

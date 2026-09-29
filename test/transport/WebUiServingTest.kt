@@ -53,6 +53,7 @@ import platform.posix.unlink
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,6 +62,43 @@ class WebUiServingTest {
     private val token = "webui-serving-token-abc123"
     private val currentVersion = "9.8.7+deadbee"
 
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun missingBuildOutputExplainsHowToBuildTheWebUi() {
+        val dir = makeTempDir()
+        val locators = listOf(::locateWebUiDir, ::locateSpaWebUiDir)
+        fun assertMissingBuild() {
+            for (locate in locators) {
+                val failure = assertFailsWith<IllegalStateException> { locate(dir) }
+                assertEquals(
+                    "missing Web UI build at $dir; run npm ci and npm run build in webui/",
+                    failure.message,
+                )
+            }
+        }
+        try {
+            writeFile("$dir/project.yaml", "modules: []\n")
+            assertMissingBuild()
+            for (path in listOf("resources", "resources/webui")) {
+                assertEquals(0, mkdir("$dir/$path", MODE_0700.convert()))
+            }
+            assertMissingBuild()
+            writeFile("$dir/resources/webui/index.html", "<!doctype html>")
+            assertMissingBuild()
+            assertEquals(0, mkdir("$dir/resources/webui/assets", MODE_0700.convert()))
+            for (locate in locators) assertEquals("$dir/resources/webui", locate(dir))
+            assertEquals(0, unlink("$dir/resources/webui/index.html"))
+            assertMissingBuild()
+        } finally {
+            unlink("$dir/project.yaml")
+            unlink("$dir/resources/webui/index.html")
+            for (path in listOf("resources/webui/assets", "resources/webui", "resources")) {
+                rmdir("$dir/$path")
+            }
+            rmdir(dir)
+        }
+    }
+
     @Test
     fun daemonServesIndexHtmlAtRoot() = withServer { ctx ->
         val resp = ctx.get("/")
@@ -68,72 +106,28 @@ class WebUiServingTest {
         val body = resp.bodyAsText()
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
-        val rev = revisionOf(body)
-        assertTrue(
-            body.contains("src=\"/_v/$rev/app.js\""),
-            "index.html bootstraps app.js through its content-revisioned URL",
-        )
-        assertTrue(body.contains("/_v/$rev/vendor/xterm.js"), "index.html loads the vendored xterm.js")
+        assertEquals(body, ctx.get("/index.html").bodyAsText(), "the root serves the built shell")
         assertContentTypeContains(resp, "html")
     }
 
     @Test
-    fun daemonServesTheAppEntryModule() = withServer { ctx ->
-        val resp = ctx.get("/app.js")
-        assertEquals(HttpStatusCode.OK, resp.status, "GET /app.js is served")
-        assertContentTypeContains(resp, "javascript")
-        assertTrue(resp.bodyAsText().isNotEmpty(), "GET /app.js is not an empty file")
-        assertEquals(
-            "no-cache",
-            resp.headers[HttpHeaders.CacheControl],
-            "unprefixed, the entry module revalidates rather than being pinned in a browser cache",
-        )
-    }
-
-    @Test
-    fun theImportMapResolvesToVendoredModulesThatAreActuallyServed() = withServer { ctx ->
-        val index = ctx.get("/").bodyAsText()
-        assertTrue(index.contains("type=\"importmap\""), "index.html declares an import map")
-        val rev = revisionOf(index)
-
-        val mapped = mapOf(
-            "preact" to "/_v/$rev/vendor/preact.module.js",
-            "preact/hooks" to "/_v/$rev/vendor/preact-hooks.module.js",
-            "htm" to "/_v/$rev/vendor/htm.module.js",
-            "htm/preact" to "/_v/$rev/vendor/htm-preact.module.js",
-            "@preact/signals-core" to "/_v/$rev/vendor/signals-core.module.js",
-            "@preact/signals" to "/_v/$rev/vendor/signals.module.js",
-            "qrcode" to "/_v/$rev/vendor/qrcode.module.js",
-        )
-        for ([specifier, path] in mapped) {
-            assertTrue(
-                index.contains("\"$specifier\": \"$path\""),
-                "the import map wires '$specifier' to $path",
-            )
-            val resp = ctx.get(path)
-            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (import-map target) is served")
-            assertContentTypeContains(resp, "javascript")
-            assertTrue(resp.bodyAsText().isNotEmpty(), "$path is not empty")
-        }
-    }
-
-    @Test
-    fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
-        for (path in listOf(
-            "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
-            "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
-            "/lib/clipboard.js", "/lib/unicode.js", "/lib/mutation.js", "/lib/readiness.js",
-            "/lib/router.js", "/lib/tasks.js", "/lib/typeahead.js", "/lib/reattach.js",
-            "/lib/refresh.js",
-            "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
-            "/components/dialogs.js", "/components/CommandPalette.js", "/components/Typeahead.js",
-            "/components/PathSuggestions.js",
-            "/components/Board.js", "/components/TaskCard.js", "/components/TaskDetail.js",
-        ) + STATE_MODULES) {
-            val resp = ctx.get(path)
-            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
-            assertContentTypeContains(resp, "javascript")
-            assertTrue(resp.bodyAsText().isNotEmpty(), "GET $path is not an empty file")
+    fun everyBuiltShellReferenceResolvesToAServedFile() = withServer { ctx ->
+        val shell = ctx.get("/").bodyAsText()
+        val paths = shellReferences(shell)
+        assertTrue(paths.any { it.startsWith("/assets/") && it.endsWith(".js") }, "the shell loads built JavaScript")
+        assertTrue(paths.any { it.startsWith("/assets/") && it.endsWith(".css") }, "the shell loads built CSS")
+        for (path in paths + listOf(
+            "/manifest.webmanifest", "/icons/logo.svg", "/icons/apple-touch-icon.png",
+            "/icons/icon-192.png", "/icons/icon-512.png", "/sw.js",
+        )) {
+            assertTrue(path.startsWith("/"), "$path resolves from deep links as well as the root")
+            val response = ctx.get(path)
+            assertEquals(HttpStatusCode.OK, response.status, "GET $path is served")
+            assertTrue(response.readRawBytes().isNotEmpty(), "$path is not empty")
+            when {
+                path.endsWith(".js") -> assertContentTypeContains(response, "javascript")
+                path.endsWith(".css") -> assertContentTypeContains(response, "css")
+            }
         }
     }
 
@@ -212,12 +206,9 @@ class WebUiServingTest {
             body.contains("viewport-fit=cover"),
             "the viewport reaches under the notch — the safe-area padding depends on it",
         )
-        val rev = revisionOf(body)
         assertTrue(
-            body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("href=\"/_v/$rev/style.css\"") &&
-                body.contains("src=\"/_v/$rev/app.js\""),
-            "the installed iOS app declares dark system UI and fetches content-revisioned assets",
+            body.contains("name=\"color-scheme\" content=\"dark\""),
+            "the installed iOS app declares dark system UI",
         )
         assertTrue(
             body.contains("href=\"/manifest.webmanifest\"") &&
@@ -229,20 +220,18 @@ class WebUiServingTest {
 
     @Test
     fun revisionedAssetsAreImmutableAndEverythingElseRevalidates() = withServer { ctx ->
-        val rev = revisionOf(ctx.get("/").bodyAsText())
-        for (path in listOf(
-            "/_v/$rev/app.js", "/_v/$rev/style.css",
-            "/_v/$rev/lib/api.js", "/_v/$rev/vendor/xterm.js",
-        )) {
+        val assets = shellReferences(ctx.get("/").bodyAsText()).filter { it.startsWith("/assets/") }
+        val rev = webUiRevision(locateWebUiDir())
+        for (asset in assets) {
+            val path = "/_v/$rev$asset"
             assertEquals(
                 IMMUTABLE_CACHE_CONTROL,
                 ctx.get(path).headers[HttpHeaders.CacheControl],
                 "GET $path is content-addressed, so it never has to be fetched twice",
             )
         }
-        for (path in listOf(
+        for (path in assets + listOf(
             "/", "/index.html", "/sw.js", "/manifest.webmanifest", "/icons/icon-192.png",
-            "/app.js", "/style.css",
         )) {
             assertEquals(
                 "no-cache",
@@ -260,24 +249,15 @@ class WebUiServingTest {
     }
 
     @Test
-    fun theServedShellCarriesARealRevisionAndNoHandBumpedToken() = withServer { ctx ->
-        val index = ctx.get("/").bodyAsText()
-        assertFalse(index.contains(WEBUI_REV_PLACEHOLDER), "the daemon substituted the revision placeholder")
-        assertFalse(index.contains("?v="), "no asset is fetched with a hand-bumped cache-busting query")
-        assertTrue(isRevToken(revisionOf(index)), "the substituted revision is a real content hash")
-
-        assertFalse(ctx.get("/app.js").bodyAsText().contains("?v="), "app.js imports carry no query version")
-    }
-
-    @Test
     fun theRevisionPrefixOnlyChangesTheAddress() = withServer { ctx ->
-        val rev = revisionOf(ctx.get("/").bodyAsText())
+        val asset = shellReferences(ctx.get("/").bodyAsText()).first { it.endsWith(".js") }
+        val rev = webUiRevision(locateWebUiDir())
         assertEquals(
-            ctx.get("/app.js").bodyAsText(),
-            ctx.get("/_v/$rev/app.js").bodyAsText(),
+            ctx.get(asset).bodyAsText(),
+            ctx.get("/_v/$rev$asset").bodyAsText(),
             "the revisioned URL serves the very same module",
         )
-        val stale = ctx.get("/_v/0123456789ab/app.js")
+        val stale = ctx.get("/_v/0123456789ab$asset")
         assertEquals(HttpStatusCode.OK, stale.status, "an older revision's URL still serves its asset")
         assertEquals(
             "no-cache",
@@ -285,7 +265,7 @@ class WebUiServingTest {
             "a well-formed revision the tree no longer has must revalidate",
         )
 
-        val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}/app.js")
+        val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}$asset")
         assertEquals(HttpStatusCode.OK, bogus.status, "a malformed revision still serves the asset")
         assertEquals(
             "no-cache",
@@ -404,53 +384,10 @@ class WebUiServingTest {
     }
 
     @Test
-    fun daemonServesTheVendoredXtermFromANestedPath() = withServer { ctx ->
-        val resp = ctx.get("/vendor/xterm.js")
-        assertEquals(HttpStatusCode.OK, resp.status, "GET /vendor/xterm.js (nested) is served")
-        val body = resp.bodyAsText()
-        assertTrue(body.length > 50_000, "the real vendored xterm.js bundle is substantial, was ${body.length} bytes")
-        assertTrue(body.contains("Terminal"), "the vendored bundle exposes the Terminal API")
-        assertContentTypeContains(resp, "javascript")
-    }
-
-    @Test
-    fun theUnicodeAddonsAreVendoredAndServed() = withServer { ctx ->
-        for (path in listOf(
-            "/vendor/addon-unicode11.module.js",
-            "/vendor/addon-unicode-graphemes.module.js",
-        )) {
-            val resp = ctx.get(path)
-            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (the vendored addon) is served")
-            assertContentTypeContains(resp, "javascript")
-            assertTrue(resp.bodyAsText().length > 20_000, "$path carries the real width tables")
-        }
-        assertTrue(
-            ctx.get("/vendor/addon-unicode11.module.js").bodyAsText().contains("as Unicode11Addon"),
-            "the vendored ESM build exports the name lib/unicode.js constructs",
-        )
-        assertTrue(
-            ctx.get("/vendor/addon-unicode-graphemes.module.js").bodyAsText()
-                .contains("as UnicodeGraphemesAddon"),
-            "the vendored graphemes ESM build exports the name lib/unicode.js constructs",
-        )
-    }
-
-    @Test
-    fun daemonServesTheStylesheets() = withServer { ctx ->
-        val appCss = ctx.get("/style.css")
-        assertEquals(HttpStatusCode.OK, appCss.status, "GET /style.css is served")
-        assertContentTypeContains(appCss, "css")
-
-        val xtermCss = ctx.get("/vendor/xterm.css")
-        assertEquals(HttpStatusCode.OK, xtermCss.status, "GET /vendor/xterm.css (nested) is served")
-        assertContentTypeContains(xtermCss, "css")
-    }
-
-    @Test
     fun aMissingStaticFileIs404() = withServer { ctx ->
         assertEquals(
             HttpStatusCode.NotFound,
-            ctx.get("/vendor/does-not-exist.js").status,
+            ctx.get("/assets/does-not-exist.js").status,
             "an unknown static path is a clean 404, not a crash",
         )
     }
@@ -625,19 +562,24 @@ private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
 private const val MODE_0700: Int = 0b111_000_000
 
-private val STATE_MODULES: List<String> = listOf(
-    "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
-    "/state/selection.js", "/state/dialog.js", "/state/status.js", "/state/prefs.js",
-)
-
-private fun locateWebUiDir(): String {
-    var dir = currentDir()
+internal fun locateWebUiDir(startDir: String = currentDir()): String {
+    var dir = startDir
     repeat(6) {
-        val candidate = "$dir/resources/webui"
-        if (fileExists("$candidate/index.html")) return candidate
+        if (fileExists("$dir/project.yaml")) {
+            val candidate = "$dir/resources/webui"
+            check(
+                fileExists("$candidate/index.html") && fileExists("$candidate/assets/"),
+            ) { "missing Web UI build at $dir; run npm ci and npm run build in webui/" }
+            return candidate
+        }
         val parent = dir.substringBeforeLast('/', "")
-        if (parent.isEmpty() || parent == dir) return "resources/webui"
+        if (parent.isEmpty() || parent == dir) {
+            error("could not locate the Web UI from $startDir; run npm ci and npm run build in webui/")
+        }
         dir = parent
     }
-    return "resources/webui"
+    error("could not locate the Web UI from $startDir; run npm ci and npm run build in webui/")
 }
+
+internal fun shellReferences(shell: String): List<String> =
+    Regex("""(?:src|href)="([^"]+)"""").findAll(shell).map { it.groupValues[1] }.toList()

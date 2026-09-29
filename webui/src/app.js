@@ -1,3 +1,6 @@
+import "@xterm/xterm/css/xterm.css";
+import "./style.css";
+
 import { render } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";

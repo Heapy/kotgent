@@ -1,4 +1,4 @@
-// Pure rules from resources/webui/lib/tasks.js: the board's revision merges and its state vocabulary.
+// Pure rules from webui/src/lib/tasks.js: the board's revision merges and its state vocabulary.
 // The module imports apiRequest, but only calls it inside request functions, so importing it here never
 // reaches window or fetch. Nothing exercised below performs I/O.
 
@@ -15,7 +15,7 @@ import {
   taskStateLabel,
   taskStateRank,
   upsertTaskIfNewer,
-} from "../../resources/webui/lib/tasks.js";
+} from "../../webui/src/lib/tasks.js";
 import { listOf, taskRow } from "./fixtures.js";
 
 describe("upsertTaskIfNewer", () => {

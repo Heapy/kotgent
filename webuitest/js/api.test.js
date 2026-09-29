@@ -1,4 +1,4 @@
-// The one place a 401 is answered (resources/webui/lib/api.js).
+// The one place a 401 is answered (webui/src/lib/api.js).
 //
 // Thirty call sites reach the daemon through apiRequest and none of them can be trusted to recognise an
 // expired cookie on their own: the reattach probe asked only `isDefiniteAnswer`, which is true for any
@@ -10,7 +10,7 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { apiRequest, isUnauthenticated, setSignOutHandler } from "../../resources/webui/lib/api.js";
+import { apiRequest, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.js";
 
 const realFetch = globalThis.fetch;
 

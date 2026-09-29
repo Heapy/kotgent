@@ -26,6 +26,11 @@ binary="$stage/$name/kotgent"
 test -x "$binary"
 test -s "$stage/$name/resources/webui/index.html"
 test -s "$stage/$name/resources/webui/sw.js"
+assets="$stage/$name/resources/webui/assets"
+[[ -d "$assets" && -n $(find "$assets" -type f -print -quit) ]] || {
+    printf 'missing or empty Web UI assets directory: %s\n' "$assets" >&2
+    exit 1
+}
 cd "$stage"
 actual_version=$("$binary" --version)
 [[ "$actual_version" == "kotgent $version" ]] || {

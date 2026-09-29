@@ -9,7 +9,7 @@ import {
   sessionTaskLinkOutcome,
   sessionTaskLinkSubmitBlocked,
   taskMatchesQuery,
-} from "../../resources/webui/lib/sessions.js";
+} from "../../webui/src/lib/sessions.js";
 import { sessionRow } from "./fixtures.js";
 import { underTurkishFold } from "./turkish-fold.js";
 

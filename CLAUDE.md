@@ -12,11 +12,12 @@ the common workflow and links to those guides; implementation invariants belong 
 
 - This is a Kotlin/Native project built with Kotlin Toolchain 0.12.2. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
-- Run `./kotlin build -p <host-target> -p jvm` before `./kotlin test -p <host-target> -p jvm`
+- Run `npm ci --prefix webui`, `npm run build --prefix webui`,
+  `./kotlin build -p <host-target> -p jvm`, then `./kotlin test -p <host-target> -p jvm` in that order
   (`macosArm64` on macOS, `linuxX64` on Linux): the `webuitest` browser tier executes the `webuicheck`
-  binary, and no test task builds it. Every other tier runs from `./kotlin test` alone.
-- Run `node --check <file>` for every changed JavaScript module. The Web UI deliberately has no npm
-  build; browser behavior is tested in `webuitest`.
+  binary, and no test task builds it.
+- Run `npm run build --prefix webui` for changed `webui/src` modules and `node --check` for changed
+  `webui/public/sw.js` or `webuitest/js/*.js`; browser behavior is tested in `webuitest`.
 - Run browser-independent tests from the repository root with
   `node --test 'webuitest/js/**/*.test.js'`; see [docs/TESTING.md](docs/TESTING.md) for the runner contract.
 - Never overlap `./kotlin` invocations, including across worktrees: they share build output. Keep aggregate
@@ -145,33 +146,32 @@ the common workflow and links to those guides; implementation invariants belong 
 - A `/_v/<rev>/` asset is cached as immutable only when `<rev>` is the last served shell's revision and
   the served bytes match the digest that revision recorded for the path; anything else revalidates. The
   installer's directory swap does not provide this guarantee.
-- `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
+- `webui/src/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
-- Keep terminal reattachment decisions in `resources/webui/lib/reattach.js`; `app.js` supplies current
+- Keep terminal reattachment decisions in `webui/src/lib/reattach.js`; `app.js` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
   not spend a grant before a candidate exists, and keep probe guards ordered. A hidden page holds a
   resolved probe; among pending mutations only the control actions `affectsAttachment` names do. A
   candidate whose row is not alive is retired: stop cancels before the POST, and the pane dies before the
   answer, so the close lands after the cancel.
-- Use `resources/webui/lib/refresh.js` for unversioned sources such as projects. Reads are serial and a
+- Use `webui/src/lib/refresh.js` for unversioned sources such as projects. Reads are serial and a
   response overtaken by a later request is discarded. Each read owns its readiness token. A port that
   throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops
   the pump.
-- Event-stream recovery goes through `resources/webui/lib/resync.js`: one coordinator per source batches
+- Event-stream recovery goes through `webui/src/lib/resync.js`: one coordinator per source batches
   requests, serializes resynchronization and owns retries. Beside it, `resume.js` emits requests; `events.js`
   applies frames through state writers and completes after all three snapshots. Retired socket callbacks
   cannot publish. Wall-clock discontinuities request server time; they never supply usage time or freshness.
 - Session, task, project, usage, selection, dialog, status, and preference state lives in signals under
-  `resources/webui/state/`, one owner per concern; callers must use that module's writers.
-- A signal module imported by Node must import signals-core by relative path. That path must normalize to
-  the import map's target so browser code shares one reactive graph while Node can resolve the module.
+  `webui/src/state/`, one owner per concern; callers must use that module's writers.
+- State modules import `@preact/signals-core` directly and must share one reactive graph with
+  `@preact/signals`. The `overrides` pin in `webui/package.json` and
+  `webuitest/js/module-graph.test.js` guard that single-copy invariant.
 - Reading `.value` in a render body is what subscribes a component to a signal. `app.js`'s bare
   `import "@preact/signals"` installs the required Preact hooks and is load-bearing.
 - Only an application-level singleton may hold a bare `computed()`. Anything a component can mount more
   than once must derive with `useComputed`/`useSignal` from `@preact/signals`.
-- Vendored library versions are recorded once, in the `Vendored: …` comment in
-  `resources/webui/index.html` beside the import map that names each target. Do not add a per-file header
-  or a second list; two records drift.
+- Library versions use exact pins in `webui/package.json`, with resolutions in `webui/package-lock.json`.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
 - Usage has dedicated `usage_snapshot`/`usage_update` frames and no REST usage read. Subscribe before
@@ -190,7 +190,7 @@ the common workflow and links to those guides; implementation invariants belong 
 - `runMutation` owns the global mutation lock and holds it through a flow's follow-up read. It publishes
   the holder name but no currency token: late announcements use `announcementHolds`, conditional
   auto-selection uses the selection generation, and component lifetime uses `aliveRef`.
-- `resources/webui/lib/readiness.js` answers `idle | loading | ready | failed` with `retry()`, and is
+- `webui/src/lib/readiness.js` answers `idle | loading | ready | failed` with `retry()`, and is
   sticky at `ready`; a failed revalidation keeps usable rows, while an initial failure stays visible.
 - One typeahead-listbox primitive answers the command palette, both directory-path pickers and the
   session/task link picker. Keep rules framework-free in `lib/typeahead.js`, bind them in
@@ -205,8 +205,8 @@ the common workflow and links to those guides; implementation invariants belong 
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
 - ADHD-mode membership is decided when the list renders: a session is listed when its own flag is set or
   a folder head drawn above it is marked. Never fan out a folder mark to the sessions under it. The heads
-  come from `headChain` in `resources/webui/lib/paths.js`, which shares one head rule with `groupSessions`,
-  and the rules live in `resources/webui/lib/adhd.js`. With grouping off, folder marks cover nothing. A
+  come from `headChain` in `webui/src/lib/paths.js`, which shares one head rule with `groupSessions`,
+  and the rules live in `webui/src/lib/adhd.js`. With grouping off, folder marks cover nothing. A
   mark with no drawn head is inert and is never deleted by a grouping change; it acts again once its head
   is drawn. Marks are compared through `normalizePath`; a second path matcher would drift from the
   daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. A reduced screen hides

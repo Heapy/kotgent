@@ -1,8 +1,11 @@
 package io.kotgent.webuitest
 
+import com.google.gson.JsonParser
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
+import com.microsoft.playwright.WebSocket
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import java.net.URI
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.test.Test
@@ -15,10 +18,10 @@ class LayoutTest {
     @Test
     fun theFittedGridFillsTheHostMinusItsGutterAndClipsNoRow() {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-fit") { page ->
-                attachTerminal(page)
+            onDesktop(harness, "layout-fit") { page, geometry ->
+                attachTerminal(page, geometry)
 
-                val base = measureTerminal(page)
+                val base = measureTerminal(page, geometry)
                 assertFitInvariant(base, "the initial desktop viewport")
                 val cellHeight = base.num("gridHeight") / base.num("rows")
                 assertTrue(
@@ -32,8 +35,8 @@ class LayoutTest {
                 while (step <= maxSteps && rowCountsSeen.size < 2) {
                     val height = DESKTOP_HEIGHT - step
                     page.setViewportSize(DESKTOP_WIDTH, height)
-                    settleTerminal(page)
-                    val measured = measureTerminal(page)
+                    settleTerminal(page, geometry)
+                    val measured = measureTerminal(page, geometry)
                     assertFitInvariant(measured, "a ${DESKTOP_WIDTH}x$height viewport")
                     rowCountsSeen += measured.int("rows")
                     step += 1
@@ -52,10 +55,10 @@ class LayoutTest {
     @Test
     fun theLeftoverXtermViewportCanPaintNoScrollbarGutterBesideTheLastColumn() {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-viewport-gutter") { page ->
-                attachTerminal(page)
+            onDesktop(harness, "layout-viewport-gutter") { page, geometry ->
+                attachTerminal(page, geometry)
 
-                val measured = measureTerminal(page)
+                val measured = measureTerminal(page, geometry)
                 assertEquals(
                     1,
                     measured.int("viewportPresent"),
@@ -71,8 +74,8 @@ class LayoutTest {
                 assertEquals(
                     "hidden",
                     measured.str("viewportOverflowY"),
-                    "the empty viewport is stretched over .xterm's whole padding box, so the vendored " +
-                        "`overflow-y: scroll` paints a permanent scrollbar gutter down the right padding " +
+                    "the empty viewport is stretched over .xterm's whole padding box, so xterm's stylesheet " +
+                        "rule `overflow-y: scroll` paints a permanent scrollbar gutter down the right padding " +
                         "wherever the operating system draws scrollbars always — beside the last column, " +
                         "which is exactly where an operator reads",
                 )
@@ -88,7 +91,7 @@ class LayoutTest {
     @Test
     fun theMobileDrawerOpensAndClosesFromEachOfItsThreeControls() {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            onPhone(harness, "layout-drawer") { page ->
+            onPhone(harness, "layout-drawer") { page, _ ->
                 assertThat(page.locator("#sidebar-toggle")).isHidden()
                 assertThat(page.locator("#drawer-toggle")).isVisible()
                 assertThat(page.locator("#sidebar")).isHidden()
@@ -167,7 +170,7 @@ class LayoutTest {
     @Test
     fun theSidebarPinsItsHeaderAndUsageAroundTheSessionsAndTasksScrollersOnDesktop() {
         Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-sidebar-scroll-desktop") { page ->
+            onDesktop(harness, "layout-sidebar-scroll-desktop") { page, _ ->
                 exercisePinnedSidebar(harness, page, mobile = false)
             }
         }
@@ -176,7 +179,7 @@ class LayoutTest {
     @Test
     fun theSidebarPinsItsHeaderAndUsageInsideTheMobileDrawer() {
         Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
-            onPhone(harness, "layout-sidebar-scroll-phone") { page ->
+            onPhone(harness, "layout-sidebar-scroll-phone") { page, _ ->
                 exercisePinnedSidebar(harness, page, mobile = true)
             }
         }
@@ -185,7 +188,7 @@ class LayoutTest {
     @Test
     fun theDesktopSidebarCollapsesAndANarrowedWindowStillOpensAFullDrawer() {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-collapse") { page ->
+            onDesktop(harness, "layout-collapse") { page, _ ->
                 assertThat(page.locator("#drawer-toggle")).isHidden()
                 assertThat(page.locator("#sidebar-toggle")).isVisible()
 
@@ -248,8 +251,8 @@ class LayoutTest {
     @Test
     fun theCardsInsetTheShellWithoutPaddingTheMeasuredTerminalParent() {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-cards") { page ->
-                attachTerminal(page)
+            onDesktop(harness, "layout-cards") { page, geometry ->
+                attachTerminal(page, geometry)
 
                 val desktop = measureShell(page)
                 for ([edge, inset] in listOf(
@@ -275,7 +278,7 @@ class LayoutTest {
                 )
 
                 page.setViewportSize(PHONE_WIDTH, PHONE_HEIGHT)
-                settleTerminal(page)
+                settleTerminal(page, geometry)
                 val phone = measureShell(page)
                 assertTrue(
                     abs(phone.num("paneLeft") - phone.num("appLeft")) <= EDGE_EPS &&
@@ -290,7 +293,7 @@ class LayoutTest {
                     "the phone drawer never enables a composite blur over a repainting terminal",
                 )
 
-                assertFitInvariant(measureTerminal(page), "the phone viewport")
+                assertFitInvariant(measureTerminal(page, geometry), "the phone viewport")
             }
         }
     }
@@ -298,16 +301,18 @@ class LayoutTest {
     @Test
     fun theTerminalFontPreferenceReshapesTheLiveGridWithoutBuildingANewTerminal() {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-font") { page ->
-                attachTerminal(page)
+            onDesktop(harness, "layout-font") { page, geometry ->
+                attachTerminal(page, geometry)
 
-                val before = measureTerminal(page)
+                val before = measureTerminal(page, geometry)
                 assertEquals(
                     DEFAULT_TERMINAL_FONT_SIZE.toDouble(),
                     before.num("fontSize"),
                     "the fixture starts on the default terminal font step",
                 )
-                assertEquals(1, before.int("terminals"), "exactly one terminal has been constructed")
+                val terminal = page.locator("#terminal-host .xterm")
+                assertThat(terminal).hasCount(1)
+                terminal.evaluate("el => { el.dataset.layoutIdentity = 'original'; }")
 
                 page.locator("#palette-button").click()
                 assertThat(page.locator("#command-palette")).isVisible()
@@ -318,8 +323,8 @@ class LayoutTest {
                 assertThat(page.locator("#prefs-dialog")).hasCount(0)
 
                 page.waitForFunction(fontSizeApplied(LARGEST_TERMINAL_FONT_SIZE))
-                settleTerminal(page)
-                val after = measureTerminal(page)
+                settleTerminal(page, geometry)
+                val after = measureTerminal(page, geometry)
 
                 assertEquals(
                     "16px",
@@ -328,12 +333,8 @@ class LayoutTest {
                         "Safari zooms on focus and corrupts the viewport geometry above",
                 )
 
-                assertEquals(
-                    1,
-                    after.int("terminals"),
-                    "a font change must reuse the live terminal — a second construction means the " +
-                        "attachment, and its upstream WebSocket, was torn down and rebuilt",
-                )
+                assertThat(terminal).hasCount(1)
+                assertThat(terminal).hasAttribute("data-layout-identity", "original")
                 assertTrue(
                     after.num("cols") < before.num("cols") && after.num("rows") < before.num("rows"),
                     "a larger cell in the same box is a smaller grid: " +
@@ -353,11 +354,11 @@ class LayoutTest {
     @Test
     fun theDevicePreferencesAreStoredInThisBrowserAndSurviveAReload() {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-device-prefs") { page ->
-                attachTerminal(page)
+            onDesktop(harness, "layout-device-prefs") { page, geometry ->
+                attachTerminal(page, geometry)
                 assertEquals(
                     DEFAULT_TERMINAL_FONT_SIZE.toDouble(),
-                    measureTerminal(page).num("fontSize"),
+                    measureTerminal(page, geometry).num("fontSize"),
                     "the fixture starts on the default terminal font step",
                 )
 
@@ -372,14 +373,14 @@ class LayoutTest {
                 page.waitForFunction(fontSizeApplied(LARGEST_TERMINAL_FONT_SIZE))
 
                 page.reload()
-                attachTerminal(page)
+                attachTerminal(page, geometry)
 
                 // A fresh page: nothing in memory carries these over, so the terminal it builds can only
                 // be this large because loadPrefs read back what the save wrote.
                 page.waitForFunction(fontSizeApplied(LARGEST_TERMINAL_FONT_SIZE))
                 assertEquals(
                     LARGEST_TERMINAL_FONT_SIZE.toDouble(),
-                    measureTerminal(page).num("fontSize"),
+                    measureTerminal(page, geometry).num("fontSize"),
                     "the stored font step is the one the reloaded terminal was built with",
                 )
 
@@ -397,7 +398,7 @@ class LayoutTest {
     @Test
     fun theNotificationsToggleWearsTheShellsOwnAccentInBothStates() {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            onDesktop(harness, "layout-notify") { page ->
+            onDesktop(harness, "layout-notify") { page, _ ->
                 val toggle = page.locator("#notify-toggle")
                 assertThat(toggle).isVisible()
                 assertThat(toggle).hasAttribute("aria-pressed", "false")
@@ -474,7 +475,7 @@ class LayoutTest {
     @Test
     fun theArchiveToggleJoinsTheHeaderRowOnAPhoneWithoutWrappingIt() {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            onPhone(harness, "layout-archive-toggle") { page ->
+            onPhone(harness, "layout-archive-toggle") { page, _ ->
                 // The row wraps by design on a phone, so an added button is exactly what could break it.
                 harness.send("done $ARCHIVED_SESSION_ID")
                 page.locator("#drawer-toggle").click()
@@ -541,35 +542,44 @@ private const val ARCHIVED_SESSION_ID = "s-delta"
 
 private const val SETTLE_QUIET_MILLIS = 220
 
-private val TERMINAL_HOOK = """
-    (() => {
-      const seen = [];
-      let real = null;
-      const Hooked = function (options) {
-        const term = new real(options);
-        seen.push(term);
-        return term;
-      };
-      window.__kotgentTerminals = seen;
-      Object.defineProperty(window, "Terminal", {
-        configurable: true,
-        get: () => (real === null ? undefined : Hooked),
-        set: (value) => { real = value; },
-      });
-    })();
-""".trimIndent()
+private class TerminalGeometry(page: Page) {
+    var size: Map<String, Int>? = null
+        private set
+
+    private var currentSocket: WebSocket? = null
+
+    init {
+        page.onWebSocket { socket ->
+            val url = URI.create(socket.url())
+            if (url.path != "/api/v1/sessions/$TERMINAL_SESSION_ID/terminal") return@onWebSocket
+            currentSocket = socket
+            val query = url.query.split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
+            size = mapOf("cols" to query.getValue("cols").toInt(), "rows" to query.getValue("rows").toInt())
+            socket.onFrameSent { frame ->
+                val text = frame.text() ?: return@onFrameSent
+                if (currentSocket !== socket) return@onFrameSent
+                val message = JsonParser.parseString(text).asJsonObject
+                if (message.get("type")?.asString == "resize") {
+                    size = mapOf("cols" to message.get("cols").asInt, "rows" to message.get("rows").asInt)
+                }
+            }
+            socket.onClose {
+                if (currentSocket === socket) size = null
+            }
+        }
+    }
+}
 
 private val SETTLE_RESET = "() => { window.__kotgentSettle = null; }"
 
 private val TERMINAL_SETTLED = """
-    () => {
+    (size) => {
       const host = document.querySelector("#terminal-host");
       const screen = host && host.querySelector(".xterm-screen");
-      const term = (window.__kotgentTerminals || []).slice(-1)[0];
-      if (!host || !screen || !term) return false;
+      if (!host || !screen || !size) return false;
       const h = host.getBoundingClientRect();
       const g = screen.getBoundingClientRect();
-      const key = [h.width, h.height, g.width, g.height, term.cols, term.rows].join("x");
+      const key = [h.width, h.height, g.width, g.height, size.cols, size.rows].join("x");
       const now = performance.now();
       const previous = window.__kotgentSettle;
       if (!previous || previous.key !== key) {
@@ -577,7 +587,7 @@ private val TERMINAL_SETTLED = """
         return false;
       }
       if (now - previous.since < $SETTLE_QUIET_MILLIS) return false;
-      return term.cols > 2 && host.querySelectorAll(".xterm-rows > div").length === term.rows;
+      return size.cols > 2 && host.querySelectorAll(".xterm-rows > div").length === size.rows;
     }
 """.trimIndent()
 
@@ -610,14 +620,13 @@ private val NOTIFY_TOGGLE_INACTIVE = """
 """.trimIndent()
 
 private val MEASURE_TERMINAL = """
-    () => {
+    (size) => {
       const host = document.querySelector("#terminal-host");
       const xterm = host && host.querySelector(".xterm");
       const screen = host && host.querySelector(".xterm-screen");
       const viewport = host && host.querySelector(".xterm-viewport");
       const rowEls = host ? host.querySelectorAll(".xterm-rows > div") : [];
-      const term = (window.__kotgentTerminals || []).slice(-1)[0];
-      if (!host || !xterm || !screen || rowEls.length === 0 || !term) return { ready: 0 };
+      if (!host || !xterm || !screen || rowEls.length === 0 || !size) return { ready: 0 };
       const xs = getComputedStyle(xterm);
       const hs = getComputedStyle(host);
       const h = host.getBoundingClientRect();
@@ -627,10 +636,9 @@ private val MEASURE_TERMINAL = """
       const last = rowEls[rowEls.length - 1].getBoundingClientRect();
       return {
         ready: 1,
-        cols: term.cols,
-        rows: term.rows,
-        fontSize: term.options.fontSize,
-        terminals: (window.__kotgentTerminals || []).length,
+        cols: size.cols,
+        rows: size.rows,
+        fontSize: parseFloat(getComputedStyle(rowEls[0]).fontSize),
         rowCount: rowEls.length,
         hostLeft: h.left, hostTop: h.top, hostRight: h.right, hostBottom: h.bottom,
         hostWidth: h.width, hostHeight: h.height,
@@ -864,8 +872,8 @@ private fun Locator.number(expression: String): Double = (evaluate(expression) a
 
 private fun fontSizeApplied(size: Int): String = """
     () => {
-      const term = (window.__kotgentTerminals || []).slice(-1)[0];
-      return !!term && term.options.fontSize === $size;
+      const row = document.querySelector("#terminal-host .xterm-rows > div");
+      return !!row && parseFloat(getComputedStyle(row).fontSize) === $size;
     }
 """.trimIndent()
 
@@ -891,11 +899,11 @@ private fun waitForDrawer(page: Page, open: Boolean) {
     page.waitForFunction(predicate)
 }
 
-private fun attachTerminal(page: Page) {
+private fun attachTerminal(page: Page, geometry: TerminalGeometry) {
     page.locator("#session-list .session-row[data-id='$TERMINAL_SESSION_ID']").click()
     assertThat(page.locator("#terminal-host .xterm")).isVisible()
     assertThat(page.locator("#terminal-host")).containsText(TERMINAL_BANNER)
-    settleTerminal(page)
+    settleTerminal(page, geometry)
 }
 
 private fun helperTextareaFontSize(page: Page): String = page.evaluate(
@@ -908,19 +916,18 @@ private fun helperTextareaFontSize(page: Page): String = page.evaluate(
     """.trimIndent(),
 ) as String
 
-private fun settleTerminal(page: Page) {
+private fun settleTerminal(page: Page, geometry: TerminalGeometry) {
     // The sampler is page-global, so stale geometry must not satisfy the next settle wait.
     page.evaluate(SETTLE_RESET)
-    page.waitForFunction(TERMINAL_SETTLED)
+    page.waitForCondition { page.evaluate(TERMINAL_SETTLED, geometry.size) == true }
 }
 
-private fun measureTerminal(page: Page): PageValues {
-    val values = page.values(MEASURE_TERMINAL)
+private fun measureTerminal(page: Page, geometry: TerminalGeometry): PageValues {
+    val values = page.values(MEASURE_TERMINAL, geometry.size)
     assertEquals(
         1,
         values.int("ready"),
-        "the terminal, its grid box and the hooked Terminal instance must all exist before measuring; " +
-            "an empty __kotgentTerminals means the init-script hook never saw xterm publish its global",
+        "the rendered terminal grid and the geometry reported to the daemon must exist before measuring",
     )
     return values
 }
@@ -1024,10 +1031,10 @@ private fun assertFitInvariant(measured: PageValues, where: String) {
 }
 
 
-private fun onDesktop(harness: Harness, trace: String, block: (Page) -> Unit) =
+private fun onDesktop(harness: Harness, trace: String, block: (Page, TerminalGeometry) -> Unit) =
     onPage(harness, trace, DESKTOP_WIDTH, DESKTOP_HEIGHT, deviceScaleFactor = 1.0, mobile = false, block)
 
-private fun onPhone(harness: Harness, trace: String, block: (Page) -> Unit) =
+private fun onPhone(harness: Harness, trace: String, block: (Page, TerminalGeometry) -> Unit) =
     onPage(harness, trace, PHONE_WIDTH, PHONE_HEIGHT, deviceScaleFactor = 3.0, mobile = true, block)
 
 private fun onPage(
@@ -1037,17 +1044,17 @@ private fun onPage(
     height: Int,
     deviceScaleFactor: Double,
     mobile: Boolean,
-    block: (Page) -> Unit,
+    block: (Page, TerminalGeometry) -> Unit,
 ) {
     onChromium { browser ->
         browser.touchContext(width, height, deviceScaleFactor, mobile).use { context ->
             context.traced(trace) {
                 context.loginWithTicket(harness.ticket, harness.baseUrl)
                 val page = context.newPage()
-                page.addInitScript(TERMINAL_HOOK)
+                val geometry = TerminalGeometry(page)
                 page.navigate("${harness.baseUrl}/")
                 assertThat(page.locator("#terminal-pane")).isVisible()
-                block(page)
+                block(page, geometry)
             }
         }
     }
@@ -1069,8 +1076,8 @@ private class PageValues(private val raw: Map<String, Any?>, private val script:
     }
 }
 
-private fun Page.values(script: String): PageValues {
-    val result = evaluate(script)
+private fun Page.values(script: String, arg: Any? = null): PageValues {
+    val result = evaluate(script, arg)
         ?: fail("evaluating this script returned nothing at all\n  script: $script")
     if (result !is Map<*, *>) fail("expected an object from this script, got $result\n  script: $script")
     @Suppress("UNCHECKED_CAST")

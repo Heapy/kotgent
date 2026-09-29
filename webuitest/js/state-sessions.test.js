@@ -4,8 +4,8 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../resources/webui/vendor/signals-core.module.js";
-import { IDLE, READY } from "../../resources/webui/lib/readiness.js";
+import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { IDLE, READY } from "../../webui/src/lib/readiness.js";
 import {
   findSession,
   mergeSessionPatch,
@@ -13,7 +13,7 @@ import {
   replaceSessions,
   sessions,
   sessionsReadiness,
-} from "../../resources/webui/state/sessions.js";
+} from "../../webui/src/state/sessions.js";
 import {
   dropTask,
   findTask,
@@ -22,7 +22,7 @@ import {
   replaceTasks,
   tasks,
   tasksReadiness,
-} from "../../resources/webui/state/tasks.js";
+} from "../../webui/src/state/tasks.js";
 import {
   applyProjectRow,
   findProject,
@@ -31,7 +31,7 @@ import {
   projectsReadiness,
   removeProjectRow,
   replaceProjects,
-} from "../../resources/webui/state/projects.js";
+} from "../../webui/src/state/projects.js";
 import { patchFrame, sessionRow, taskRow } from "./fixtures.js";
 
 // Reset singleton values between tests.

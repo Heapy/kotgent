@@ -3,7 +3,7 @@
 // its result. The holder name drives UI guards; announcement, selection, and component-lifetime guards
 // remain separate.
 
-import { signal } from "../vendor/signals-core.module.js";
+import { signal } from "@preact/signals-core";
 
 export const MUTATION_BUSY_MESSAGE = "Another action is still in progress — try again in a moment.";
 

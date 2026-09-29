@@ -40,6 +40,12 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build the Web UI
+        run: |
+          npm ci --prefix webui
+          npm run build --prefix webui
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
         with:
@@ -136,6 +142,11 @@ jobs:
         with:
           name: arm64-checks
           path: build/arm64-checks
+      - name: Restore the built Web UI
+        run: |
+          mkdir -p resources
+          rm -rf resources/webui
+          cp -R build/arm64-checks/resources/webui resources/webui
       - uses: actions/download-artifact@v8
         with:
           name: package-linuxArm64

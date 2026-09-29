@@ -1,4 +1,4 @@
-import { batch, signal } from "../vendor/signals-core.module.js";
+import { batch, signal } from "@preact/signals-core";
 import { applyUsageSnapshot, atUsageReceipt, upsertUsageIfNewer } from "../lib/usage.js";
 
 export const usage = signal([]);

@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createSerialRefresh } from "../../resources/webui/lib/refresh.js";
+import { createSerialRefresh } from "../../webui/src/lib/refresh.js";
 import { deferred, flush } from "./fixtures.js";
 
 /** A recording adapter whose reads are resolved by hand, so ordering is chosen rather than raced. */

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Required for the safe-area padding used by the installed iOS PWA. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Kotgent</title>
+
+  <!-- iOS Web Push requires an installed PWA. -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <!-- Keep content below the status bar so WebKit can suppress its iOS 27 scroll-edge blur. -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="Kotgent" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#14171c" />
+</head>
+<body>
+  <div id="app" data-webui-marker="kotgent-webui"></div>
+  <div id="ios-status-bar-surface" aria-hidden="true"></div>
+
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>

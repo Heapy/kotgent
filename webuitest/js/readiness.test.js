@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../resources/webui/vendor/signals-core.module.js";
+import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
 import {
   FAILED,
   IDLE,
@@ -13,7 +13,7 @@ import {
   UNKNOWN_FAILURE,
   combineReadiness,
   createReadiness,
-} from "../../resources/webui/lib/readiness.js";
+} from "../../webui/src/lib/readiness.js";
 import { deferred } from "./fixtures.js";
 
 describe("createReadiness", () => {

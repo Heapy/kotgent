@@ -3,7 +3,6 @@ package io.kotgent.webuitest
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /** Proves two rendered typeahead hooks keep independent choices under real keyboard input. */
 class TypeaheadInstanceTest {
@@ -19,10 +18,12 @@ class TypeaheadInstanceTest {
                         page.navigate("${harness.baseUrl}/")
                         assertThat(page.locator("#empty-sessions")).isVisible(visibleWithin(BOOT_TIMEOUT_MS))
 
-                        val moduleUrl = page.evaluate(MOUNT_PICKERS) as String
-                        assertTrue(
-                            moduleUrl.endsWith("/components/Typeahead.js"),
-                            "the probe mounted the served hook, was '$moduleUrl'",
+                        val probeUrl = page.routeWebUiProbe("typeahead.js")
+                        val moduleUrl = page.evaluate("async url => (await import(url)).mount()", probeUrl)
+                        assertEquals(
+                            harness.baseUrl + probeUrl,
+                            moduleUrl,
+                            "the probe mounted the served Vite bundle built from the real typeahead hook",
                         )
 
                         assertThat(active("one", page)).hasText(FIRST)
@@ -43,11 +44,11 @@ class TypeaheadInstanceTest {
                         page.locator("#typeahead-probe-input-two").press("Enter")
                         assertEquals(
                             "one:$SECOND two:$THIRD",
-                            page.evaluate("() => window.__kotgentTypeaheadProbe.commits.join(' ')"),
+                            page.evaluate("async url => (await import(url)).commits.join(' ')", probeUrl),
                             "each Enter committed the row its own picker had active",
                         )
 
-                        page.evaluate(UNMOUNT_PICKERS)
+                        page.evaluate("async url => (await import(url)).unmount()", probeUrl)
                         assertThat(page.locator("#typeahead-probe")).hasCount(0)
                     }
                 }
@@ -64,57 +65,3 @@ class TypeaheadInstanceTest {
         const val THIRD = "local:3"
     }
 }
-
-// Identical option keys ensure resolveActiveKey cannot hide a shared signal behind its fallback.
-private val MOUNT_PICKERS: String = """
-    async () => {
-      const tag = document.querySelector('script[type="importmap"]');
-      if (!tag) throw new Error("the served page carries no import map");
-      const preact = await import(JSON.parse(tag.textContent).imports["preact"]);
-      const moduleUrl = new URL("/components/Typeahead.js", location.href).href;
-      const { useTypeahead } = await import(moduleUrl);
-
-      const host = document.createElement("div");
-      host.id = "typeahead-probe";
-      document.body.appendChild(host);
-
-      const probe = { commits: [], host: host, render: preact.render };
-      window.__kotgentTypeaheadProbe = probe;
-
-      const KEYS = ["local:1", "local:2", "local:3"];
-
-      function Picker(props) {
-        const typeahead = useTypeahead({
-          keys: KEYS,
-          onCommit: (key) => { probe.commits.push(props.name + ":" + key); },
-        });
-        return preact.h(
-          "div",
-          null,
-          preact.h("input", {
-            id: "typeahead-probe-input-" + props.name,
-            onKeyDown: typeahead.keyDown,
-          }),
-          preact.h(
-            "p",
-            { id: "typeahead-probe-active-" + props.name },
-            String(typeahead.activeKey),
-          ),
-        );
-      }
-
-      preact.render(
-        preact.h("div", null, preact.h(Picker, { name: "one" }), preact.h(Picker, { name: "two" })),
-        host,
-      );
-      return moduleUrl;
-    }
-""".trimIndent()
-
-private val UNMOUNT_PICKERS: String = """
-    () => {
-      const probe = window.__kotgentTypeaheadProbe;
-      probe.render(null, probe.host);
-      probe.host.remove();
-    }
-""".trimIndent()

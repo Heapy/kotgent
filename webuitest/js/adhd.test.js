@@ -1,10 +1,10 @@
-// ADHD-mode membership from resources/webui/lib/adhd.js. The rule decides which sessions the sidebar
+// ADHD-mode membership from webui/src/lib/adhd.js. The rule decides which sessions the sidebar
 // lists while the mode is on, and it touches neither the DOM nor the network, so it is proven here.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../resources/webui/lib/adhd.js";
+import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../webui/src/lib/adhd.js";
 import { sessionRow } from "./fixtures.js";
 
 const grouping = (basePath, groupingLevel, adhdPaths) => ({ basePath, groupingLevel, adhdPaths });

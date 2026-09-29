@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCommands } from "../../resources/webui/lib/commands.js";
+import { buildCommands } from "../../webui/src/lib/commands.js";
 
 function resumeCommand(state) {
   const session = { id: "s0", name: "kt-s0", agent: "claude", cwd: "/tmp", tags: [], state: state };

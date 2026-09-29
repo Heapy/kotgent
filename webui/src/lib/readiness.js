@@ -2,7 +2,7 @@
 // initial failure always carries a sentence. Attempt tokens reject stale outcomes, while tokenless pushed
 // snapshots are authoritative.
 
-import { signal } from "../vendor/signals-core.module.js";
+import { signal } from "@preact/signals-core";
 
 export const IDLE = "idle";
 export const LOADING = "loading";

@@ -3,6 +3,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 target=${1:?usage: package-native.sh <macosArm64|linuxX64|linuxArm64>}
+[[ -s resources/webui/index.html ]] || {
+    printf 'missing Web UI build; run npm ci and npm run build in webui/\n' >&2
+    exit 1
+}
 version=$(tr -d '\r\n' < version.txt)
 [[ "$version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { printf 'invalid version.txt\n' >&2; exit 1; }
 case "$target" in

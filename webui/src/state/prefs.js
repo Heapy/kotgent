@@ -1,6 +1,6 @@
 // Keep revisioned daemon preferences separate from unversioned device-local terminal settings.
 
-import { signal } from "../vendor/signals-core.module.js";
+import { signal } from "@preact/signals-core";
 import { createReadiness } from "../lib/readiness.js";
 import {
   loadPrefs,

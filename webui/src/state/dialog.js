@@ -1,6 +1,6 @@
 // A dialog descriptor is its identity, allowing async submissions to target their originating instance.
 
-import { signal } from "../vendor/signals-core.module.js";
+import { signal } from "@preact/signals-core";
 
 export const dialog = signal(null);
 

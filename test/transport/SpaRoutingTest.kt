@@ -43,8 +43,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import platform.posix.F_OK
-import platform.posix.access
 import platform.posix.getcwd
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -91,19 +89,17 @@ class SpaRoutingTest {
 
 
     @Test
-    fun aDeepLinkServesTheShellWithASubstitutedRevision() = withServer { ctx ->
+    fun aDeepLinkServesTheBuiltShell() = withServer { ctx ->
         val root = ctx.get("/")
         assertEquals(HttpStatusCode.OK, root.status)
         val shell = root.bodyAsText()
-        val rev = revisionOf(shell)
+        assertTrue(shell.contains("kotgent-webui"), "the root serves the built shell")
 
         for (path in listOf("/tasks", "/tasks/local:42", "/s/2f1c9b7e-0000-4000-8000-000000000001")) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "$path is a History-API route and serves the shell")
             val body = resp.bodyAsText()
             assertEquals(shell, body, "$path serves the very same shell as /")
-            assertFalse(body.contains(WEBUI_REV_PLACEHOLDER), "$path substituted the revision placeholder")
-            assertTrue(body.contains("/_v/$rev/app.js"), "$path carries the same content revision as /")
             assertEquals(
                 "no-cache",
                 resp.headers[HttpHeaders.CacheControl],
@@ -144,7 +140,8 @@ class SpaRoutingTest {
 
     @Test
     fun anExistingFileStillWinsOverTheGrammar() = withServer { ctx ->
-        val css = ctx.get("/style.css")
+        val path = shellReferences(ctx.get("/").bodyAsText()).first { it.endsWith(".css") }
+        val css = ctx.get(path)
         assertEquals(HttpStatusCode.OK, css.status)
         assertContentTypeContains(css, "css")
         assertFalse(css.bodyAsText().contains("<!DOCTYPE html>"), "a real file is served, not the shell")
@@ -152,9 +149,10 @@ class SpaRoutingTest {
 
     @Test
     fun theRoutesChangeNothingAboutRevisionedCachingOrTheStableUrls() = withServer { ctx ->
-        val rev = revisionOf(ctx.get("/").bodyAsText())
+        val path = shellReferences(ctx.get("/").bodyAsText()).first { it.endsWith(".js") }
+        val rev = webUiRevision(locateSpaWebUiDir())
 
-        val asset = ctx.get("/_v/$rev/app.js")
+        val asset = ctx.get("/_v/$rev$path")
         assertEquals(HttpStatusCode.OK, asset.status)
         assertEquals(
             IMMUTABLE_CACHE_CONTROL,
@@ -240,18 +238,6 @@ class SpaRoutingTest {
         assertTrue(ct.contains(needle, ignoreCase = true), "content-type '$ct' should mention '$needle'")
     }
 
-    private fun revisionOf(index: String): String {
-        val marker = "src=\"/_v/"
-        val at = index.indexOf(marker)
-        assertTrue(at >= 0, "index.html fetches its assets through the revision prefix")
-        val rest = index.substring(at + marker.length)
-        val end = rest.indexOf('/')
-        assertTrue(end > 0, "the revision prefix names a path underneath it")
-        val rev = rest.substring(0, end)
-        assertTrue(isRevToken(rev), "the served shell carries a real revision, not the placeholder")
-        return rev
-    }
-
     private fun unusedTasks(): FakeTaskStore = FakeTaskStore().also {
         it.interceptor = ForbiddingInterceptor(TASK_STORE_METHODS) { store, method ->
             "the SPA routing test never calls $store.$method"
@@ -279,17 +265,4 @@ private fun spaTestCurrentDir(): String = memScoped {
     buf.toKString()
 }
 
-@OptIn(ExperimentalForeignApi::class)
-private fun spaTestFileExists(path: String): Boolean = access(path, F_OK) == 0
-
-private fun locateSpaWebUiDir(): String {
-    var dir = spaTestCurrentDir()
-    repeat(6) {
-        val candidate = "$dir/resources/webui"
-        if (spaTestFileExists("$candidate/index.html")) return candidate
-        val parent = dir.substringBeforeLast('/', "")
-        if (parent.isEmpty() || parent == dir) return "resources/webui"
-        dir = parent
-    }
-    return "resources/webui"
-}
+internal fun locateSpaWebUiDir(startDir: String = spaTestCurrentDir()): String = locateWebUiDir(startDir)

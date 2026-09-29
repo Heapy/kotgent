@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRefreshCoordinator } from "../../resources/webui/lib/resync.js";
-import { createEventsConnection } from "../../resources/webui/lib/events.js";
-import { watchRefreshSources } from "../../resources/webui/lib/resume.js";
+import { createRefreshCoordinator } from "../../webui/src/lib/resync.js";
+import { createEventsConnection } from "../../webui/src/lib/events.js";
+import { watchRefreshSources } from "../../webui/src/lib/resume.js";
 
 function clock() {
   let now = 0;

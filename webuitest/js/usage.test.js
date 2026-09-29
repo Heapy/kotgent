@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import {
   applyUsageSnapshot, atUsageReceipt, providerUsageStaleAt, upsertUsageIfNewer,
   usageTimeLeft, usageWindowSeconds, usageWindowTime,
-} from "../../resources/webui/lib/usage.js";
-import { mergeUsageWindow, replaceUsage, usage, usageClockOffset } from "../../resources/webui/state/usage.js";
-import { effect } from "../../resources/webui/vendor/signals-core.module.js";
+} from "../../webui/src/lib/usage.js";
+import { mergeUsageWindow, replaceUsage, usage, usageClockOffset } from "../../webui/src/state/usage.js";
+import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
 
 function window(overrides = {}) {
   return Object.freeze({

@@ -1,5 +1,5 @@
 // Preference sanitizing and the device-local ADHD-mode and attention-collapse flags from
-// resources/webui/lib/prefs.js. The rules decide what a daemon response is allowed to publish and what a
+// webui/src/lib/prefs.js. The rules decide what a daemon response is allowed to publish and what a
 // reload restores, and neither touches the DOM or the network.
 
 import { afterEach, describe, test } from "node:test";
@@ -15,7 +15,7 @@ import {
   persistAttentionCollapsed,
   sanitizePrefs,
   sanitizeServerPreferences,
-} from "../../resources/webui/lib/prefs.js";
+} from "../../webui/src/lib/prefs.js";
 
 const server = (overrides) => Object.assign({ basePath: "/work", groupingLevel: 1, revision: 3 }, overrides);
 

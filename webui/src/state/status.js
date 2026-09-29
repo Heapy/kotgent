@@ -1,6 +1,6 @@
 // The single aria-live announcement state.
 
-import { signal } from "../vendor/signals-core.module.js";
+import { signal } from "@preact/signals-core";
 
 export const EMPTY_STATUS = Object.freeze({ text: "", error: false });
 

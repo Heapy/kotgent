@@ -8,3 +8,5 @@ test-results/
 .idea
 .DS_Store
 docs/plans
+resources/webui/
+webui/node_modules/

@@ -57,11 +57,18 @@ if [[ $skip_install -eq 1 && $webui_only -eq 1 ]]; then
 fi
 
 if [[ $webui_only -eq 1 ]]; then
-    webui="$libexec/resources/webui"
     [[ -x "$libexec/kotgent" && -d "$libexec/resources" ]] || {
         printf 'install-local.sh: nothing installed at %s; run ./install-local.sh first\n' "$libexec" >&2
         exit 1
     }
+fi
+
+printf '==> building Web UI\n'
+npm ci --prefix webui
+npm run build --prefix webui
+
+if [[ $webui_only -eq 1 ]]; then
+    webui="$libexec/resources/webui"
     printf '==> replacing %s\n' "$webui"
     rm -rf "$webui.new" "$webui.old"
     cp -R resources/webui "$webui.new"

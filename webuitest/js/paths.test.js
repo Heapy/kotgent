@@ -1,4 +1,4 @@
-// Sidebar grouping from resources/webui/lib/paths.js. ADHD membership reads the same heads, so the tree
+// Sidebar grouping from webui/src/lib/paths.js. ADHD membership reads the same heads, so the tree
 // groupSessions draws is pinned here case by case.
 
 import { describe, test } from "node:test";
@@ -9,7 +9,7 @@ import {
   groupSessions,
   headChain,
   orderGroupsByRecentChange,
-} from "../../resources/webui/lib/paths.js";
+} from "../../webui/src/lib/paths.js";
 import { sessionRow } from "./fixtures.js";
 
 const at = (id, cwd, updatedAt) => sessionRow({ id: id, cwd: cwd, updatedAt: updatedAt });

@@ -8,6 +8,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -18,6 +19,8 @@ class WebUiLogicTest {
     fun theBrowserIndependentWebLogicSuitePasses() {
         assertNodeMeetsTheFloor()
         val root = locateRepoRoot()
+        val _ = requireWebUiBuild(root)
+        requireWebUiDependencies(root)
         val jsDir = root.resolve(JS_RELATIVE)
         val testFiles = listTestFiles(jsDir)
         assertTrue(
@@ -54,6 +57,56 @@ class WebUiLogicTest {
                 "once --test-timeout=${TEST_TIMEOUT_MILLIS}ms cuts it off$report",
         )
         assertEquals(0, result.exitCode, "node --test exited non-zero$report")
+    }
+
+    @Test
+    fun missingBuildOutputExplainsHowToBuildTheWebUi() {
+        val root = Files.createTempDirectory("kotgent-webui-build-test-")
+        fun assertMissingBuild() {
+            val failure = assertFailsWith<IllegalStateException> { requireWebUiBuild(root) }
+            assertEquals(
+                "missing Web UI build at $root; run npm ci and npm run build in webui/",
+                failure.message,
+            )
+        }
+        try {
+            assertMissingBuild()
+            val _ = Files.createDirectories(root.resolve("resources/webui"))
+            val _ = Files.writeString(root.resolve("resources/webui/index.html"), "<!doctype html>")
+            assertMissingBuild()
+            val _ = Files.createDirectories(root.resolve("resources/webui/assets"))
+            assertEquals(root.resolve("resources/webui"), requireWebUiBuild(root))
+            Files.delete(root.resolve("resources/webui/index.html"))
+            assertMissingBuild()
+        } finally {
+            Files.walk(root).use { paths ->
+                paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+            }
+        }
+    }
+
+    @Test
+    fun missingDependenciesExplainsHowToInstallTheWebUiPackages() {
+        val root = Files.createTempDirectory("kotgent-webui-dependencies-test-")
+        try {
+            val failure = assertFailsWith<IllegalStateException> { requireWebUiDependencies(root) }
+            assertEquals(
+                "missing Web UI dependencies at $root; run npm ci in webui/",
+                failure.message,
+            )
+            val _ = Files.createDirectories(root.resolve("webui/node_modules"))
+            requireWebUiDependencies(root)
+        } finally {
+            Files.walk(root).use { paths ->
+                paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+            }
+        }
+    }
+
+    private fun requireWebUiDependencies(root: Path) {
+        check(Files.isDirectory(root.resolve("webui/node_modules"))) {
+            "missing Web UI dependencies at $root; run npm ci in webui/"
+        }
     }
 
     // Check the runtime prerequisite before interpreting module parse failures.

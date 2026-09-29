@@ -3,13 +3,13 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../resources/webui/vendor/signals-core.module.js";
+import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
 import {
   MUTATION_BUSY_MESSAGE,
   pendingMutation,
   runMutation,
-} from "../../resources/webui/lib/mutation.js";
-import { buildCommands } from "../../resources/webui/lib/commands.js";
+} from "../../webui/src/lib/mutation.js";
+import { buildCommands } from "../../webui/src/lib/commands.js";
 import { deferred } from "./fixtures.js";
 
 async function settle(promise) {

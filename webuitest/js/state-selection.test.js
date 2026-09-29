@@ -4,9 +4,9 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../resources/webui/vendor/signals-core.module.js";
-import { DEFAULT_PREFS } from "../../resources/webui/lib/prefs.js";
-import { mergeSessionRow, replaceSessions } from "../../resources/webui/state/sessions.js";
+import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { DEFAULT_PREFS } from "../../webui/src/lib/prefs.js";
+import { mergeSessionRow, replaceSessions } from "../../webui/src/state/sessions.js";
 import {
   activeSession,
   activeSessionId,
@@ -14,14 +14,14 @@ import {
   pruneSelection,
   selectSessionId,
   selectionGeneration,
-} from "../../resources/webui/state/selection.js";
+} from "../../webui/src/state/selection.js";
 import {
   closeDialog,
   closeDialogFrom,
   dialog,
   openDialog,
-} from "../../resources/webui/state/dialog.js";
-import { EMPTY_STATUS, announcementHolds, say, status } from "../../resources/webui/state/status.js";
+} from "../../webui/src/state/dialog.js";
+import { EMPTY_STATUS, announcementHolds, say, status } from "../../webui/src/state/status.js";
 import {
   applyDevicePreferences,
   PREFS_APPLIED,
@@ -30,7 +30,7 @@ import {
   applyServerPreferences,
   prefs,
   serverPrefs,
-} from "../../resources/webui/state/prefs.js";
+} from "../../webui/src/state/prefs.js";
 
 // Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
 function sessionRow(overrides) {

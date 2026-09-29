@@ -1,6 +1,6 @@
 // This module is the sole owner of live session state; lib/sessions.js owns revision arithmetic.
 
-import { computed, signal } from "../vendor/signals-core.module.js";
+import { computed, signal } from "@preact/signals-core";
 import { READY, createReadiness } from "../lib/readiness.js";
 import { patchIfNewer, upsertIfNewer } from "../lib/sessions.js";
 
