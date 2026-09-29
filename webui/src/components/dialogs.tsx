@@ -1,7 +1,7 @@
 /* Dialog is the sole owner of the native imperative API. Light-dismiss gestures use the backdrop or
- * touch grabber and fail toward preserving drafts. htm copy interpolates literal `<` characters. */
+ * touch grabber and fail toward preserving drafts. Copy interpolates literal `<` characters. */
 
-import { html } from "htm/preact";
+import type { ComponentChildren, TargetedEvent } from "preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.ts";
@@ -26,6 +26,35 @@ import {
 import { qrSvg } from "../lib/qr.ts";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
 import { useTypeahead } from "./Typeahead.tsx";
+import type { TypeaheadResult } from "./Typeahead.tsx";
+import type { Preferences } from "../lib/prefs.ts";
+import type { ReadinessStatus } from "../lib/readiness.ts";
+import type { Session } from "../lib/sessions.ts";
+import type { Project, Task } from "../lib/tasks.ts";
+
+export interface DialogProps {
+  id: string;
+  labelledBy: string;
+  lightDismiss?: boolean;
+  onClose: () => void;
+  children?: ComponentChildren;
+}
+
+interface OutsidePress {
+  pointerId: number;
+  released: boolean;
+}
+
+interface DialogDrag {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  lastY: number;
+  lastAt: number;
+  velocity: number;
+  travel: number;
+  dragging: boolean;
+}
 
 const SWIPE_SLOP_PX = 8;
 const SWIPE_DISMISS_PX = 96;
@@ -40,11 +69,11 @@ function prefersReducedMotion() {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
-  const ref = useRef(null);
+export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }: DialogProps) {
+  const ref = useRef<HTMLDialogElement>(null);
   // Only one primary pointer's completed outside down-up-click may authorize dismissal.
-  const outsidePress = useRef(null);
-  const dragRef = useRef(null);
+  const outsidePress = useRef<OutsidePress | null>(null);
+  const dragRef = useRef<DialogDrag | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -60,7 +89,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   }, [onClose]);
 
   // Target alone is insufficient: panel drags and native select popups can end on the dialog.
-  const outside = (event) => {
+  const outside = (event: TargetedEvent<HTMLDialogElement, MouseEvent>) => {
     const el = ref.current;
     if (!el || event.target !== el) return false;
     const rect = el.getBoundingClientRect();
@@ -68,13 +97,13 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
       event.clientY < rect.top || event.clientY > rect.bottom;
   };
 
-  const springBack = (el, pointerId) => {
+  const springBack = (el: HTMLDialogElement, pointerId: number) => {
     if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
     el.style.transition = prefersReducedMotion() ? "none" : "transform 160ms ease-out";
     el.style.transform = "";
   };
 
-  const pointerDown = (event) => {
+  const pointerDown = (event: TargetedEvent<HTMLDialogElement, PointerEvent>) => {
     // Never arm dismissal while busy; work may finish between press and click.
     if (!lightDismiss) return;
     const isOutside = outside(event);
@@ -85,7 +114,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     // A second contact must not replace the swipe owner.
     if (dragRef.current) return;
     // Only the grabber reserves touch; the head and body must remain scrollable/interactable.
-    const from = event.target && event.target.closest ? event.target : null;
+    const from = event.target instanceof Element ? event.target : null;
     if (!from || !from.closest(".dialog-grabber")) return;
     dragRef.current = {
       pointerId: event.pointerId,
@@ -99,7 +128,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     };
   };
 
-  const pointerMove = (event) => {
+  const pointerMove = (event: TargetedEvent<HTMLDialogElement, PointerEvent>) => {
     const drag = dragRef.current;
     const el = ref.current;
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
@@ -132,7 +161,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     el.style.transform = "translateY(" + drag.travel + "px)";
   };
 
-  const pointerUp = (event) => {
+  const pointerUp = (event: TargetedEvent<HTMLDialogElement, PointerEvent>) => {
     // Only the arming pointer can complete or withdraw the backdrop press.
     const press = outsidePress.current;
     if (press && press.pointerId === event.pointerId) {
@@ -167,7 +196,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   // Platform cancellation restores rather than dismisses the draft.
-  const pointerCancel = (event) => {
+  const pointerCancel = (event: TargetedEvent<HTMLDialogElement, PointerEvent>) => {
     const press = outsidePress.current;
     if (press && press.pointerId === event.pointerId) outsidePress.current = null;
     const drag = dragRef.current;
@@ -178,7 +207,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     springBack(el, event.pointerId);
   };
 
-  const click = (event) => {
+  const click = (event: TargetedEvent<HTMLDialogElement, MouseEvent> & { pointerId?: number }) => {
     const press = outsidePress.current;
     outsidePress.current = null;
     if (!press || !press.released || !lightDismiss || !outside(event)) return;
@@ -187,23 +216,46 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     if (ref.current) ref.current.close();
   };
 
-  return html`
-    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
-            onPointerDown=${pointerDown} onPointerMove=${pointerMove}
-            onPointerUp=${pointerUp} onPointerCancel=${pointerCancel} onClick=${click}>
-      <div class="dialog-grabber" aria-hidden="true"></div>
-      ${children}
-    </dialog>
-  `;
+  return (
+    <dialog id={id} ref={ref} aria-labelledby={labelledBy} onPointerDown={pointerDown}
+      onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel}
+      onClick={click}><div class="dialog-grabber" aria-hidden="true" />{children}</dialog>
+  );
 }
 
+export interface StartSessionRequest {
+  agent: string;
+  cwd: string;
+  name: string | null;
+  tags: string[];
+  taskRef?: string;
+}
+
+export interface ImportSessionRequest {
+  agent: string;
+  providerSessionId: string;
+  cwd: string | null;
+  name: string | null;
+  tags: string[];
+}
+
+export interface NewSessionDialogProps {
+  initialCwd?: string | undefined;
+  initialMode?: "start" | "import" | undefined;
+  initialAgent?: string | undefined;
+  initialTaskRef?: string | null | undefined;
+  basePath: string;
+  onStart: (body: StartSessionRequest) => Promise<unknown>;
+  onImport: (body: ImportSessionRequest, registerOnly: boolean) => Promise<unknown>;
+  onClose: () => void;
+}
 
 /* Start and import share one form. taskRef belongs only to start requests; import discovers cwd from
  * the provider transcript unless the operator explicitly overrides it. */
 export function NewSessionDialog({
   initialCwd, initialMode = "start", initialAgent = "", initialTaskRef = null,
   basePath, onStart, onImport, onClose,
-}) {
+}: NewSessionDialogProps) {
   const [mode, setMode] = useState(initialMode);
   const [agent, setAgent] = useState(initialAgent);
   const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""));
@@ -211,11 +263,11 @@ export function NewSessionDialog({
   const [tags, setTags] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [registerOnly, setRegisterOnly] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const cwdRef = useRef(null);
-  const agentRef = useRef(null);
-  const sessionIdRef = useRef(null);
+  const cwdRef = useRef<HTMLInputElement>(null);
+  const agentRef = useRef<HTMLInputElement>(null);
+  const sessionIdRef = useRef<HTMLInputElement>(null);
   const cwdPicker = usePathSuggestions({
     id: "session-cwd",
     basePath: basePath,
@@ -232,18 +284,18 @@ export function NewSessionDialog({
     if (target) target.focus();
   }, []);
 
-  const cwdInput = (event) => {
-    const value = event.target.value;
+  const cwdInput = (event: TargetedEvent<HTMLInputElement, InputEvent>) => {
+    const value = event.currentTarget.value;
     setCwd(value);
     cwdPicker.onType(value);
   };
 
-  const chooseAgent = (event) => {
-    setAgent(event.target.value);
+  const chooseAgent = (event: TargetedEvent<HTMLInputElement>) => {
+    setAgent(event.currentTarget.value);
     setError(null);
   };
 
-  const switchMode = (next) => {
+  const switchMode = (next: "start" | "import") => {
     setMode(next);
     setError(null);
     if (next === "import" && AGENT_CHOICES.some(
@@ -254,7 +306,7 @@ export function NewSessionDialog({
     cwdPicker.reset();
   };
 
-  const submit = async (event) => {
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
     event.preventDefault();
     if (!agent) {
       // Report through the visible alert; native validation targets an invisible radio.
@@ -287,161 +339,168 @@ export function NewSessionDialog({
           tags: tagList,
         }, registerOnly);
       } else {
-        const body = { agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList };
+        const body: StartSessionRequest = { agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList };
         if (taskRef) body.taskRef = taskRef;
         await onStart(body);
       }
     } catch (e) {
       // Import errors are already user-facing; start failures retain their contextual prefix.
-      setError(mode === "import" ? errorMessage(e) : "Could not start session: " + errorMessage(e));
+      setError(mode === "import" ? errorMessage(e) as string : "Could not start session: " + errorMessage(e));
       setBusy(false);
     }
   };
 
-  return html`
-    <${Dialog} id="new-session-dialog" labelledBy="new-session-title" lightDismiss=${!busy}
-               onClose=${onClose}>
-      <form id="new-session-form" onSubmit=${submit}>
+  return (
+    <Dialog id="new-session-dialog" labelledBy="new-session-title" lightDismiss={!busy}
+      onClose={onClose}>
+      <form id="new-session-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="new-session-title">New session</h2>
-            <p>${mode === "import"
+            <p>
+              {mode === "import"
               ? "Register a conversation started outside kotgent and continue it here."
-              : "Start a coding agent in a tmux-backed workspace."}</p>
+              : "Start a coding agent in a tmux-backed workspace."}
+            </p>
           </div>
-          <button id="new-session-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="new-session-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
         <div class="dialog-mode" role="group" aria-label="New session mode">
-          <button id="new-session-mode-start" type="button" disabled=${busy}
-                  aria-pressed=${mode === "start" ? "true" : "false"}
-                  onClick=${() => switchMode("start")}>Start new</button>
-          <button id="new-session-mode-import" type="button" disabled=${busy}
-                  aria-pressed=${mode === "import" ? "true" : "false"}
-                  onClick=${() => switchMode("import")}>Import existing</button>
+          <button id="new-session-mode-start" type="button" disabled={busy}
+            aria-pressed={mode === "start" ? "true" : "false"} onClick={() => switchMode("start")}>Start new</button>
+          <button id="new-session-mode-import" type="button" disabled={busy}
+            aria-pressed={mode === "import" ? "true" : "false"} onClick={() => switchMode("import")}>Import existing</button>
         </div>
-
         <fieldset class="field agent-picker"
-                  aria-describedby=${agent ? null : "new-session-agent-hint"}>
+          aria-describedby={agent ? undefined : "new-session-agent-hint"}>
           <legend>Agent</legend>
           <div class="agent-options">
-            ${AGENT_CHOICES
+            {AGENT_CHOICES
               .filter((choice) => mode !== "import" || choice.importable !== false)
-              .map((choice) => html`
-              <label key=${choice.value}
-                     class=${"agent-option" + (choice.available ? "" : " agent-option-unavailable")}>
-                <input id=${"session-agent-" + choice.value} type="radio" name="session-agent"
-                       value=${choice.value} disabled=${!choice.available}
-                       aria-required=${choice.available ? "true" : null}
-                       ref=${choice.value === FIRST_AVAILABLE_AGENT ? agentRef : null}
-                       checked=${agent === choice.value} onChange=${chooseAgent} />
+              .map((choice) => (
+              <label key={choice.value}
+                class={"agent-option" + (choice.available ? "" : " agent-option-unavailable")}>
+                <input id={"session-agent-" + choice.value} type="radio" name="session-agent"
+                  value={choice.value} disabled={!choice.available}
+                  aria-required={choice.available ? "true" : undefined}
+                  ref={choice.value === FIRST_AVAILABLE_AGENT ? agentRef : null}
+                  checked={agent === choice.value} onChange={chooseAgent} />
                 <span class="agent-option-content">
-                  <span class=${"agent-icon agent-icon-" + choice.value} aria-hidden="true">
-                    <svg viewBox=${choice.viewBox} focusable="false"><path d=${choice.icon} /></svg>
-                  </span>
+                  <span class={"agent-icon agent-icon-" + choice.value} aria-hidden="true"><svg viewBox={choice.viewBox} focusable="false"><path d={choice.icon} /></svg></span>
                   <span class="agent-option-name">
-                    ${choice.name}${!choice.available && html`<small>Soon</small>`}
+                    {choice.name}
+                    {!choice.available && (
+                      <small>Soon</small>
+                    )}
                   </span>
                 </span>
               </label>
-            `)}
+            ))}
           </div>
-          ${!agent && html`
-            <p id="new-session-agent-hint" class="field-hint">
-              ${mode === "import" ? "Pick the agent that owns the session." : "Pick one to start a session."}
-            </p>
-          `}
+          {!agent && (
+            <p id="new-session-agent-hint" class="field-hint">{mode === "import" ? "Pick the agent that owns the session." : "Pick one to start a session."}</p>
+          )}
         </fieldset>
-
-        ${mode === "import" && html`
+        {mode === "import" && (
           <label class="field">
             <span>Provider session id</span>
-            <input id="session-provider-id" type="text" required spellcheck=${false} autocomplete="off"
-                   placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" ref=${sessionIdRef}
-                   value=${sessionId} onInput=${(e) => setSessionId(e.target.value)} />
+            <input id="session-provider-id" type="text" required spellcheck={false}
+              autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              ref={sessionIdRef} value={sessionId} onInput={(e) => setSessionId(e.currentTarget.value)} />
             <small class="field-hint">
-              claude: the ${"<id>"}.jsonl transcript name under ~/.claude/projects — codex: the id in
-              the ${"rollout-<ts>-<id>"}.jsonl file name — junie: the directory name under
-              ~/.junie/sessions, e.g. ${"session-<date>-<time>-<suffix>"}. Shell sessions have no
-              provider id and cannot be imported.
+              {"claude: the "}
+              {"<id>"}
+              {`.jsonl transcript name under ~/.claude/projects — codex: the id in
+              the `}
+              {"rollout-<ts>-<id>"}
+              {`.jsonl file name — junie: the directory name under
+              ~/.junie/sessions, e.g. `}
+              {"session-<date>-<time>-<suffix>"}
+              {`. Shell sessions have no
+              provider id and cannot be imported.`}
             </small>
           </label>
-        `}
-
+        )}
         <div class="field">
           <label for="session-cwd">
-            Working directory${mode === "import" ? html` <small>optional</small>` : ""}
+            Working directory
+            {mode === "import" ? [
+              " ",
+              <small>optional</small>
+            ] : ""}
           </label>
           <div class="path-autocomplete">
-            <input id="session-cwd" type="text" required=${mode === "start"} spellcheck=${false}
-                   autocomplete="off"
-                   ...${cwdPicker.fieldProps}
-                   placeholder=${mode === "import"
+            <input id="session-cwd" type="text" required={mode === "start"} spellcheck={false}
+              autocomplete="off" {...cwdPicker.fieldProps}
+              placeholder={mode === "import"
                      ? "found from the transcript when omitted"
-                     : "/path/to/project"} ref=${cwdRef}
-                   value=${cwd} onInput=${cwdInput} />
-            <${PathSuggestions} picker=${cwdPicker} />
+                     : "/path/to/project"}
+              ref={cwdRef} value={cwd} onInput={cwdInput} />
+            <PathSuggestions picker={cwdPicker} />
           </div>
         </div>
-
         <label class="field">
-          <span>Name <small>optional</small></span>
-          <input id="session-name" type="text" maxlength="200" placeholder="Feature or task"
-                 value=${name} onInput=${(e) => setName(e.target.value)} />
+          <span>{"Name "}<small>optional</small></span>
+          <input id="session-name" type="text" maxlength={200} placeholder="Feature or task"
+            value={name} onInput={(e) => setName(e.currentTarget.value)} />
         </label>
-
         <label class="field">
-          <span>Tags <small>optional, comma-separated</small></span>
-          <input id="session-tags" type="text" placeholder="backend, urgent"
-                 value=${tags} onInput=${(e) => setTags(e.target.value)} />
+          <span>{"Tags "}<small>optional, comma-separated</small></span>
+          <input id="session-tags" type="text" placeholder="backend, urgent" value={tags}
+            onInput={(e) => setTags(e.currentTarget.value)} />
         </label>
-
-        ${mode === "start" && taskRef && html`
+        {mode === "start" && taskRef && (
           <div class="field">
             <span>Task</span>
             <p id="new-session-task-ref" class="field-hint">
-              This session will be linked to ${taskRef} — the link is written by the same request that
-              starts it, so a launch that fails leaves no link behind.
+              {"This session will be linked to "}
+              {taskRef}
+              {` — the link is written by the same request that
+              starts it, so a launch that fails leaves no link behind.`}
             </p>
           </div>
-        `}
-
-        ${mode === "import" && html`
+        )}
+        {mode === "import" && (
           <label class="field checkbox-field">
-            <input id="session-register-only" type="checkbox" checked=${registerOnly}
-                   onChange=${(e) => setRegisterOnly(e.target.checked)} />
+            <input id="session-register-only" type="checkbox" checked={registerOnly}
+              onChange={(e) => setRegisterOnly(e.currentTarget.checked)} />
             <span>
               Register only
               <small class="field-hint">
-                Skip the automatic resume and leave the session resumable — e.g. while the conversation
-                is still open in the terminal it was started in.
+                {`Skip the automatic resume and leave the session resumable — e.g. while the conversation
+                is still open in the terminal it was started in.`}
               </small>
             </span>
           </label>
-        `}
-
-        ${error && html`<p id="new-session-error" class="form-error" role="alert">${error}</p>`}
-
+        )}
+        {error && (
+          <p id="new-session-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
-          <button id="new-session-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
-          <button id="new-session-submit" class="button button-primary" type="submit" disabled=${busy}>
-            ${mode === "import"
+          <button id="new-session-cancel" class="button button-quiet" type="button" onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
+          <button id="new-session-submit" class="button button-primary" type="submit" disabled={busy}>
+            {mode === "import"
               ? (busy ? "Importing…" : "Import session")
               : (busy ? "Starting…" : "Start session")}
           </button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
-export function RenameSessionDialog({ session, onRename, onClose }) {
+export interface RenameSessionDialogProps {
+  session: Session;
+  onRename: (sessionId: string, name: string) => Promise<unknown>;
+  onClose: () => void;
+}
+
+export function RenameSessionDialog({ session, onRename, onClose }: RenameSessionDialogProps) {
   const [name, setName] = useState(session.name || "");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const inputRef = useRef(null);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const field = inputRef.current;
@@ -451,7 +510,7 @@ export function RenameSessionDialog({ session, onRename, onClose }) {
     }
   }, []);
 
-  const submit = async (event) => {
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
@@ -464,49 +523,52 @@ export function RenameSessionDialog({ session, onRename, onClose }) {
     }
   };
 
-  return html`
-    <${Dialog} id="rename-session-dialog" labelledBy="rename-session-title" lightDismiss=${!busy}
-               onClose=${onClose}>
-      <form id="rename-session-form" onSubmit=${submit}>
+  return (
+    <Dialog id="rename-session-dialog" labelledBy="rename-session-title" lightDismiss={!busy}
+      onClose={onClose}>
+      <form id="rename-session-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="rename-session-title">Rename session</h2>
             <p>Changes the label only. The conversation, its terminal and its history are untouched.</p>
           </div>
-          <button id="rename-session-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="rename-session-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
         <label class="field">
           <span>Name</span>
-          <input id="rename-session-name" type="text" maxlength="200"
-                 spellcheck=${false} autocomplete="off"
-                 autocapitalize="off" autoCorrect="off"
-                 placeholder="leave empty for the automatic name" ref=${inputRef}
-                 value=${name} onInput=${(e) => setName(e.target.value)} />
+          <input id="rename-session-name" type="text" maxlength={200} spellcheck={false}
+            autocomplete="off" autocapitalize="off" autoCorrect="off"
+            placeholder="leave empty for the automatic name" ref={inputRef} value={name}
+            onInput={(e) => setName(e.currentTarget.value)} />
         </label>
-
-        ${error && html`<p id="rename-session-error" class="form-error" role="alert">${error}</p>`}
-
+        {error && (
+          <p id="rename-session-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
           <button id="rename-session-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
+            onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
           <button id="rename-session-submit" class="button button-primary" type="submit"
-                  disabled=${busy}>${busy ? "Saving…" : "Save name"}</button>
+            disabled={busy}>{busy ? "Saving…" : "Save name"}</button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
-export function UploadFilesDialog({ session, onClose }) {
-  const [files, setFiles] = useState([]);
+export interface UploadFilesDialogProps {
+  session: Session;
+  onClose: () => void;
+}
+
+export function UploadFilesDialog({ session, onClose }: UploadFilesDialogProps) {
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
-  const inputRef = useRef(null);
-  const requestRef = useRef(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const requestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (inputRef.current) inputRef.current.focus();
@@ -515,14 +577,14 @@ export function UploadFilesDialog({ session, onClose }) {
     };
   }, []);
 
-  const selectedFiles = (event) => {
+  const selectedFiles = (event: TargetedEvent<HTMLInputElement>) => {
     setFiles(Array.from(event.currentTarget.files || []));
     setProgress("");
     setResult(null);
     setError(null);
   };
 
-  const submit = async (event) => {
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
     event.preventDefault();
     if (files.length === 0 || busy) return;
 
@@ -535,7 +597,7 @@ export function UploadFilesDialog({ session, onClose }) {
     const failures = [];
     try {
       for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
+        const file = files[index]!;
         setProgress("Uploading " + (index + 1) + " of " + files.length + ": " + file.name);
         try {
           await apiRequest(
@@ -567,50 +629,42 @@ export function UploadFilesDialog({ session, onClose }) {
     }
   };
 
-  return html`
-    <${Dialog} id="upload-dialog" labelledBy="upload-title" lightDismiss=${!busy} onClose=${onClose}>
-      <form id="upload-form" onSubmit=${submit}>
+  return (
+    <Dialog id="upload-dialog" labelledBy="upload-title" lightDismiss={!busy} onClose={onClose}>
+      <form id="upload-form" onSubmit={submit}>
         <div class="dialog-head">
-          <div>
-            <h2 id="upload-title">Upload files</h2>
-            <p>Send files from this device to the selected session.</p>
-          </div>
-          <button id="upload-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <div><h2 id="upload-title">Upload files</h2><p>Send files from this device to the selected session.</p></div>
+          <button id="upload-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
-        <p class="upload-destination">
-          Current folder <code>${session.cwd}</code>
-        </p>
-
+        <p class="upload-destination">{"Current folder "}<code>{session.cwd}</code></p>
         <label class="field">
-          <span>Files <small>up to 100 MiB each</small></span>
-          <input id="upload-files" class="file-input" type="file" multiple ref=${inputRef}
-                 disabled=${busy} onChange=${selectedFiles} />
-          <small class="field-hint">
-            Existing files are never replaced. Rename a file first if its name is already present.
-          </small>
+          <span>{"Files "}<small>up to 100 MiB each</small></span>
+          <input id="upload-files" class="file-input" type="file" multiple ref={inputRef}
+            disabled={busy} onChange={selectedFiles} />
+          <small class="field-hint">Existing files are never replaced. Rename a file first if its name is already present.</small>
         </label>
-
-        ${progress && html`<p class="upload-progress" role="status">${progress}</p>`}
-        ${result && html`<p class="upload-result" role="status">${result}</p>`}
-        ${error && html`<p id="upload-error" class="form-error upload-error" role="alert">${error}</p>`}
-
+        {progress && (
+          <p class="upload-progress" role="status">{progress}</p>
+        )}
+        {result && (
+          <p class="upload-result" role="status">{result}</p>
+        )}
+        {error && (
+          <p id="upload-error" class="form-error upload-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
-          <button id="upload-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>${busy ? "Cancel upload" : "Close"}</button>
+          <button id="upload-cancel" class="button button-quiet" type="button" onClick={onClose}>{busy ? "Cancel upload" : "Close"}</button>
           <button id="upload-submit" class="button button-primary" type="submit"
-                  disabled=${busy || files.length === 0}>
-            ${busy ? "Uploading…" : files.length > 1 ? "Upload " + files.length + " files" : "Upload file"}
-          </button>
+            disabled={busy || files.length === 0}>{busy ? "Uploading…" : files.length > 1 ? "Upload " + files.length + " files" : "Upload file"}</button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
 // Null means the task snapshot has not loaded; do not claim the backlog is empty.
-function taskKeptSentence(count) {
+function taskKeptSentence(count: number | null | undefined) {
   if (count === null || count === undefined) {
     return "Its tasks are kept, with their order, dependencies, comments and the sessions linked " +
       "to them.";
@@ -623,15 +677,22 @@ function taskKeptSentence(count) {
     "sessions linked to them.";
 }
 
-export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClose }) {
+export interface DeleteProjectDialogProps {
+  project: Project;
+  taskCount?: number | null;
+  onDelete: (projectId: string) => Promise<unknown>;
+  onClose: () => void;
+}
+
+export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClose }: DeleteProjectDialogProps) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const cancelRef = useRef(null);
+  const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   // Default focus stays on the non-destructive action.
   useEffect(() => { if (cancelRef.current) cancelRef.current.focus(); }, []);
 
-  const submit = async (event) => {
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
@@ -644,54 +705,64 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
     }
   };
 
-  return html`
-    <${Dialog} id="delete-project-dialog" labelledBy="delete-project-title" lightDismiss=${!busy}
-               onClose=${onClose}>
-      <form id="delete-project-form" onSubmit=${submit}>
+  return (
+    <Dialog id="delete-project-dialog" labelledBy="delete-project-title" lightDismiss={!busy}
+      onClose={onClose}>
+      <form id="delete-project-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="delete-project-title">Delete project</h2>
             <p>Takes it out of every selector. Nothing on disk is touched.</p>
           </div>
-          <button id="delete-project-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="delete-project-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
         <p class="dialog-subject">
-          <strong id="delete-project-name">${project.name || project.id}</strong>
-          <code id="delete-project-path">${project.path || "last-seen directory unknown"}</code>
+          <strong id="delete-project-name">{project.name || project.id}</strong>
+          <code id="delete-project-path">{project.path || "last-seen directory unknown"}</code>
         </p>
-
         <ul id="delete-project-facts" class="dialog-facts">
-          <li>${taskKeptSentence(taskCount)}</li>
+          <li>{taskKeptSentence(taskCount)}</li>
           <li>
-            Its <code>.kotgent.json</code> stays on disk. This writes nothing into the directory, and
-            a project whose directory is already gone is deleted just the same.
+            {"Its "}
+            <code>.kotgent.json</code>
+            {` stays on disk. This writes nothing into the directory, and
+            a project whose directory is already gone is deleted just the same.`}
           </li>
           <li>
-            Restore brings the project and all of that back, exactly as it is now. Adopting the same
+            {`Restore brings the project and all of that back, exactly as it is now. Adopting the same
             directory again from New project brings it back too, with the name in the file and this
-            checkout's path.
+            checkout's path.`}
           </li>
         </ul>
-
-        ${error && html`<p id="delete-project-error" class="form-error" role="alert">${error}</p>`}
-
+        {error && (
+          <p id="delete-project-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
           <button id="delete-project-cancel" class="button button-quiet" type="button"
-                  ref=${cancelRef} onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
+            ref={cancelRef} onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
           <button id="delete-project-submit" class="button button-danger" type="submit"
-                  disabled=${busy}>${busy ? "Deleting…" : "Delete project"}</button>
+            disabled={busy}>{busy ? "Deleting…" : "Delete project"}</button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
-export function RestoreProjectDialog({ onRestore, onClose }) {
-  const [state, setState] = useState({ status: "loading" });
-  const [busyId, setBusyId] = useState(null);
-  const [error, setError] = useState(null);
+export interface RestoreProjectDialogProps {
+  onRestore: (projectId: string) => Promise<unknown>;
+  onClose: () => void;
+}
+
+type RestoreProjectState =
+  | { status: "loading" }
+  | { status: "ready"; projects: Project[] }
+  | { status: "error"; message: string };
+
+export function RestoreProjectDialog({ onRestore, onClose }: RestoreProjectDialogProps) {
+  const [state, setState] = useState<RestoreProjectState>({ status: "loading" });
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   // Avoid state updates after the dismissible dialog unmounts.
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
@@ -702,16 +773,16 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
     try {
       const rows = await fetchProjects(true);
       if (!aliveRef.current) return;
-      setState({ status: "ready", projects: Array.isArray(rows) ? rows : [] });
+      setState({ status: "ready", projects: Array.isArray(rows) ? rows as Project[] : [] });
     } catch (e) {
       if (!aliveRef.current) return;
-      setState({ status: "error", message: errorMessage(e) });
+      setState({ status: "error", message: errorMessage(e) as string });
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const restore = async (project) => {
+  const restore = async (project: Project) => {
     if (busyId) return;
     setBusyId(project.id);
     setError(null);
@@ -724,69 +795,70 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
     }
   };
 
-  return html`
-    <${Dialog} id="restore-project-dialog" labelledBy="restore-project-title"
-               lightDismiss=${!busyId} onClose=${onClose}>
+  return (
+    <Dialog id="restore-project-dialog" labelledBy="restore-project-title" lightDismiss={!busyId}
+      onClose={onClose}>
       <div id="restore-project-form">
         <div class="dialog-head">
           <div>
             <h2 id="restore-project-title">Restore a deleted project</h2>
             <p>Clears the delete mark. The backlog comes back with it.</p>
           </div>
-          <button id="restore-project-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="restore-project-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
-        ${restoreProjectBody(state, busyId, restore, load)}
-        ${error && html`<p id="restore-project-error" class="form-error" role="alert">${error}</p>`}
-
+        {restoreProjectBody(state, busyId, restore, load)}
+        {error && (
+          <p id="restore-project-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
           <button id="restore-project-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>Close</button>
+            onClick={onClose}>Close</button>
         </div>
       </div>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
-function restoreProjectBody(state, busyId, restore, reload) {
+function restoreProjectBody(
+  state: RestoreProjectState,
+  busyId: string | null,
+  restore: (project: Project) => Promise<void>,
+  reload: () => Promise<void>,
+) {
   if (state.status === "loading") {
-    return html`<p id="restore-project-status" class="dialog-status">Reading deleted projects…</p>`;
+    return (
+      <p id="restore-project-status" class="dialog-status">Reading deleted projects…</p>
+    );
   }
   if (state.status === "error") {
-    return html`
-      <p id="restore-project-load-error" class="form-error" role="alert">
-        Could not read the deleted projects: ${state.message}
-      </p>
-      <button id="restore-project-retry" class="button" type="button" onClick=${reload}>Try again</button>
-    `;
+    return [
+      <p id="restore-project-load-error" class="form-error" role="alert">{"Could not read the deleted projects: "}{state.message}</p>,
+      <button id="restore-project-retry" class="button" type="button" onClick={reload}>Try again</button>
+    ];
   }
   if (state.projects.length === 0) {
-    return html`
-      <p id="restore-project-empty" class="dialog-empty">
-        No deleted projects. Only a project delete puts one here, so there is nothing to bring back.
-      </p>
-    `;
+    return (
+      <p id="restore-project-empty" class="dialog-empty">No deleted projects. Only a project delete puts one here, so there is nothing to bring back.</p>
+    );
   }
-  return html`
+  return (
     <ul id="restore-project-list" class="dialog-list">
-      ${state.projects.map((project) => html`
-        <li key=${project.id}>
-          <button class="dialog-list-row" type="button" data-id=${project.id}
-                  disabled=${!!busyId} onClick=${() => restore(project)}>
-            <span class="dialog-list-name">${project.name || project.id}</span>
-            <span class="dialog-list-sub">${project.path || "last-seen directory unknown"}</span>
-            <span class="dialog-list-action">
-              ${busyId === project.id ? "Restoring…" : "Restore"}
-            </span>
+      {state.projects.map((project) => (
+        <li key={project.id}>
+          <button class="dialog-list-row" type="button" data-id={project.id} disabled={!!busyId}
+            onClick={() => restore(project)}>
+            <span class="dialog-list-name">{project.name || project.id}</span>
+            <span class="dialog-list-sub">{project.path || "last-seen directory unknown"}</span>
+            <span class="dialog-list-action">{busyId === project.id ? "Restoring…" : "Restore"}</span>
           </button>
         </li>
-      `)}
+      ))}
     </ul>
-  `;
+  );
 }
 
-function openTasksForProject(tasks) {
+function openTasksForProject(tasks: Task[] | null | undefined) {
   return (tasks || [])
     .filter((task) => task && isOpenTaskState(task.state))
     .sort((left, right) => {
@@ -795,10 +867,22 @@ function openTasksForProject(tasks) {
     });
 }
 
-function linkSessionChanged(initial, current) {
+function linkSessionChanged(initial: Session | null | undefined, current: Session | null | undefined) {
   if (!initial || !current || initial.id !== current.id) return true;
   return initial.projectId !== current.projectId ||
     sessionTaskLinkDisabledReason(current) !== null;
+}
+
+export interface LinkTaskDialogProps {
+  initialSession: Session;
+  session: Session | null | undefined;
+  tasks?: readonly Task[];
+  tasksStatus?: ReadinessStatus;
+  projectsStatus?: ReadinessStatus;
+  projectActive?: boolean;
+  onRetryProjects: () => unknown;
+  onLink: (sessionId: string, taskRef: string, projectId: string | null) => Promise<unknown>;
+  onClose: () => void;
 }
 
 export function LinkTaskDialog({
@@ -811,14 +895,14 @@ export function LinkTaskDialog({
   onRetryProjects,
   onLink,
   onClose,
-}) {
+}: LinkTaskDialogProps) {
   const [query, setQuery] = useState("");
-  const [error, setError] = useState(null);
-  const inputRef = useRef(null);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   // Suppress errors that arrive after the picker unmounts.
   const aliveRef = useRef(true);
   // The synchronous signal guard prevents two commits in the same task.
-  const busyTask = useSignal(null);
+  const busyTask = useSignal<string | null>(null);
   const busyTaskRef = busyTask.value;
   const busy = busyTaskRef !== null;
   const changed = !busy && linkSessionChanged(initialSession, session);
@@ -855,7 +939,7 @@ export function LinkTaskDialog({
   }, [busy, error]);
 
   // The callback captures `typeahead`, which is read only after both declarations complete.
-  const choose = async (task) => {
+  const choose = async (task: Task | undefined) => {
     if (!task || busyTask.peek() !== null || listLocked) return;
     setError(null);
     typeahead.activate(task.ref);
@@ -876,7 +960,7 @@ export function LinkTaskDialog({
     keys: keys,
     token: normalizedQuery,
     onNavigate: () => setError(null),
-    onCommit: (ref) => choose(results.find((task) => task.ref === ref)),
+    onCommit: (ref: string) => choose(results.find((task) => task.ref === ref)),
   });
   const activeTaskRef = typeahead.activeKey;
   const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
@@ -898,122 +982,124 @@ export function LinkTaskDialog({
     onRetryProjects: onRetryProjects,
   });
 
-  return html`
-    <${Dialog} id="link-task-dialog" labelledBy="link-task-title" lightDismiss=${!busy}
-               onClose=${onClose}>
-      <div id="link-task-form" aria-busy=${busy ? "true" : "false"}>
+  return (
+    <Dialog id="link-task-dialog" labelledBy="link-task-title" lightDismiss={!busy} onClose={onClose}>
+      <div id="link-task-form" aria-busy={busy ? "true" : "false"}>
         <div class="dialog-head">
           <div>
             <h2 id="link-task-title">Link session to a task</h2>
-            <p>
-              ${initialSession ? displayName(initialSession) : "Selected session"} · open tasks in its project
-            </p>
+            <p>{initialSession ? displayName(initialSession) : "Selected session"}{" · open tasks in its project"}</p>
           </div>
-          <button id="link-task-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="link-task-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
         <label class="field link-picker-search">
           <span>Search by ref or title</span>
-          <input id="link-task-query" type="search" role="combobox" autoComplete="off"
-                 autoFocus spellcheck=${false} placeholder="local:42 or task title" ref=${inputRef}
-                 aria-autocomplete="list" aria-controls=${listId}
-                 aria-expanded=${listId ? "true" : "false"}
-                 aria-activedescendant=${listId && activeIndex >= 0
+          <input id="link-task-query" type="search" role="combobox" autoComplete="off" autoFocus
+            spellcheck={false} placeholder="local:42 or task title" ref={inputRef}
+            aria-autocomplete="list" aria-controls={listId ?? undefined} aria-expanded={listId ? "true" : "false"}
+            aria-activedescendant={listId && activeIndex >= 0
                    ? "link-task-option-" + activeIndex
-                   : null}
-                 disabled=${busy || changed || projectUnavailable || failure !== null} value=${query}
-                 onInput=${(event) => { setError(null); setQuery(event.target.value); }}
-                 onKeyDown=${typeahead.keyDown} />
+                   : undefined}
+            disabled={busy || changed || projectUnavailable || failure !== null} value={query}
+            onInput={(event) => { setError(null); setQuery(event.currentTarget.value); }}
+            onKeyDown={typeahead.keyDown} />
         </label>
-
-        <div class="link-picker-results">${listBody}</div>
-        ${error && html`<p id="link-task-error" class="form-error" role="alert">${error}</p>`}
-
+        <div class="link-picker-results">{listBody}</div>
+        {error && (
+          <p id="link-task-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
-          <button id="link-task-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
+          <button id="link-task-cancel" class="button button-quiet" type="button" onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
         </div>
       </div>
-    <//>
-  `;
+    </Dialog>
+  );
+}
+
+interface LinkTaskBodyProps {
+  changed: boolean;
+  projectUnavailable: boolean;
+  failure: string | null;
+  ready: boolean;
+  rows: Task[];
+  results: Task[];
+  query: string;
+  activeTaskRef: string | null;
+  busy: boolean;
+  busyTaskRef: string | null;
+  typeahead: TypeaheadResult<string>;
+  choose: (task: Task | undefined) => Promise<void>;
+  onRetryProjects: () => unknown;
 }
 
 function linkTaskBody({
   changed, projectUnavailable, failure, ready, rows, results, query,
   activeTaskRef, busy, busyTaskRef, typeahead, choose, onRetryProjects,
-}) {
+}: LinkTaskBodyProps) {
   if (changed) {
-    return html`
-      <p id="link-task-changed" class="form-error" role="status">
-        The selected session changed while this picker was open. Close it and try again.
-      </p>`;
+    return (
+      <p id="link-task-changed" class="form-error" role="status">The selected session changed while this picker was open. Close it and try again.</p>
+    );
   }
   if (projectUnavailable) {
-    return html`
-      <p id="link-task-project-missing" class="form-error" role="status">
-        This session's project is no longer active. Restore it before linking a task.
-      </p>`;
+    return (
+      <p id="link-task-project-missing" class="form-error" role="status">This session's project is no longer active. Restore it before linking a task.</p>
+    );
   }
   if (failure) {
-    return html`
+    return (
       <div id="link-task-failed" role="alert">
-        <p class="form-error">${failure}</p>
-        <div class="dialog-actions">
-          <button id="link-task-retry" class="button" type="button"
-                  onClick=${onRetryProjects}>Try again</button>
-        </div>
-      </div>`;
+        <p class="form-error">{failure}</p>
+        <div class="dialog-actions"><button id="link-task-retry" class="button" type="button" onClick={onRetryProjects}>Try again</button></div>
+      </div>
+    );
   }
   if (!ready) {
-    return html`<p id="link-task-status" class="dialog-status">Reading open tasks…</p>`;
+    return (
+      <p id="link-task-status" class="dialog-status">Reading open tasks…</p>
+    );
   }
   if (results.length === 0) {
-    return html`
+    return (
       <p id="link-task-empty" class="dialog-empty">
-        ${rows.length === 0
+        {rows.length === 0
           ? "No open tasks in this session's project."
           : "No open tasks match “" + query.trim() + "”."}
-      </p>`;
+      </p>
+    );
   }
-  return html`
+  return (
     <ul id="link-task-list" class="dialog-list link-picker-list" role="listbox">
-      ${results.map((task, index) => html`
-        <li key=${task.ref} role="presentation">
-          <button
-            id=${"link-task-option-" + index}
-            class=${"dialog-list-row link-picker-option" +
+      {results.map((task, index) => (
+        <li key={task.ref} role="presentation">
+          <button id={"link-task-option-" + index}
+            class={"dialog-list-row link-picker-option" +
               (task.ref === activeTaskRef ? " active" : "")}
-            type="button"
-            role="option"
-            aria-selected=${task.ref === activeTaskRef ? "true" : "false"}
-            data-ref=${task.ref}
-            data-state=${task.state}
-            disabled=${busy}
-            ref=${typeahead.optionRef(task.ref)}
-            onMouseEnter=${() => typeahead.activate(task.ref)}
-            onFocus=${() => typeahead.activate(task.ref)}
-            onClick=${() => choose(task)}
-          >
-            <span class="dialog-list-name">${task.title || task.ref}</span>
+            type="button" role="option" aria-selected={task.ref === activeTaskRef ? "true" : "false"}
+            data-ref={task.ref} data-state={task.state} disabled={busy}
+            ref={typeahead.optionRef(task.ref)} onMouseEnter={() => typeahead.activate(task.ref)}
+            onFocus={() => typeahead.activate(task.ref)} onClick={() => choose(task)}>
+            <span class="dialog-list-name">{task.title || task.ref}</span>
             <span class="dialog-list-sub link-picker-meta">
-              <span>${task.ref}</span>
-              ${task.blocked && html`
-                <span class="link-picker-blocked"
-                      title="A dependency is not done yet">Blocked</span>`}
+              <span>{task.ref}</span>
+              {task.blocked && (
+                <span class="link-picker-blocked" title="A dependency is not done yet">Blocked</span>
+              )}
             </span>
             <span class="dialog-list-action link-picker-state">
-              ${busyTaskRef === task.ref
+              {busyTaskRef === task.ref
                 ? "Linking…"
                 : taskStateLabel(task.state)}
             </span>
           </button>
         </li>
-      `)}
-    </ul>`;
+      ))}
+    </ul>
+  );
 }
 
-function groupingPreview(draft, sessions) {
+function groupingPreview(draft: Preferences, sessions: readonly Session[]) {
   if (!draft.basePath) return "No base path — sessions are listed flat.";
   const base = normalizePath(draft.basePath);
   const baseLabel = basename(base) || base;
@@ -1024,7 +1110,7 @@ function groupingPreview(draft, sessions) {
       ? "Tree below " + base + ": " + placeholders.join(" › ")
       : base + " → " + baseLabel + " (one folder for all sessions below the base)";
   }
-  const segments = segmentsUnder(base, sample.cwd);
+  const segments = segmentsUnder(base, sample.cwd)!;
   const visible = segments.slice(0, draft.groupingLevel);
   const branch = visible.length > 0 ? visible.join(" › ") : baseLabel;
   const bucketed = segments.length > visible.length ? " (deeper folders stay here)" : "";
@@ -1045,18 +1131,25 @@ const TERMINAL_FONT_LABELS = new Map([
   [16, "Large"],
 ]);
 
-export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
+export interface PreferencesDialogProps {
+  prefs: Preferences;
+  sessions: readonly Session[];
+  onSave: (prefs: Preferences) => Promise<unknown>;
+  onClose: () => void;
+}
+
+export function PreferencesDialog({ prefs, sessions, onSave, onClose }: PreferencesDialogProps) {
   const [basePath, setBasePath] = useState(prefs.basePath);
   const [level, setLevel] = useState(String(prefs.groupingLevel));
   const [fontSize, setFontSize] = useState(String(prefs.terminalFontSize));
-  const [unicode, setUnicode] = useState(prefs.terminalUnicode);
-  const [error, setError] = useState(null);
+  const [unicode, setUnicode] = useState<string>(prefs.terminalUnicode);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const inputRef = useRef(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
 
-  const submit = async (event) => {
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
     event.preventDefault();
     const cleaned = normalizePath(basePath);
     if (cleaned.length > 0 && cleaned.charAt(0) !== "/") {
@@ -1084,116 +1177,117 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
     terminalFontSize: fontSize,
   }), sessions);
 
-  return html`
-    <${Dialog} id="prefs-dialog" labelledBy="prefs-title" lightDismiss=${!busy} onClose=${onClose}>
-      <form id="prefs-form" onSubmit=${submit}>
+  return (
+    <Dialog id="prefs-dialog" labelledBy="prefs-title" lightDismiss={!busy} onClose={onClose}>
+      <form id="prefs-form" onSubmit={submit}>
         <div class="dialog-head">
           <div>
             <h2 id="prefs-title">Preferences</h2>
             <p>Base path and tree depth are shared by every browser connected to this daemon.</p>
           </div>
-          <button id="prefs-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <button id="prefs-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
         <label class="field">
           <span>Base path</span>
-          <input id="prefs-base-path" type="text" spellcheck=${false} placeholder="/Users/you/dev"
-                 ref=${inputRef} value=${basePath} onInput=${(e) => setBasePath(e.target.value)} />
+          <input id="prefs-base-path" type="text" spellcheck={false} placeholder="/Users/you/dev"
+            ref={inputRef} value={basePath} onInput={(e) => setBasePath(e.currentTarget.value)} />
           <small class="field-hint">
-            Absolute path. Sessions below it form a folder tree, and new sessions default to it. Leave
-            empty for one flat list.
+            {`Absolute path. Sessions below it form a folder tree, and new sessions default to it. Leave
+            empty for one flat list.`}
           </small>
         </label>
-
         <label class="field">
-          <span>Tree depth <small>maximum visible folders below the base path</small></span>
-          <select id="prefs-grouping-level" value=${level} onChange=${(e) => setLevel(e.target.value)}>
-            ${LEVEL_LABELS.slice(0, MAX_GROUPING_LEVEL + 1).map((label, value) => html`
-              <option key=${value} value=${String(value)}>${label}</option>
-            `)}
+          <span>{"Tree depth "}<small>maximum visible folders below the base path</small></span>
+          <select id="prefs-grouping-level" value={level} onChange={(e) => setLevel(e.currentTarget.value)}>
+            {LEVEL_LABELS.slice(0, MAX_GROUPING_LEVEL + 1).map((label, value) => (
+              <option key={value} value={String(value)}>{label}</option>
+            ))}
           </select>
-          <small id="prefs-grouping-preview" class="field-hint">${preview}</small>
+          <small id="prefs-grouping-preview" class="field-hint">{preview}</small>
         </label>
-
         <label class="field">
           <span>Terminal font size</span>
-          <select id="prefs-terminal-font-size" value=${fontSize}
-                  onChange=${(e) => setFontSize(e.target.value)}>
-            ${TERMINAL_FONT_SIZES.map((size) => html`
-              <option key=${size} value=${String(size)}>
-                ${(TERMINAL_FONT_LABELS.get(size) || "Custom") + " — " + size + " px"}
-              </option>
-            `)}
+          <select id="prefs-terminal-font-size" value={fontSize}
+            onChange={(e) => setFontSize(e.currentTarget.value)}>
+            {TERMINAL_FONT_SIZES.map((size) => (
+              <option key={size} value={String(size)}>{(TERMINAL_FONT_LABELS.get(size) || "Custom") + " — " + size + " px"}</option>
+            ))}
           </select>
-          <small class="field-hint">
-            Stored only in this browser and applied immediately to an attached terminal after you save.
-          </small>
+          <small class="field-hint">Stored only in this browser and applied immediately to an attached terminal after you save.</small>
         </label>
-
         <label class="field">
-          <span>Terminal unicode <small>how wide a character is measured</small></span>
-          <select id="prefs-terminal-unicode" value=${unicode}
-                  onChange=${(e) => setUnicode(e.target.value)}>
-            ${TERMINAL_UNICODE_MODES.map((mode) => html`
-              <option key=${mode.value} value=${mode.value}>${mode.label}</option>
-            `)}
+          <span>{"Terminal unicode "}<small>how wide a character is measured</small></span>
+          <select id="prefs-terminal-unicode" value={unicode}
+            onChange={(e) => setUnicode(e.currentTarget.value)}>
+            {TERMINAL_UNICODE_MODES.map((mode) => (
+              <option key={mode.value} value={mode.value}>{mode.label}</option>
+            ))}
           </select>
           <small id="prefs-terminal-unicode-hint" class="field-hint">
-            ${terminalUnicodeMode(unicode).hint} Stored only in this browser. A change applies to what the
-            pane draws next, not to the screen already on it.
+            {terminalUnicodeMode(unicode).hint}
+            {` Stored only in this browser. A change applies to what the
+            pane draws next, not to the screen already on it.`}
           </small>
         </label>
-
-        ${error && html`<p id="prefs-error" class="form-error" role="alert">${error}</p>`}
-
+        {error && (
+          <p id="prefs-error" class="form-error" role="alert">{error}</p>
+        )}
         <div class="dialog-actions">
-          <button id="prefs-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
-          <button id="prefs-submit" class="button button-primary" type="submit" disabled=${busy}>
-            ${busy ? "Saving…" : "Save"}
-          </button>
+          <button id="prefs-cancel" class="button button-quiet" type="button" onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
+          <button id="prefs-submit" class="button button-primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
         </div>
       </form>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
+export interface PhoneDialogProps {
+  onClose: () => void;
+}
+
+interface AuthTicket {
+  publicUrl?: string | null;
+  ticket?: string | null;
+}
+
+type PhoneState =
+  | { status: "loading" }
+  | { status: "ready"; ticket: AuthTicket | null }
+  | { status: "error"; message: string };
+
 /* The QR contains the credential-free install URL so Safari cannot spend the installed PWA's ticket. */
-export function PhoneDialog({ onClose }) {
-  const [state, setState] = useState({ status: "loading" });
+export function PhoneDialog({ onClose }: PhoneDialogProps) {
+  const [state, setState] = useState<PhoneState>({ status: "loading" });
 
   const issue = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const ticket = await apiRequest(AUTH_TICKET_PATH, { method: "POST" });
+      const ticket = await apiRequest(AUTH_TICKET_PATH, { method: "POST" }) as AuthTicket | null;
       setState({ status: "ready", ticket: ticket });
     } catch (e) {
-      setState({ status: "error", message: errorMessage(e) });
+      setState({ status: "error", message: errorMessage(e) as string });
     }
   }, []);
 
   useEffect(() => { issue(); }, [issue]);
 
-  return html`
-    <${Dialog} id="phone-dialog" labelledBy="phone-title" onClose=${onClose}>
+  return (
+    <Dialog id="phone-dialog" labelledBy="phone-title" onClose={onClose}>
       <div id="phone-form">
         <div class="dialog-head">
-          <div>
-            <h2 id="phone-title">Sign in from your phone</h2>
-            <p>Scan to open kotgent on another device.</p>
-          </div>
-          <button id="phone-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <div><h2 id="phone-title">Sign in from your phone</h2><p>Scan to open kotgent on another device.</p></div>
+          <button id="phone-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-        ${phoneBody(state, issue, onClose)}
+        {phoneBody(state, issue, onClose)}
       </div>
-    <//>
-  `;
+    </Dialog>
+  );
 }
 
 /** Display-only grouping is safe because normalizeTicketCode strips whitespace. */
-function groupCode(code) {
+function groupCode(code: string | null | undefined) {
   const value = String(code || "");
   if (value.length < 6 || value.length % 2 !== 0) return value;
   const half = value.length / 2;
@@ -1201,80 +1295,77 @@ function groupCode(code) {
 }
 
 /** Strip the one-shot credential fragment from the public install URL. */
-function installUrl(ticketUrl) {
-  return String(ticketUrl || "").split("#", 1)[0];
+function installUrl(ticketUrl: string | null | undefined) {
+  return String(ticketUrl || "").split("#", 1)[0]!;
 }
 
-function phoneBody(state, issue, onClose) {
+function phoneBody(state: PhoneState, issue: () => Promise<void>, onClose: () => void) {
   if (state.status === "loading") {
-    return html`<p id="phone-status" class="phone-status">Minting a one-time sign-in code…</p>`;
+    return (
+      <p id="phone-status" class="phone-status">Minting a one-time sign-in code…</p>
+    );
   }
   if (state.status === "error") {
-    return html`
-      <p id="phone-error" class="form-error" role="alert">Could not mint a sign-in code: ${state.message}</p>
+    return [
+      <p id="phone-error" class="form-error" role="alert">{"Could not mint a sign-in code: "}{state.message}</p>,
       <div class="dialog-actions">
-        <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>
-        <button class="button button-primary" type="button" onClick=${issue}>Try again</button>
+        <button class="button button-quiet" type="button" onClick={onClose}>Close</button>
+        <button class="button button-primary" type="button" onClick={issue}>Try again</button>
       </div>
-    `;
+    ];
   }
 
   const ticket = state.ticket || {};
   if (!ticket.publicUrl) return phoneSetup(onClose);
   const publicInstallUrl = installUrl(ticket.publicUrl);
 
-  return html`
-    <div id="phone-qr" class="phone-qr"
-         dangerouslySetInnerHTML=${{ __html: qrSvg(publicInstallUrl) }}></div>
-    <p class="phone-url"><code>${publicInstallUrl}</code></p>
-    <p class="phone-code-hint">
-      Scan this credential-free page in Safari, add Kotgent to the home screen, then launch the installed app.
-    </p>
-    ${ticket.ticket && html`
-      <p id="phone-code" class="phone-code">${groupCode(ticket.ticket)}</p>
+  return [
+    <div id="phone-qr" class="phone-qr" dangerouslySetInnerHTML={{ __html: qrSvg(publicInstallUrl) }} />,
+    <p class="phone-url"><code>{publicInstallUrl}</code></p>,
+    <p class="phone-code-hint">Scan this credential-free page in Safari, add Kotgent to the home screen, then launch the installed app.</p>,
+    ticket.ticket && [
+      <p id="phone-code" class="phone-code">{groupCode(ticket.ticket)}</p>,
       <p class="phone-code-hint">
-        Type this code into the installed app. It has its own cookie jar, and the QR deliberately does not
-        spend the code in Safari.
-      </p>`}
+        {`Type this code into the installed app. It has its own cookie jar, and the QR deliberately does not
+        spend the code in Safari.`}
+      </p>
+    ],
     <p class="phone-warn" role="note">
-      The code is one-time · expires in 5 minutes · grants full terminal access. Refresh it if you did not
-      just use it yourself.
-    </p>
+      {`The code is one-time · expires in 5 minutes · grants full terminal access. Refresh it if you did not
+      just use it yourself.`}
+    </p>,
     <div class="dialog-actions">
-      <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>
-      <button id="phone-refresh" class="button button-primary" type="button" onClick=${issue}>Refresh</button>
+      <button class="button button-quiet" type="button" onClick={onClose}>Close</button>
+      <button id="phone-refresh" class="button button-primary" type="button" onClick={issue}>Refresh</button>
     </div>
-  `;
+  ];
 }
 
-function phoneSetup(onClose) {
+function phoneSetup(onClose: () => void) {
   const port = window.location.port;
   const ingress = "  - hostname: <your-tunnel-host>\n    service: http://127.0.0.1:" + port;
-  return html`
+  return [
     <p id="phone-setup" class="phone-note">
-      No public URL is configured, so there is nothing to point a phone at yet. Phone access runs over a
-      Cloudflare tunnel to this daemon — a one-time setup:
-    </p>
+      {`No public URL is configured, so there is nothing to point a phone at yet. Phone access runs over a
+      Cloudflare tunnel to this daemon — a one-time setup:`}
+    </p>,
     <ol class="phone-steps">
+      <li>{"Add an ingress rule to "}<code>~/.cloudflared/config.yml</code>:<pre class="help-code">{ingress}</pre></li>
       <li>
-        Add an ingress rule to <code>~/.cloudflared/config.yml</code>:
-        <pre class="help-code">${ingress}</pre>
-      </li>
-      <li>
-        Put <strong>Cloudflare Access</strong> in front of the host and scope the policy to your own
+        {"Put "}
+        <strong>Cloudflare Access</strong>
+        {` in front of the host and scope the policy to your own
         email only. This host fronts a terminal that can run anything on your Mac, so a loose policy is
-        more dangerous here than anywhere else — do not publish it without the identity gate.
+        more dangerous here than anywhere else — do not publish it without the identity gate.`}
       </li>
       <li>
         Tell kotgent its public origin:
         <pre class="help-code">kotgent config set public-url https://your-tunnel-host</pre>
       </li>
       <li>Restart the daemon, then reopen this dialog to get a QR code.</li>
-    </ol>
-    <div class="dialog-actions">
-      <button class="button button-primary" type="button" onClick=${onClose}>Done</button>
-    </div>
-  `;
+    </ol>,
+    <div class="dialog-actions"><button class="button button-primary" type="button" onClick={onClose}>Done</button></div>
+  ];
 }
 
 const CLI_HELP = `kotgent list                  list sessions
@@ -1286,7 +1377,7 @@ kotgent stop <id>             stop a session
 kotgent resume <id>           resume a stopped/crashed/resumable session (never a lost one)
 kotgent daemon [--port N]     run the control plane`;
 
-const STATES = [
+const STATES: [string, string, string][] = [
   ["running", "badge-running", "The agent is working on a turn."],
   ["ready", "badge-ready", "Alive and idle — it finished its turn and is waiting for your next prompt."],
   ["needs approval", "badge-attention",
@@ -1305,7 +1396,7 @@ const STATES = [
   ["resumable", "badge-resumable", "Dead, but the conversation transcript survives — Resume can revive it."],
 ];
 
-const CONTROLS = [
+const CONTROLS: [string, string][] = [
   ["New session",
     "Starts an agent in the directory you give it. With a base path set in Preferences, each group's " +
     "+ starts one in that group's directory instead."],
@@ -1335,143 +1426,163 @@ const CONTROLS = [
     "drops its upstream tmux attach too."],
 ];
 
-export function HelpDialog({ onClose }) {
-  const bodyRef = useRef(null);
+export interface HelpDialogProps {
+  onClose: () => void;
+}
+
+export function HelpDialog({ onClose }: HelpDialogProps) {
+  const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0; }, []);
 
-  return html`
-    <${Dialog} id="help-dialog" labelledBy="help-title" onClose=${onClose}>
+  return (
+    <Dialog id="help-dialog" labelledBy="help-title" onClose={onClose}>
       <div id="help-form">
         <div class="dialog-head">
-          <div>
-            <h2 id="help-title">How kotgent works</h2>
-            <p>Sessions, states, and what each control does.</p>
-          </div>
-          <button id="help-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+          <div><h2 id="help-title">How kotgent works</h2><p>Sessions, states, and what each control does.</p></div>
+          <button id="help-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
         </div>
-
-        <div id="help-body" ref=${bodyRef}>
+        <div id="help-body" ref={bodyRef}>
           <section class="help-section">
             <h3>Sessions</h3>
             <p>
-              A session is one coding agent running inside its own <code>tmux</code> session
-              (<code>${"kt-<id>"}</code>) in a working directory you pick. The daemon owns it — not this
-              page. Closing the tab, detaching, or restarting the daemon does not stop the agent.
+              {"A session is one coding agent running inside its own "}
+              <code>tmux</code>
+              {` session
+              (`}
+              <code>{"kt-<id>"}</code>
+              {`) in a working directory you pick. The daemon owns it — not this
+              page. Closing the tab, detaching, or restarting the daemon does not stop the agent.`}
             </p>
             <p>
               What you see in the right pane is that real tmux pane. The daemon holds exactly one
-              <code>tmux attach</code> per session and fans it out to every viewer, so a browser, an IDE
-              and <code>kotgent attach</code> all watch and type into the same terminal.
+              <code>tmux attach</code>
+              {` per session and fans it out to every viewer, so a browser, an IDE
+              and `}
+              <code>kotgent attach</code>
+              {" all watch and type into the same terminal."}
             </p>
             <p>
-              State is never stored directly: the agent reports events through hooks, they are appended
+              {`State is never stored directly: the agent reports events through hooks, they are appended
               to a per-session log, and the state you see is replayed from that log. That is why sessions
-              survive a daemon restart.
+              survive a daemon restart.`}
             </p>
           </section>
-
           <section id="help-tmux" class="help-section">
             <h3>tmux, scrolling, and copying</h3>
             <p>
-              Kotgent uses tmux's default prefix: press <kbd>Ctrl</kbd>+<kbd>B</kbd>, release both,
-              then press the command key. Your <code>~/.tmux.conf</code> is not loaded on Kotgent's
-              dedicated tmux server, so custom prefixes and bindings do not apply here.
+              {"Kotgent uses tmux's default prefix: press "}
+              <kbd>Ctrl</kbd>
+              +
+              <kbd>B</kbd>
+              {`, release both,
+              then press the command key. Your `}
+              <code>~/.tmux.conf</code>
+              {` is not loaded on Kotgent's
+              dedicated tmux server, so custom prefixes and bindings do not apply here.`}
             </p>
             <dl class="help-list">
-              <dt><kbd>Ctrl</kbd>+<kbd>B</kbd>, then <kbd>[</kbd></dt>
+              <dt><kbd>Ctrl</kbd>+<kbd>B</kbd>{", then "}<kbd>[</kbd></dt>
               <dd>
                 Enter tmux copy mode to browse the pane's 10,000-line history. Use the arrow,
-                <kbd>Page Up</kbd>, and <kbd>Page Down</kbd> keys; the mouse wheel enters and scrolls
-                this mode automatically.
+                <kbd>Page Up</kbd>
+                {", and "}
+                <kbd>Page Down</kbd>
+                {` keys; the mouse wheel enters and scrolls
+                this mode automatically.`}
               </dd>
-              <dt><kbd>Esc</kbd> or <kbd>q</kbd></dt>
+              <dt><kbd>Esc</kbd>{" or "}<kbd>q</kbd></dt>
               <dd>
-                Leave copy mode and return keyboard input to the agent. Scrolling all the way back to
-                the bottom also exits it.
+                {`Leave copy mode and return keyboard input to the agent. Scrolling all the way back to
+                the bottom also exits it.`}
               </dd>
-              <dt><kbd>Option</kbd>-drag, then <kbd>Cmd</kbd>+<kbd>C</kbd></dt>
+              <dt><kbd>Option</kbd>{"-drag, then "}<kbd>Cmd</kbd>+<kbd>C</kbd></dt>
               <dd>
-                Select terminal text and copy it to the browser clipboard on macOS. Hold Option while
-                dragging so xterm selects the text instead of sending the drag to tmux or the agent.
+                {`Select terminal text and copy it to the browser clipboard on macOS. Hold Option while
+                dragging so xterm selects the text instead of sending the drag to tmux or the agent.`}
               </dd>
-              <dt><kbd>Shift</kbd>-drag, then <kbd>Ctrl</kbd>+<kbd>C</kbd></dt>
+              <dt><kbd>Shift</kbd>{"-drag, then "}<kbd>Ctrl</kbd>+<kbd>C</kbd></dt>
               <dd>The equivalent browser-copy gesture on other platforms.</dd>
             </dl>
             <p class="help-note">
-              Browser selection and tmux copy mode are separate: copying in the browser does not use
+              {`Browser selection and tmux copy mode are separate: copying in the browser does not use
               tmux's paste buffer. Copy mode belongs to the pane and is shared by every viewer, so if
               typing appears to be ignored after someone scrolls, leave copy mode or return to the bottom.
-              To leave, use the palette's Detach command — the ⋯ button in the terminal header, or
-              <kbd>⌘</kbd>+<kbd>K</kbd>, then <kbd>E</kbd> — instead of tmux's detach binding; it closes
-              only this viewer.
+              To leave, use the palette's Detach command — the ⋯ button in the terminal header, or`}
+              <kbd>⌘</kbd>
+              +
+              <kbd>K</kbd>
+              {", then "}
+              <kbd>E</kbd>
+              {` — instead of tmux's detach binding; it closes
+              only this viewer.`}
             </p>
           </section>
-
           <section class="help-section">
             <h3>States</h3>
             <dl class="help-list">
-              ${STATES.map(([label, cls, description]) => html`
-                <dt key=${label}><span class=${"pill badge " + cls}>${label}</span></dt>
-                <dd key=${label + "-d"}>${description}</dd>
-              `)}
+              {STATES.map(([label, cls, description]) => [
+                <dt key={label}><span class={"pill badge " + cls}>{label}</span></dt>,
+                <dd key={label + "-d"}>{description}</dd>
+              ])}
             </dl>
             <p class="help-note">
-              The first four are <em>alive</em> (a process is running in tmux), the last three are
-              <em>dead</em>. The two "needs" states are the ones counted as needing attention.
+              {"The first four are "}
+              <em>alive</em>
+              {" (a process is running in tmux), the last three are"}
+              <em>dead</em>
+              . The two "needs" states are the ones counted as needing attention.
             </p>
           </section>
-
           <section class="help-section">
             <h3>Controls</h3>
             <dl class="help-list">
-              ${CONTROLS.map(([label, description]) => html`
-                <dt key=${label}>${label}</dt>
-                <dd key=${label + "-d"}>${description}</dd>
-              `)}
+              {CONTROLS.map(([label, description]) => [
+                <dt key={label}>{label}</dt>,
+                <dd key={label + "-d"}>{description}</dd>
+              ])}
             </dl>
           </section>
-
           <section class="help-section">
             <h3>The sidebar</h3>
             <p>
-              "Needs attention" repeats the sessions blocked on you at the top so nothing is missed; click
+              {`"Needs attention" repeats the sessions blocked on you at the top so nothing is missed; click
               its header to collapse it to their count. The blue pill is the number of events appended since
               you last read the session, and the badge is its current state. With a base path set in Preferences, rows are grouped
               by working directory; anything outside that base path is grouped under its own path at the
               end. Click a group's header to collapse it — collapsed groups and "Needs attention" are
               remembered in this browser, and a group keeps its dot while it hides a session that needs
-              attention.
+              attention.`}
             </p>
             <p>
-              ADHD mode, the pin button in the sidebar header, lists only the sessions you pinned, the
+              {`ADHD mode, the pin button in the sidebar header, lists only the sessions you pinned, the
               sessions shown under a group header you pinned, and the session you have selected. It hides
-              "Needs attention" altogether, even for pinned sessions, though their notifications still fire.
+              "Needs attention" altogether, even for pinned sessions, though their notifications still fire.`}
             </p>
           </section>
-
           <section class="help-section">
             <h3>Access</h3>
             <p>
-              The daemon listens on <code>127.0.0.1</code>, and this page signs in with a session cookie
-              rather than a token in the URL. Run <code>kotgent web</code> to open it: that mints a
-              one-time ticket, exchanges it for an <code>HttpOnly</code> cookie, and leaves nothing secret
-              in the address bar. The master token (<code>~/.kotgent/token</code>) stays the machine's
+              {"The daemon listens on "}
+              <code>127.0.0.1</code>
+              {`, and this page signs in with a session cookie
+              rather than a token in the URL. Run `}
+              <code>kotgent web</code>
+              {` to open it: that mints a
+              one-time ticket, exchanges it for an `}
+              <code>HttpOnly</code>
+              {` cookie, and leaves nothing secret
+              in the address bar. The master token (`}
+              <code>~/.kotgent/token</code>
+              {`) stays the machine's
               key — the hooks and the CLI use it. The cookie is a key to your agents, so treat this
-              browser profile as you would an SSH session.
+              browser profile as you would an SSH session.`}
             </p>
           </section>
-
-          <section class="help-section">
-            <h3>The same thing from a terminal</h3>
-            <pre class="help-code">${CLI_HELP}</pre>
-          </section>
+          <section class="help-section"><h3>The same thing from a terminal</h3><pre class="help-code">{CLI_HELP}</pre></section>
         </div>
-
-        <div class="dialog-actions">
-          <button id="help-done" class="button button-primary" type="button" onClick=${onClose}>Done</button>
-        </div>
+        <div class="dialog-actions"><button id="help-done" class="button button-primary" type="button" onClick={onClose}>Done</button></div>
       </div>
-    <//>
-  `;
+    </Dialog>
+  );
 }

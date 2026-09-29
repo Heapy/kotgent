@@ -2,7 +2,7 @@ import type { TargetedKeyboardEvent } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { filterCommands } from "../lib/commands.ts";
 import type { Command } from "../lib/commands.ts";
-import { Dialog } from "./dialogs.js";
+import { Dialog } from "./dialogs.tsx";
 import { useTypeahead } from "./Typeahead.tsx";
 
 export interface CommandPaletteProps {

@@ -18,7 +18,7 @@ import {
   patchTask,
   taskStateLabel,
 } from "../lib/tasks.ts";
-import { Dialog } from "./dialogs.js";
+import { Dialog } from "./dialogs.tsx";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
 import { TaskCard } from "./TaskCard.tsx";
 

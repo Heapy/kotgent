@@ -145,7 +145,7 @@ import {
   RenameSessionDialog,
   RestoreProjectDialog,
   UploadFilesDialog,
-} from "./components/dialogs.js";
+} from "./components/dialogs.tsx";
 
 let staleBuildCheckInFlight = false;
 window.addEventListener("vite:preloadError", async () => {
