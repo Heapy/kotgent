@@ -402,15 +402,18 @@ class AuthRoutesTest {
                 "the early response tells a compliant peer the connection cannot be reused",
             )
 
+            limit.awaitReleasedCapacity()
             val timedOut = env.rawExchangeUntilClosed(contentLength = 1)
             assertTrue(timedOut.contains(" 408 "), "a peer that withholds its one promised byte is timed out")
             assertEquals(0, limit.failuresInWindow(), "unconsumed non-guesses spend no failure budget")
+            limit.awaitReleasedCapacity()
             assertEquals(
                 HttpStatusCode.OK,
                 env.exchange(env.port, env.issueTicket()).status,
                 "both rejected sockets released the sole slot and did not cancel the server root",
             )
 
+            limit.awaitReleasedCapacity()
             val failed = assertNotNull(limit.begin())
             failed.finish(failed = true)
             val throttled = env.rawExchangeUntilClosed(contentLength = 1)
