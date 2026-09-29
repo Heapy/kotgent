@@ -131,10 +131,10 @@ import {
   serverPrefs,
 } from "./state/prefs.ts";
 import { Board } from "./components/Board.js";
-import { TaskDetail } from "./components/TaskDetail.js";
+import { TaskDetail } from "./components/TaskDetail.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Sidebar } from "./components/Sidebar.js";
-import { TerminalPane } from "./components/TerminalPane.js";
+import { TerminalPane } from "./components/TerminalPane.tsx";
 import {
   DeleteProjectDialog,
   HelpDialog,

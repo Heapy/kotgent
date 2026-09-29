@@ -2,16 +2,39 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { html } from "htm/preact";
+import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
 import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
+import type { Session } from "../lib/sessions.ts";
+import type { Task } from "../lib/tasks.ts";
 import { navigate, taskPath } from "../lib/router.ts";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
 import { KeyBar } from "./KeyBar.tsx";
+import type { KeyBarProps } from "./KeyBar.tsx";
+import type { TerminalUnicodeModeValue } from "../lib/unicode.ts";
 
-function debounce(fn, ms) {
-  let handle;
+interface HeaderTaskBadgeProps {
+  session: Session | null;
+  tasks: readonly Task[];
+}
+
+export interface TerminalPaneProps extends HeaderTaskBadgeProps {
+  attachedId: string | null;
+  focusRequest: { sessionId: string } | null;
+  terminalFontSize: number;
+  terminalUnicode: TerminalUnicodeModeValue;
+  hint: string | null;
+  drawerOpen: boolean;
+  sidebarCollapsed: boolean;
+  onToggleDrawer: JSX.MouseEventHandler<HTMLButtonElement>;
+  onToggleSidebar: JSX.MouseEventHandler<HTMLButtonElement>;
+  onOpenPalette: (mode: "leader") => void;
+  onTerminalClosed: (id: string) => void;
+}
+
+function debounce(fn: () => void, ms: number) {
+  let handle: ReturnType<typeof setTimeout> | undefined;
   const debounced = function () {
     clearTimeout(handle);
     handle = setTimeout(fn, ms);
@@ -20,18 +43,18 @@ function debounce(fn, ms) {
   return debounced;
 }
 
-function sendResize(ws, cols, rows) {
+function sendResize(ws: WebSocket, cols: number, rows: number) {
   if (ws.readyState === WebSocket.OPEN && cols > 0 && rows > 0) {
     ws.send(resizeFrame(cols, rows));
   }
 }
 
 /** Apply Ctrl only to one printable character; null leaves the sticky modifier armed. */
-function ctrlBytesFor(data) {
+function ctrlBytesFor(data: string) {
   const chars = Array.from(data);
   if (chars.length !== 1) return null;
-  const char = chars[0];
-  const codePoint = char.codePointAt(0);
+  const char = chars[0]!;
+  const codePoint = char.codePointAt(0)!;
   if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) return null;
 
   const upper = char.toUpperCase();
@@ -57,7 +80,7 @@ function ctrlBytesFor(data) {
 
 /* Capture touch pointers across xterm repaints and feed synthetic wheel events through xterm's current
  * mouse protocol. Animation-frame banking bounds bursts and supplies momentum after release. */
-function installSwipeScroll(term) {
+function installSwipeScroll(term: Terminal) {
   const element = term.element;
   if (!element) return { shouldFocus: () => true, dispose: () => {} };
 
@@ -71,7 +94,13 @@ function installSwipeScroll(term) {
   // A rested finger stops rather than handing stale velocity to inertia.
   const inertiaHandoffMs = 90;
   // Emit one report per row because the browser cannot know whether tmux or a TUI consumes it.
-  let gesture = null;
+  let gesture: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    lastY: number;
+    claimed: boolean;
+  } | null = null;
   let suppressFocusUntil = 0;
 
   // Scheduler state outlives the touch during inertia.
@@ -80,7 +109,7 @@ function installSwipeScroll(term) {
   let lastMoveAt = 0;
   let coasting = false;
   let inertiaUntil = 0;
-  let lastPoint = null;
+  let lastPoint: { x: number; y: number } | null = null;
   let frameHandle = 0;
   let lastFrameAt = 0;
 
@@ -97,7 +126,7 @@ function installSwipeScroll(term) {
     stopScheduler();
   };
 
-  const dispatchReports = (count, direction, bounds) => {
+  const dispatchReports = (count: number, direction: number, bounds: DOMRect) => {
     // Inertial reports still need coordinates inside a cell tmux accepts.
     const point = lastPoint || { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
     const clientX = Math.max(bounds.left + 1, Math.min(point.x, bounds.right - 1));
@@ -116,7 +145,7 @@ function installSwipeScroll(term) {
     }
   };
 
-  const frame = (now) => {
+  const frame = (now: number) => {
     frameHandle = 0;
     // Clamp background-tab gaps so inertia cannot jump on resume.
     const elapsed = lastFrameAt ? Math.min(now - lastFrameAt, 64) : 16.7;
@@ -162,7 +191,7 @@ function installSwipeScroll(term) {
     if (!frameHandle) frameHandle = requestAnimationFrame(frame);
   };
 
-  const onPointerDown = (event) => {
+  const onPointerDown = (event: PointerEvent) => {
     if (event.pointerType !== "touch") return;
     // A new touch catches an inertial scroll.
     stopMotion();
@@ -179,7 +208,7 @@ function installSwipeScroll(term) {
     };
   };
 
-  const onPointerMove = (event) => {
+  const onPointerMove = (event: PointerEvent) => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     // Yield when xterm is not requesting mouse reports.
     if (term.modes.mouseTrackingMode === "none") {
@@ -216,7 +245,7 @@ function installSwipeScroll(term) {
     ensureScheduler();
   };
 
-  const onPointerUp = (event) => {
+  const onPointerUp = (event: PointerEvent) => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     const threw = gesture.claimed;
     gesture = null;
@@ -231,7 +260,7 @@ function installSwipeScroll(term) {
     ensureScheduler();
   };
 
-  const onPointerCancel = (event) => {
+  const onPointerCancel = (event: PointerEvent) => {
     if (gesture && event.pointerId !== gesture.pointerId) return;
     gesture = null;
     stopMotion();
@@ -258,19 +287,19 @@ function installSwipeScroll(term) {
 export function TerminalPane({
   session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
   sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed,
-}) {
-  const hostRef = useRef(null);
-  const keyBarRef = useRef(null);
-  const terminalRef = useRef(null);
-  const fitRef = useRef(null);
-  const socketRef = useRef(null);
-  const sendBytesRef = useRef(null);
+}: TerminalPaneProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const keyBarRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal>(null);
+  const fitRef = useRef<FitAddon>(null);
+  const socketRef = useRef<WebSocket>(null);
+  const sendBytesRef = useRef<KeyBarProps["sendBytesRef"]["current"]>(null);
   const ctrlActiveRef = useRef(false);
   const [ctrlActive, setCtrlActive] = useState(false);
   const fontSizeRef = useRef(terminalFontSize);
   fontSizeRef.current = terminalFontSize;
   // Attachment teardown clears this because term.dispose already disposes loaded addons.
-  const unicodeDisposeRef = useRef(null);
+  const unicodeDisposeRef = useRef<(() => void) | null>(null);
   // Callback identity must not tear down a live attachment.
   const closedRef = useRef(onTerminalClosed);
   closedRef.current = onTerminalClosed;
@@ -354,7 +383,7 @@ export function TerminalPane({
     ws.binaryType = "arraybuffer";
     // Report daemon disconnects, not our own teardown.
     let teardown = false;
-    const sendBytes = (bytes) => {
+    const sendBytes: NonNullable<KeyBarProps["sendBytesRef"]["current"]> = (bytes) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(bytes);
     };
     sendBytesRef.current = sendBytes;
@@ -370,7 +399,7 @@ export function TerminalPane({
     ws.onopen = () => {
       fitAndReport();
     };
-    ws.onmessage = (ev) => {
+    ws.onmessage = (ev: MessageEvent<string | ArrayBuffer>) => {
       if (typeof ev.data === "string") return;
       term.write(new Uint8Array(ev.data));
     };
@@ -510,7 +539,7 @@ export function TerminalPane({
   };
   const openPalette = () => onOpenPalette("leader");
 
-  return html`
+  return (
     <main id="terminal-pane">
       <div id="terminal-head">
         <button
@@ -518,27 +547,27 @@ export function TerminalPane({
           class="icon-button icon-button-small drawer-toggle"
           type="button"
           aria-label="Show the session list"
-          aria-expanded=${drawerOpen ? "true" : "false"}
+          aria-expanded={drawerOpen ? "true" : "false"}
           aria-controls="sidebar"
           title="Sessions"
-          onClick=${onToggleDrawer}
+          onClick={onToggleDrawer}
         >☰</button>
         <button
           id="sidebar-toggle"
           class="icon-button icon-button-small sidebar-toggle"
           type="button"
-          aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded=${sidebarCollapsed ? "false" : "true"}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={sidebarCollapsed ? "false" : "true"}
           aria-controls="sidebar"
-          title=${sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
-          onClick=${onToggleSidebar}
-        >${sidebarCollapsed ? "›" : "‹"}</button>
+          title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
+          onClick={onToggleSidebar}
+        >{sidebarCollapsed ? "›" : "‹"}</button>
         <div class="terminal-identity">
-          <span id="terminal-title">${session ? displayName(session) : "No session selected"}</span>
-          <span id="terminal-state" class=${badge ? "pill badge " + badge.cls : "pill badge"}>
-            ${badge ? badge.label : ""}
+          <span id="terminal-title">{session ? displayName(session) : "No session selected"}</span>
+          <span id="terminal-state" class={badge ? "pill badge " + badge.cls : "pill badge"}>
+            {badge ? badge.label : ""}
           </span>
-          <${HeaderTaskBadge} session=${session} tasks=${tasks} />
+          <HeaderTaskBadge session={session} tasks={tasks} />
         </div>
         <button
           id="palette-button"
@@ -546,46 +575,46 @@ export function TerminalPane({
           type="button"
           aria-label="Open command palette"
           title="Commands"
-          onClick=${openPalette}
+          onClick={openPalette}
         >⋯</button>
       </div>
 
-      <div id="terminal-host" ref=${hostRef}></div>
+      <div id="terminal-host" ref={hostRef}></div>
 
-      ${attached && html`
-        <${KeyBar}
-          barRef=${keyBarRef}
-          sendBytesRef=${sendBytesRef}
-          ctrlActive=${ctrlActive}
-          onToggleCtrl=${toggleCtrl}
-          onReleaseCtrl=${releaseCtrl}
+      {attached && (
+        <KeyBar
+          barRef={keyBarRef}
+          sendBytesRef={sendBytesRef}
+          ctrlActive={ctrlActive}
+          onToggleCtrl={toggleCtrl}
+          onReleaseCtrl={releaseCtrl}
         />
-      `}
+      )}
 
-      ${hint && html`<p id="terminal-hint" class="terminal-hint">${hint}</p>`}
+      {hint && <p id="terminal-hint" class="terminal-hint">{hint}</p>}
     </main>
-  `;
+  );
 }
 
 /** Preserve real-link behavior while routing plain task-badge clicks in-app. */
-function HeaderTaskBadge({ session, tasks }) {
+function HeaderTaskBadge({ session, tasks }: HeaderTaskBadgeProps) {
   const task = session ? taskBadge(session, tasks) : null;
   if (!task) return null;
-  const open = (event) => {
+  const open: JSX.MouseEventHandler<HTMLAnchorElement> = (event) => {
     event.stopPropagation();
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     navigate(taskPath(task.ref));
   };
-  return html`
+  return (
     <a
       id="terminal-task"
-      class=${"task-badge" + (task.known ? "" : " task-badge-unknown")}
-      href=${taskPath(task.ref)}
-      title=${task.tooltip}
-      onClick=${open}
+      class={"task-badge" + (task.known ? "" : " task-badge-unknown")}
+      href={taskPath(task.ref)}
+      title={task.tooltip}
+      onClick={open}
     >
-      <span class="task-session-dot" data-state=${session.state}></span>${task.label}
+      <span class="task-session-dot" data-state={session!.state}></span>{task.label}
     </a>
-  `;
+  );
 }

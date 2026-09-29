@@ -1,11 +1,13 @@
 /* Detail mutations re-fetch the HTTP-only feed and derived state. Live event rows merge with fetched
  * rows by revision, live session links outrank stale fetched links, and dirty drafts outrank updates. */
 
-import { html } from "htm/preact";
+import type { ComponentChildren, JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { errorMessage } from "../lib/api.ts";
 import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
+import type { Session } from "../lib/sessions.ts";
+import type { LinkedSession, Task, TaskActivity, TaskDetail as TaskDetailData, TaskPatch } from "../lib/tasks.ts";
 import {
   TASK_STATES,
   deleteTask,
@@ -15,7 +17,17 @@ import {
   taskStateLabel,
 } from "../lib/tasks.ts";
 
-const ACTIVITY_FALLBACK = {
+export interface TaskDetailProps {
+  taskRef: string;
+  entry?: Task | null;
+  sessions: readonly Session[];
+  onTaskRow?: (row: Task) => void;
+  onTaskRemoved?: (ref: string) => void;
+  onStartSession: (cwd: string | null, ref: string) => void;
+  onAnnounce: (message: string, error?: boolean) => void;
+}
+
+const ACTIVITY_FALLBACK: Record<string, string> = {
   created: "created the task",
   comment: "commented",
   transition: "changed state",
@@ -23,23 +35,23 @@ const ACTIVITY_FALLBACK = {
   unlinked: "unlinked a session",
 };
 
-export function activityTime(ts) {
+export function activityTime(ts: unknown) {
   if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
   const at = new Date(ts);
   return Number.isNaN(at.getTime()) ? "" : at.toLocaleString();
 }
 
 /** Guard before toISOString, which throws for invalid dates. */
-export function activityTimestampAttr(ts) {
+export function activityTimestampAttr(ts: unknown) {
   if (typeof ts !== "number" || !Number.isFinite(ts)) return null;
   const at = new Date(ts);
   return Number.isNaN(at.getTime()) ? null : at.toISOString();
 }
 
-export function activityText(row) {
+export function activityText(row: TaskActivity | null | undefined) {
   if (!row) return "";
   if (row.kind === "transition") {
-    const move = taskStateLabel(row.fromState) + " → " + taskStateLabel(row.toState);
+    const move = taskStateLabel(row.fromState || "") + " → " + taskStateLabel(row.toState || "");
     return row.text ? move + " — " + row.text : move;
   }
   if (row.text) return row.text;
@@ -47,23 +59,27 @@ export function activityText(row) {
 }
 
 /** Merge racing HTTP and event observations; missing live state may only mean no baseline yet. */
-export function newerEntry(live, fetched) {
+export function newerEntry(live: Task | null | undefined, fetched: Task | null | undefined) {
   if (!live) return fetched || null;
   if (!fetched) return live;
   return fetched.rev > live.rev ? fetched : live;
 }
 
 /** Live links override fetched rows; fetched rows fill only sessions absent from live state. */
-export function linkedSessions(ref, sessions, detail) {
+export function linkedSessions(
+  ref: string,
+  sessions: readonly Session[] | null | undefined,
+  detail: TaskDetailData | null | undefined,
+) {
   const held = sessions || [];
-  const live = held.filter((s) => s && s.taskRef === ref);
+  const live: (Session | LinkedSession)[] = held.filter((s) => s && s.taskRef === ref);
   const ids = new Set(held.map((s) => s && s.id));
   const fetched = ((detail && detail.sessions) || []).filter((s) => s && !ids.has(s.id));
   return live.concat(fetched);
 }
 
 /** Route plain clicks in-app while preserving browser behavior for modified clicks. */
-function routeClick(path) {
+function routeClick(path: string): JSX.MouseEventHandler<HTMLAnchorElement> {
   return (event) => {
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -80,9 +96,9 @@ export function TaskDetail({
   onTaskRemoved,
   onStartSession,
   onAnnounce,
-}) {
-  const [detail, setDetail] = useState(null);
-  const [loadError, setLoadError] = useState(null);
+}: TaskDetailProps) {
+  const [detail, setDetail] = useState<TaskDetailData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [bodyDraft, setBodyDraft] = useState("");
@@ -95,14 +111,14 @@ export function TaskDetail({
   const onTaskRemovedRef = useRef(onTaskRemoved);
   onTaskRemovedRef.current = onTaskRemoved;
 
-  const publishRow = useCallback((row) => {
+  const publishRow = useCallback((row: Task | null | undefined) => {
     if (row && row.ref && onTaskRowRef.current) onTaskRowRef.current(row);
   }, []);
 
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     try {
-      const next = await fetchTaskDetail(taskRef);
+      const next = await fetchTaskDetail(taskRef) as TaskDetailData | null;
       if (generationRef.current !== generation) return;
       setDetail(next);
       setLoadError(null);
@@ -110,7 +126,7 @@ export function TaskDetail({
     } catch (e) {
       if (generationRef.current !== generation) return;
       setDetail(null);
-      setLoadError(errorMessage(e));
+      setLoadError(errorMessage(e) as string);
     }
   }, [taskRef, publishRow]);
 
@@ -125,7 +141,7 @@ export function TaskDetail({
   }, [taskRef, load]);
 
   /** Re-read after writes because the feed and blocked state are server-derived. */
-  const run = useCallback(async (label, work, reload = true) => {
+  const run = useCallback(async (label: string, work: () => Promise<void>, reload = true) => {
     setBusy(true);
     try {
       await work();
@@ -145,7 +161,7 @@ export function TaskDetail({
   const dirty = !!entry && (titleDraft !== (entry.title || "") || bodyDraft !== (entry.body || ""));
 
   // Only a live row seen and then lost proves deletion; initial absence may precede the baseline.
-  const seenLiveRef = useRef(null);
+  const seenLiveRef = useRef<string | null>(null);
   if (liveEntry) seenLiveRef.current = taskRef;
   const vanished = !busy && seenLiveRef.current === taskRef && !liveEntry;
 
@@ -154,7 +170,9 @@ export function TaskDetail({
   draftRef.current = { title: titleDraft, body: bodyDraft };
   const entryTitle = (entry && entry.title) || "";
   const entryBody = (entry && entry.body) || "";
-  const seededRef = useRef({ ref: null, title: "", body: "" });
+  const seededRef = useRef<{ ref: string | null; title: string; body: string }>({
+    ref: null, title: "", body: "",
+  });
   useEffect(() => {
     const seeded = seededRef.current;
     seededRef.current = { ref: taskRef, title: entryTitle, body: entryBody };
@@ -170,7 +188,7 @@ export function TaskDetail({
     navigate(routePath({ screen: SCREEN_TASKS, id: null }));
   }, []);
 
-  const saveEdits = (event) => {
+  const saveEdits = (event?: JSX.TargetedSubmitEvent<HTMLFormElement>) => {
     if (event) event.preventDefault();
     if (!entry || !dirty) return;
     const title = titleDraft.trim();
@@ -178,12 +196,12 @@ export function TaskDetail({
       onAnnounce("A task needs a title.", true);
       return;
     }
-    const patch = {};
+    const patch: TaskPatch = {};
     if (title !== (entry.title || "")) patch.title = title;
     if (bodyDraft !== (entry.body || "")) patch.body = bodyDraft;
     if (!("title" in patch) && !("body" in patch)) return;
     run("Could not save " + taskRef, async () => {
-      const saved = await patchTask(taskRef, patch);
+      const saved = await patchTask(taskRef, patch) as Task | null;
       publishRow(saved);
       onAnnounce("Saved " + taskRef + ".");
     });
@@ -195,31 +213,31 @@ export function TaskDetail({
     setBodyDraft(entry.body || "");
   };
 
-  const changeState = (event) => {
-    const next = event.target.value;
+  const changeState = (event: JSX.TargetedEvent<HTMLSelectElement>) => {
+    const next = (event.target as HTMLSelectElement).value;
     if (!entry || next === entry.state) return;
     run("Could not move " + taskRef, async () => {
-      const moved = await patchTask(taskRef, { state: next });
+      const moved = await patchTask(taskRef, { state: next }) as Task | null;
       publishRow(moved);
       onAnnounce(taskRef + " → " + taskStateLabel(next) + ".");
     });
   };
 
-  const addDependency = (event) => {
+  const addDependency = (event?: JSX.TargetedSubmitEvent<HTMLFormElement>) => {
     if (event) event.preventDefault();
     const on = depDraft.trim();
     if (!on) return;
     run("Could not add the dependency", async () => {
-      const edited = await editTaskDependency(taskRef, "add", on);
+      const edited = await editTaskDependency(taskRef, "add", on) as Task | null;
       publishRow(edited);
       setDepDraft("");
       onAnnounce(taskRef + " now depends on " + on + ".");
     });
   };
 
-  const removeDependency = (on) => {
+  const removeDependency = (on: string) => {
     run("Could not remove the dependency", async () => {
-      const edited = await editTaskDependency(taskRef, "remove", on);
+      const edited = await editTaskDependency(taskRef, "remove", on) as Task | null;
       publishRow(edited);
       onAnnounce(taskRef + " no longer depends on " + on + ".");
     });
@@ -243,163 +261,162 @@ export function TaskDetail({
     onStartSession((detail && detail.projectPath) || null, taskRef);
   };
 
-  const head = (children) => html`
+  const head = (children: ComponentChildren) => (
     <div class="task-detail-head">
-      ${children}
+      {children}
       <button id="task-detail-close" class="icon-button" type="button"
-              aria-label="Back to the board" onClick=${backToBoard}>×</button>
+              aria-label="Back to the board" onClick={backToBoard}>×</button>
     </div>
-  `;
+  );
 
   // A known deletion is more precise than the resulting 404 load error.
   if (vanished) {
-    return html`
-      <section class="task-detail" aria-label=${"Task " + taskRef}>
-        ${head(html`<h2 id="task-detail-title">${taskRef}</h2>`)}
+    return (
+      <section class="task-detail" aria-label={"Task " + taskRef}>
+        {head(<h2 id="task-detail-title">{taskRef}</h2>)}
         <p id="task-detail-gone" class="field-hint" role="status">
-          ${taskRef} has been deleted. Nothing here can be edited any more.
+          {taskRef} has been deleted. Nothing here can be edited any more.
         </p>
       </section>
-    `;
+    );
   }
 
   if (loadError) {
-    return html`
-      <section class="task-detail" aria-label=${"Task " + taskRef}>
-        ${head(html`<h2 id="task-detail-title">${taskRef}</h2>`)}
+    return (
+      <section class="task-detail" aria-label={"Task " + taskRef}>
+        {head(<h2 id="task-detail-title">{taskRef}</h2>)}
         <p id="task-detail-error" class="form-error" role="alert">
-          Could not load ${taskRef}: ${loadError}
+          Could not load {taskRef}: {loadError}
         </p>
       </section>
-    `;
+    );
   }
 
   // Dependencies, activity, and project path require the detail response, not just a live row.
   if (!detail || !entry) {
-    return html`
-      <section class="task-detail" aria-label=${"Task " + taskRef}>
-        ${head(html`<h2 id="task-detail-title">${taskRef}</h2>`)}
-        <p id="task-detail-loading" class="field-hint">Loading ${taskRef}…</p>
+    return (
+      <section class="task-detail" aria-label={"Task " + taskRef}>
+        {head(<h2 id="task-detail-title">{taskRef}</h2>)}
+        <p id="task-detail-loading" class="field-hint">Loading {taskRef}…</p>
       </section>
-    `;
+    );
   }
 
-  return html`
+  return (
     <section class="task-detail" aria-labelledby="task-detail-title">
-      ${head(html`
+      {head([
         <div id="task-detail-ident">
-          <h2 id="task-detail-title">${taskRef}</h2>
+          <h2 id="task-detail-title">{taskRef}</h2>
           <p id="task-detail-project" class="field-hint">
-            ${detail.projectName || entry.project}${detail.projectPath ? " · " + detail.projectPath : ""}
+            {detail.projectName || entry.project}{detail.projectPath ? " · " + detail.projectPath : ""}
           </p>
-        </div>
+        </div>,
         <div id="task-detail-tools">
-          <select id="task-detail-state" aria-label="State" disabled=${busy}
-                  value=${entry.state} onChange=${changeState}>
-            ${TASK_STATES.map((state) => html`
-              <option key=${state} value=${state} selected=${state === entry.state}>
-                ${taskStateLabel(state)}
+          <select id="task-detail-state" aria-label="State" disabled={busy}
+                  value={entry.state} onChange={changeState}>
+            {TASK_STATES.map((state) => (
+              <option key={state} value={state} selected={state === entry.state}>
+                {taskStateLabel(state)}
               </option>
-            `)}
+            ))}
           </select>
-          ${entry.blocked && html`
-            <span class="task-blocked" title="A dependency is not done yet">Blocked</span>`}
-          <button id="task-detail-start" class="button button-primary" type="button" disabled=${busy}
-                  onClick=${startSession}>Start session</button>
-        </div>
-      `)}
+          {entry.blocked && (
+            <span class="task-blocked" title="A dependency is not done yet">Blocked</span>)}
+          <button id="task-detail-start" class="button button-primary" type="button" disabled={busy}
+                  onClick={startSession}>Start session</button>
+        </div>,
+      ])}
 
-      <form id="task-detail-form" onSubmit=${saveEdits}>
+      <form id="task-detail-form" onSubmit={saveEdits}>
         <label class="field">
           <span>Title</span>
-          <input id="task-detail-title-input" type="text" maxlength="200" disabled=${busy}
-                 value=${titleDraft} onInput=${(e) => setTitleDraft(e.target.value)} />
+          <input id="task-detail-title-input" type="text" maxlength={200} disabled={busy}
+                 value={titleDraft} onInput={(e) => setTitleDraft((e.target as HTMLInputElement).value)} />
         </label>
         <label class="field">
           <span>Description</span>
-          <textarea id="task-detail-body" class="task-detail-body" rows="8" disabled=${busy}
-                    value=${bodyDraft} onInput=${(e) => setBodyDraft(e.target.value)}></textarea>
+          <textarea id="task-detail-body" class="task-detail-body" rows={8} disabled={busy}
+                    value={bodyDraft} onInput={(e) => setBodyDraft((e.target as HTMLTextAreaElement).value)}></textarea>
         </label>
         <div id="task-detail-actions">
           <button id="task-detail-save" class="button button-primary" type="submit"
-                  disabled=${busy || !dirty}>Save</button>
+                  disabled={busy || !dirty}>Save</button>
           <button id="task-detail-revert" class="button button-quiet" type="button"
-                  disabled=${busy || !dirty} onClick=${revertEdits}>Revert</button>
+                  disabled={busy || !dirty} onClick={revertEdits}>Revert</button>
           <button id="task-detail-delete" class="button button-quiet" type="button"
-                  disabled=${busy} onClick=${removeTask}>Delete</button>
+                  disabled={busy} onClick={removeTask}>Delete</button>
         </div>
       </form>
 
       <section class="task-deps" aria-label="Dependencies">
-        <h3>Depends on <span class="task-dep-count">${dependsOn.length}</span></h3>
-        ${dependsOn.length === 0
-          ? html`<p class="field-hint">Nothing — this task is ready whenever its column is.</p>`
-          : html`
+        <h3>Depends on <span class="task-dep-count">{dependsOn.length}</span></h3>
+        {dependsOn.length === 0
+          ? <p class="field-hint">Nothing — this task is ready whenever its column is.</p>
+          : (
             <ul>
-              ${dependsOn.map((ref) => html`
-                <li key=${ref}>
-                  <a href=${taskPath(ref)} onClick=${routeClick(taskPath(ref))}>${ref}</a>
-                  <button class="button button-quiet button-small" type="button" disabled=${busy}
-                          aria-label=${"Remove the dependency on " + ref}
-                          onClick=${() => removeDependency(ref)}>Remove</button>
+              {dependsOn.map((ref) => (
+                <li key={ref}>
+                  <a href={taskPath(ref)} onClick={routeClick(taskPath(ref))}>{ref}</a>
+                  <button class="button button-quiet button-small" type="button" disabled={busy}
+                          aria-label={"Remove the dependency on " + ref}
+                          onClick={() => removeDependency(ref)}>Remove</button>
                 </li>
-              `)}
+              ))}
             </ul>
-          `}
-        <form id="task-detail-dep-form" onSubmit=${addDependency}>
+          )}
+        <form id="task-detail-dep-form" onSubmit={addDependency}>
           <label class="field">
             <span>Add a dependency <small>the ref of a task in this project</small></span>
-            <input id="task-detail-dep-input" type="text" spellcheck=${false} autocomplete="off"
-                   placeholder="local:42" disabled=${busy}
-                   value=${depDraft} onInput=${(e) => setDepDraft(e.target.value)} />
+            <input id="task-detail-dep-input" type="text" spellcheck={false} autocomplete="off"
+                   placeholder="local:42" disabled={busy}
+                   value={depDraft} onInput={(e) => setDepDraft((e.target as HTMLInputElement).value)} />
           </label>
           <button id="task-detail-dep-add" class="button" type="submit"
-                  disabled=${busy || depDraft.trim().length === 0}>Add</button>
+                  disabled={busy || depDraft.trim().length === 0}>Add</button>
         </form>
-        ${dependents.length > 0 && html`
+        {dependents.length > 0 && (
           <p id="task-detail-dependents" class="field-hint">
-            Blocks:
-            ${dependents.map((ref) => html`
-              <a key=${ref} href=${taskPath(ref)} onClick=${routeClick(taskPath(ref))}>${ref}</a>
-            `)}
-          </p>`}
+            Blocks:{dependents.map((ref) => (
+              <a key={ref} href={taskPath(ref)} onClick={routeClick(taskPath(ref))}>{ref}</a>
+            ))}
+          </p>)}
       </section>
 
       <section class="task-sessions" aria-label="Linked sessions">
         <h3>Sessions</h3>
-        ${linked.length === 0
-          ? html`<p class="field-hint">No session is working on this task.</p>`
-          : html`
+        {linked.length === 0
+          ? <p class="field-hint">No session is working on this task.</p>
+          : (
             <ul>
-              ${linked.map((s) => html`
-                <li key=${s.id}>
-                  <span class="task-session-dot" data-state=${stateBadge(s.state).cls}
-                        data-archived=${s.archived ? "true" : null}
-                        title=${stateBadge(s.state).label} aria-hidden="true"></span>
-                  <a href=${sessionPath(s.id)} onClick=${routeClick(sessionPath(s.id))}>
-                    ${displayName(s)}
+              {linked.map((s) => (
+                <li key={s.id}>
+                  <span class="task-session-dot" data-state={stateBadge(s.state).cls}
+                        data-archived={s.archived ? "true" : null}
+                        title={stateBadge(s.state).label} aria-hidden="true"></span>
+                  <a href={sessionPath(s.id)} onClick={routeClick(sessionPath(s.id))}>
+                    {displayName({ tmuxSession: "", ...s })}
                   </a>
                   <small>
-                    ${s.agent || "?"} · ${stateBadge(s.state).label}${s.archived ? " · done" : ""}
+                    {s.agent || "?"} · {stateBadge(s.state).label}{s.archived ? " · done" : ""}
                   </small>
                 </li>
-              `)}
+              ))}
             </ul>
-          `}
+          )}
       </section>
 
       <section class="task-activity" aria-label="Activity">
         <h3>Activity</h3>
-        ${activity.length === 0
-          ? html`<p class="field-hint">Nothing has happened to this task yet.</p>`
-          : activity.map((row) => html`
-            <div class="task-activity-row" data-kind=${row.kind} key=${row.id}>
-              <time datetime=${activityTimestampAttr(row.ts)}>${activityTime(row.ts)}</time>
-              <strong>${row.author}</strong>
-              <span>${activityText(row)}</span>
+        {activity.length === 0
+          ? <p class="field-hint">Nothing has happened to this task yet.</p>
+          : activity.map((row) => (
+            <div class="task-activity-row" data-kind={row.kind} key={row.id}>
+              <time datetime={activityTimestampAttr(row.ts) ?? undefined}>{activityTime(row.ts)}</time>
+              <strong>{row.author}</strong>
+              <span>{activityText(row)}</span>
             </div>
-          `)}
+          ))}
       </section>
     </section>
-  `;
+  );
 }

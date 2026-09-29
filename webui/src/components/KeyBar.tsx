@@ -10,7 +10,7 @@ interface TerminalKey {
 
 export interface KeyBarProps {
   barRef: RefObject<HTMLDivElement>;
-  sendBytesRef: RefObject<(bytes: Uint8Array) => void>;
+  sendBytesRef: RefObject<(bytes: Uint8Array<ArrayBuffer>) => void>;
   ctrlActive: boolean;
   onToggleCtrl: () => void;
   onReleaseCtrl: () => void;
