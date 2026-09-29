@@ -238,6 +238,283 @@ class MobileFeaturesTest {
         }
     }
 
+    @Test
+    fun aMissingUnicodeChunkOnTheSameBuildKeepsTheTerminalUsableWithoutReloading() {
+        onMissingUnicodeChunk("mobile-same-build") { harness, page, firstChunk, chunkRequests ->
+            val requests = StaleBuildRequests(page, harness.baseUrl + "/")
+            val document = documentToken(page)
+
+            firstChunk.fulfill(missingUnicodeChunkResponse())
+            page.waitForCondition { requests.finished.isNotEmpty() }
+            assertPreloadFailures(page, 1)
+            assertUnicodeWidth(page, "same-build-fallback", 2.0)
+            assertSameDocumentAfterRoundTrip(page, document, requests)
+
+            assertEquals(
+                null,
+                page.evaluate("key => sessionStorage.getItem(key)", STALE_BUILD_RELOAD_KEY),
+                "a missing chunk on the current build does not spend its reload",
+            )
+            assertEquals(1, requests.started.size)
+            assertEquals(1, requests.finished.size)
+            assertEquals(1, chunkRequests.size, "the real Unicode 11 chunk failed in one document")
+        }
+    }
+
+    @Test
+    fun aMissingUnicodeChunkReloadsOntoADifferentEntryOnceAndRecoversUnicode11Widths() {
+        onMissingUnicodeChunk("mobile-stale-build", recoverAfterReload = true) { harness, page, firstChunk, chunkRequests ->
+            val requests = StaleBuildRequests(page, harness.baseUrl + "/")
+            val firstDocument = documentToken(page)
+            val entryScript = page.locator("script[type='module'][src]")
+            val entryModuleSrc = entryScript.getAttribute("src")!!
+            val entryModuleUrl = entryScript.evaluate("script => script.src") as String
+            val nextEntryModuleUrl = "$entryModuleUrl?build=next"
+            // A fulfilled navigation lacks the loopback response's address space, so Chromium gates
+            // its real loopback WebSockets on local-network permission.
+            page.context().grantPermissions(
+                listOf("local-network-access"),
+                BrowserContext.GrantPermissionsOptions().setOrigin(harness.baseUrl),
+            )
+            page.route({ url: String ->
+                url == harness.baseUrl + "/" || url == harness.baseUrl + SESSION_ROUTE
+            }) { route ->
+                serveNextBuildShell(route, entryModuleSrc)
+            }
+
+            firstChunk.fulfill(missingUnicodeChunkResponse())
+            page.waitForCondition { requests.finished.isNotEmpty() && requests.navigations.isNotEmpty() }
+            assertThat(entryScript).hasAttribute("src", "$entryModuleSrc?build=next")
+            assertThat(page.locator(TERMINAL_ROWS)).containsText(TERMINAL_BANNER)
+            val reloadedDocument = documentToken(page)
+            assertTrue(firstDocument != reloadedDocument, "the reload creates a new document")
+            assertUnicodeWidth(page, "stale-build-recovered", 3.0)
+            assertSameDocumentAfterRoundTrip(page, reloadedDocument, requests, reloads = 1)
+
+            assertEquals(nextEntryModuleUrl, entryScript.evaluate("script => script.src"))
+            assertEquals(
+                listOf(entryModuleUrl, nextEntryModuleUrl),
+                page.evaluate("key => JSON.parse(sessionStorage.getItem(key))", STALE_BUILD_RELOAD_KEY),
+                "the reload records both the running and served entries",
+            )
+            assertEquals(1, requests.started.size)
+            assertEquals(1, requests.finished.size)
+            assertEquals(2, chunkRequests.size, "both documents requested the real Unicode 11 chunk")
+        }
+    }
+
+    @Test
+    fun aReloadThatLandsOnTheSameBuildCannotClaimTheSameRunningAndServedPairAgain() {
+        onMissingUnicodeChunk("mobile-stale-build-loop") { harness, page, firstChunk, chunkRequests ->
+            val requests = StaleBuildRequests(page, harness.baseUrl + "/")
+            val firstDocument = documentToken(page)
+            val entryScript = page.locator("script[type='module'][src]")
+            val entryModuleSrc = entryScript.getAttribute("src")!!
+            val entryModuleUrl = entryScript.evaluate("script => script.src") as String
+            val secondCheck = AtomicReference<Route?>(null)
+            page.route({ url: String ->
+                url == harness.baseUrl + "/" || url == harness.baseUrl + SESSION_ROUTE
+            }) { route ->
+                if (route.request().isNavigationRequest()) {
+                    route.resume()
+                } else if (requests.navigations.isEmpty()) {
+                    serveNextBuildShell(route, entryModuleSrc)
+                } else {
+                    secondCheck.set(route)
+                }
+            }
+
+            firstChunk.fulfill(missingUnicodeChunkResponse())
+            page.waitForCondition { secondCheck.get() != null }
+            assertThat(page.locator(TERMINAL_ROWS)).containsText(TERMINAL_BANNER)
+            val reloadedDocument = documentToken(page)
+            assertTrue(firstDocument != reloadedDocument, "the first check reloads the document")
+            assertEquals(entryModuleUrl, entryScript.evaluate("script => script.src"))
+
+            serveNextBuildShell(secondCheck.get()!!, entryModuleSrc)
+            page.waitForCondition { requests.finished.size >= 2 }
+            assertPreloadFailures(page, 1)
+            assertUnicodeWidth(page, "reload-loop-fallback", 2.0)
+            assertSameDocumentAfterRoundTrip(page, reloadedDocument, requests, reloads = 1)
+
+            assertEquals(
+                listOf(entryModuleUrl, "$entryModuleUrl?build=next"),
+                page.evaluate("key => JSON.parse(sessionStorage.getItem(key))", STALE_BUILD_RELOAD_KEY),
+                "landing on the original build preserves the pair that refuses the second reload",
+            )
+            assertEquals(2, requests.started.size)
+            assertEquals(2, requests.finished.size)
+            assertEquals(2, chunkRequests.size, "both documents failed to load the real Unicode 11 chunk")
+        }
+    }
+
+    @Test
+    fun aMissingUnicodeChunkWithAnOfflineShellCheckKeepsTheTerminalUsableWithoutReloading() {
+        onMissingUnicodeChunk("mobile-offline-build") { harness, page, firstChunk, chunkRequests ->
+            val requests = StaleBuildRequests(page, harness.baseUrl + "/")
+            val document = documentToken(page)
+            page.route(harness.baseUrl + "/") { route -> route.abort() }
+
+            firstChunk.fulfill(missingUnicodeChunkResponse())
+            page.waitForCondition { requests.failed.isNotEmpty() }
+            assertPreloadFailures(page, 1)
+            assertUnicodeWidth(page, "offline-build-fallback", 2.0)
+            assertSameDocumentAfterRoundTrip(page, document, requests)
+
+            assertEquals(
+                null,
+                page.evaluate("key => sessionStorage.getItem(key)", STALE_BUILD_RELOAD_KEY),
+                "a network failure does not spend the reload needed for a later update",
+            )
+            assertEquals(1, requests.started.size)
+            assertEquals(1, requests.failed.size)
+            assertEquals("fetch", requests.failed.single().resourceType())
+            assertEquals(1, chunkRequests.size, "the real Unicode 11 chunk failed in one document")
+        }
+    }
+
+    @Test
+    fun concurrentUnicodeChunkFailuresShareTheShellCheckAlreadyInFlight() {
+        onMissingUnicodeChunk("mobile-concurrent-chunks") { harness, page, firstChunk, chunkRequests ->
+            val requests = StaleBuildRequests(page, harness.baseUrl + "/")
+            val document = documentToken(page)
+            val heldChecks = CopyOnWriteArrayList<Route>()
+            val graphemeRequests = CopyOnWriteArrayList<Request>()
+            page.onRequest { if (UNICODE_GRAPHEMES_CHUNK.containsMatchIn(it.url())) graphemeRequests.add(it) }
+            page.route(harness.baseUrl + "/") { route -> heldChecks.add(route) }
+            page.route({ url: String -> UNICODE_GRAPHEMES_CHUNK.containsMatchIn(url) }) { route ->
+                route.fulfill(missingUnicodeChunkResponse())
+            }
+
+            firstChunk.fulfill(missingUnicodeChunkResponse())
+            page.waitForCondition { heldChecks.isNotEmpty() }
+            assertPreloadFailures(page, 1)
+
+            runLeaderCommand(page, "Preferences")
+            assertThat(page.locator("#prefs-dialog")).isVisible()
+            page.locator("#prefs-terminal-unicode").selectOption(UNICODE_GRAPHEMES_MODE)
+            page.locator("#prefs-submit").click()
+            assertThat(page.locator("#prefs-dialog")).hasCount(0)
+
+            assertPreloadFailures(page, 2)
+            assertSameDocumentAfterRoundTrip(page, document, requests)
+            assertEquals(1, graphemeRequests.size, "a second real lazy chunk failed in the same document")
+            assertEquals(1, requests.started.size, "the second failure shares the pending shell check")
+            assertEquals(0, requests.finished.size, "the shell response is still held")
+            assertEquals(1, heldChecks.size)
+
+            heldChecks.single().resume()
+            page.waitForCondition { requests.finished.isNotEmpty() }
+            assertUnicodeWidth(page, "concurrent-fallback", 2.0)
+            assertSameDocumentAfterRoundTrip(page, document, requests)
+            assertEquals(1, requests.started.size)
+            assertEquals(1, requests.finished.size)
+            assertEquals(1, chunkRequests.size)
+        }
+    }
+
+    private fun onMissingUnicodeChunk(
+        trace: String,
+        recoverAfterReload: Boolean = false,
+        block: (Harness, Page, Route, List<String>) -> Unit,
+    ) {
+        onMobileTerminal(trace) { harness, _, page ->
+            val chunkRequests = CopyOnWriteArrayList<String>()
+            val firstChunk = AtomicReference<Route?>(null)
+            page.route({ url: String -> UNICODE_11_CHUNK.containsMatchIn(url) }) { route ->
+                chunkRequests.add(route.request().url())
+                // The failure must arrive after the test installs its shell routes and listeners.
+                if (firstChunk.compareAndSet(null, route)) return@route
+                if (recoverAfterReload) route.resume() else route.fulfill(missingUnicodeChunkResponse())
+            }
+            page.addInitScript(
+                """
+                (() => {
+                  if (window !== window.top) return;
+                  localStorage.setItem("kotgent.terminalUnicode.v1", "$UNICODE_11_MODE");
+                  window.__kotgentPreloadErrors = [];
+                  window.addEventListener("vite:preloadError", event => {
+                    window.__kotgentPreloadErrors.push(event);
+                  });
+                })();
+                """.trimIndent(),
+            )
+
+            page.navigate(harness.baseUrl + SESSION_ROUTE)
+            assertThat(page.locator(TERMINAL_ROWS)).containsText(TERMINAL_BANNER)
+            page.waitForCondition { firstChunk.get() != null }
+
+            block(harness, page, firstChunk.get()!!, chunkRequests)
+        }
+    }
+
+    private fun assertPreloadFailures(page: Page, count: Int) {
+        page.waitForFunction("count => window.__kotgentPreloadErrors.length >= count", count)
+        assertEquals(
+            List(count) { false },
+            page.evaluate("() => window.__kotgentPreloadErrors.map(event => event.defaultPrevented)"),
+            "the real lazy import failures dispatch uncancelled preload errors",
+        )
+    }
+
+    private fun documentToken(page: Page): Double =
+        (page.evaluate("() => performance.timeOrigin") as Number).toDouble()
+
+    private fun assertSameDocumentAfterRoundTrip(
+        page: Page,
+        document: Double,
+        requests: StaleBuildRequests,
+        reloads: Int = 0,
+    ) {
+        assertEquals(
+            true,
+            page.evaluate(
+                """
+                async () => {
+                  const response = await fetch("/api/v1/sessions", { cache: "no-store" });
+                  await response.text();
+                  return response.ok;
+                }
+                """.trimIndent(),
+            ),
+            "the page completes another request to the daemon",
+        )
+        assertEquals(document, documentToken(page), "the daemon round trip stays in the same document")
+        assertEquals(reloads, requests.navigations.size, "no extra main-frame navigation occurred")
+    }
+
+    private fun serveNextBuildShell(route: Route, entryModuleSrc: String) {
+        val original = route.fetch()
+        route.fulfill(
+            Route.FulfillOptions()
+                .setResponse(original)
+                .setBody(
+                    original.text().replace("src=\"$entryModuleSrc\"", "src=\"$entryModuleSrc?build=next\""),
+                ),
+        )
+    }
+
+    private class StaleBuildRequests(page: Page, private val shellUrl: String) {
+        val started = CopyOnWriteArrayList<Request>()
+        val finished = CopyOnWriteArrayList<Request>()
+        val failed = CopyOnWriteArrayList<Request>()
+        val navigations = CopyOnWriteArrayList<String>()
+
+        init {
+            page.onRequest { if (isShellCheck(it)) started.add(it) }
+            page.onRequestFinished { if (isShellCheck(it)) finished.add(it) }
+            page.onRequestFailed { if (isShellCheck(it)) failed.add(it) }
+            page.onFrameNavigated { if (it == page.mainFrame()) navigations.add(it.url()) }
+        }
+
+        private fun isShellCheck(request: Request): Boolean =
+            request.url() == shellUrl && !request.isNavigationRequest()
+    }
+
+    private fun missingUnicodeChunkResponse(): Route.FulfillOptions = Route.FulfillOptions()
+        .setStatus(404)
+        .setContentType("text/plain")
+        .setBody("missing Unicode addon")
 
     private fun onMobileTerminal(trace: String, block: (Harness, BrowserContext, Page) -> Unit) {
         Harness(TERMINAL_SCENARIO).use { harness ->
@@ -305,8 +582,12 @@ class MobileFeaturesTest {
 
         const val DEFAULT_UNICODE_MODE = "default"
         const val UNICODE_11_MODE = "11"
+        const val UNICODE_GRAPHEMES_MODE = "15-graphemes"
         const val UNICODE_ADDON_MARKER = "addon-unicode"
         val UNICODE_11_CHUNK = Regex("/assets/addon-unicode11-[A-Za-z0-9_-]+\\.js$")
+        val UNICODE_GRAPHEMES_CHUNK = Regex("/assets/addon-unicode-graphemes-[A-Za-z0-9_-]+\\.js$")
+
+        const val STALE_BUILD_RELOAD_KEY = "kotgent.staleBuildReload.v1"
 
         // Control-C is last because the tty line discipline may flush earlier queued echo on INTR.
         val SPECIAL_KEYS = listOf(

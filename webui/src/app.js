@@ -45,6 +45,7 @@ import { watchRefreshSources } from "./lib/resume.js";
 import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import { READY } from "./lib/readiness.js";
+import { claimStaleBuildReload, isStaleBuild, sessionStorageOrNull } from "./lib/stale-build.js";
 import {
   loadAdhdMode,
   loadSidebarCollapsed,
@@ -145,6 +146,26 @@ import {
   RestoreProjectDialog,
   UploadFilesDialog,
 } from "./components/dialogs.js";
+
+let staleBuildCheckInFlight = false;
+window.addEventListener("vite:preloadError", async () => {
+  if (staleBuildCheckInFlight) return;
+  staleBuildCheckInFlight = true;
+  try {
+    const response = await fetch("/", { cache: "no-store", credentials: "same-origin" });
+    if (!response.ok) return;
+    const shell = new DOMParser().parseFromString(await response.text(), "text/html");
+    const entrySrc = shell.querySelector('script[type="module"][src]')?.getAttribute("src");
+    if (!isStaleBuild(entrySrc, import.meta.url, location.origin)) return;
+    const servedEntryUrl = new URL(entrySrc, location.origin).href;
+    if (claimStaleBuildReload(sessionStorageOrNull(), import.meta.url, servedEntryUrl)) {
+      location.reload();
+    }
+  } catch (_) {
+  } finally {
+    staleBuildCheckInFlight = false;
+  }
+});
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
 const REATTACH_LIVENESS_TIMEOUT_MS = 10_000;

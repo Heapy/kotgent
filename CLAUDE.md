@@ -145,6 +145,9 @@ the common workflow and links to those guides; implementation invariants belong 
   offline shell. Root shell and worker responses must revalidate.
 - Files under `assets/` are cached as immutable; all other static files revalidate. Content-hashed names
   make immutability safe: changed bytes have a different URL.
+- On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
+  one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
+  previous builds' assets are deliberately not kept.
 - `webui/src/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
 - Keep terminal reattachment decisions in `webui/src/lib/reattach.js`; `app.js` supplies current
