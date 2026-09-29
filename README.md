@@ -372,9 +372,10 @@ Pass `--no-daemon` when you want to stage the source build without replacing the
 installed Web UI files, without restarting the daemon, and a browser reload picks them up. It needs a
 full install first, and the installed binary must already serve every API the new Web UI calls.
 
-For Web UI work, run `npm run watch --prefix webui` while a daemon serves the checkout's
-`resources/webui/`, then reload the browser after a completed build. `run-daemon.sh` installs the Web UI
-dependencies and builds it before starting the checkout's daemon; run the watcher in a separate terminal.
+For Web UI work, run `./run-daemon.sh`: it installs dependencies when needed, builds the Web UI, and
+keeps it rebuilt on save while the daemon serves the checkout's `resources/webui/`. No second terminal
+is needed; reload the browser after a completed build in `build/webui-watch.log`. Press `r` to rebuild
+and restart only the Kotlin daemon. The script stops its Web UI watcher when it exits.
 
 Linux source builds use Ubuntu 22.04 and need `libsqlite3-dev`, `libstdc++-11-dev`, and
 `zlib1g-dev` in addition to the runtime dependencies. The build links against Ubuntu’s glibc

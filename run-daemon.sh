@@ -12,11 +12,21 @@ fi
 
 daemon_args=("$@")
 daemon_pid=
+webui_pid=
+webui_log="$script_dir/build/webui-watch.log"
 exit_requested=0
 next_kexe_path=
 
 request_exit() {
     exit_requested=1
+}
+
+child_is_running() {
+    local pid
+    for pid in $(jobs -pr); do
+        [[ "$pid" == "$1" ]] && return 0
+    done
+    return 1
 }
 
 stop_daemon() {
@@ -36,15 +46,78 @@ stop_daemon() {
     daemon_pid=
 }
 
+stop_webui_watcher() {
+    local pid=$webui_pid
+    [[ -n "$pid" ]] || return
+
+    if child_is_running "$pid"; then
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+
+    while child_is_running "$pid"; do
+        wait "$pid" 2>/dev/null || true
+    done
+    wait "$pid" 2>/dev/null || true
+    webui_pid=
+}
+
 cleanup() {
     local status=$?
-    trap - EXIT INT QUIT TERM HUP
+    trap - EXIT
+    # Repeated signals must not interrupt child cleanup.
+    trap '' INT QUIT TERM HUP
+    stop_webui_watcher
     stop_daemon
     exit "$status"
 }
 
 trap request_exit INT QUIT TERM HUP
 trap cleanup EXIT
+
+install_webui_dependencies() {
+    local lock_hash
+    lock_hash=$(node -e '
+        const fs = require("fs"), crypto = require("crypto");
+        console.log(crypto.createHash("sha256")
+            .update(fs.readFileSync("webui/package-lock.json")).digest("hex"));
+    ') || return
+    local stamp=webui/node_modules/.run-daemon-package-lock.sha256
+    if [[ -d webui/node_modules && -f "$stamp" && "$(<"$stamp")" == "$lock_hash" ]]; then
+        return 0
+    fi
+
+    printf 'installing Web UI dependencies...\n'
+    npm ci --prefix webui || return
+    if ((exit_requested)); then
+        return 130
+    fi
+    printf '%s\n' "$lock_hash" > "$stamp"
+}
+
+start_webui_watcher() {
+    # Monitor mode isolates Vite from terminal signals handled by the supervisor.
+    set -m
+    (
+        cd webui || exit 1
+        exec node node_modules/vite/bin/vite.js build --watch
+    ) </dev/null >>"$webui_log" 2>&1 &
+    webui_pid=$!
+    set +m
+
+    printf 'Web UI watcher started (pid %s)\n' "$webui_pid"
+}
+
+ensure_webui_watcher() {
+    if ((exit_requested)) || child_is_running "$webui_pid"; then
+        return
+    fi
+
+    wait "$webui_pid"
+    local status=$?
+    webui_pid=
+    printf 'Web UI watcher exited with status %s; restarting\n' "$status" >&2
+    start_webui_watcher
+}
 
 build_binary() {
     next_kexe_path=
@@ -54,7 +127,6 @@ build_binary() {
         Linux/x86_64) export KOTGENT_TARGET_PLATFORM=linuxX64; local module=kotgent-linux ;;
         *) printf 'unsupported build host; use a release archive on Linux ARM64\n' >&2; return 1 ;;
     esac
-    npm run build --prefix webui || return
     ./kotlin build -p "$KOTGENT_TARGET_PLATFORM" -m "$module" || return
     ./kotlin "do" kexePath || return
 
@@ -88,17 +160,19 @@ start_daemon() {
 }
 
 daemon_is_running() {
-    [[ -n "$daemon_pid" ]] && [[ "$(jobs -pr)" == "$daemon_pid" ]]
+    [[ -n "$daemon_pid" ]] && child_is_running "$daemon_pid"
 }
 
 wait_for_action() {
     local key
 
     while daemon_is_running; do
+        ensure_webui_watcher
         key=
         if IFS= read -r -s -n 1 -t 1 key; then
             case "$key" in
                 r | R)
+                    ensure_webui_watcher
                     return 0
                     ;;
                 q | Q)
@@ -116,8 +190,21 @@ wait_for_action() {
     return 2
 }
 
-printf 'installing Web UI dependencies...\n'
-npm ci --prefix webui || exit 1
+install_webui_dependencies || exit 1
+if ((exit_requested)); then
+    exit 130
+fi
+
+printf 'building initial Web UI...\n'
+npm run build --prefix webui || exit 1
+if ((exit_requested)); then
+    exit 130
+fi
+
+mkdir -p build || exit 1
+: >"$webui_log" || exit 1
+printf 'Web UI watcher log: %s\n' "$webui_log"
+start_webui_watcher
 
 printf 'building initial daemon...\n'
 if ! build_binary; then
@@ -131,6 +218,7 @@ if ((exit_requested)); then
     exit 130
 fi
 
+ensure_webui_watcher
 start_daemon
 printf 'r: rebuild and restart on success. q or Ctrl-C: stop.\n'
 
@@ -155,6 +243,7 @@ while :; do
         if ((exit_requested)); then
             exit 130
         fi
+        ensure_webui_watcher
         if ! daemon_is_running; then
             wait "$daemon_pid"
             daemon_status=$?
@@ -170,6 +259,7 @@ while :; do
         exit 130
     fi
 
+    ensure_webui_watcher
     old_pid=$daemon_pid
     printf 'build succeeded; stopping daemon %s...\n' "$old_pid"
     stop_daemon
