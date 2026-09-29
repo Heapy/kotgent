@@ -5,12 +5,52 @@
 
 /* eslint-env serviceworker */
 
-// A classic worker cannot import the shared API-prefix helper.
+import { apiPath, NOTIFICATIONS_URL, SUBSCRIBE_URL, UNSUBSCRIBE_URL } from "./lib/api-paths.ts";
+
+declare const self: ServiceWorkerGlobalScope;
+
+// WebWorker's NotificationOptions omits the Notifications API's renotify option.
+declare global {
+  interface NotificationOptions {
+    renotify?: boolean;
+  }
+}
+
+interface PushPreferenceMessage {
+  type?: unknown;
+  enabled?: unknown;
+  endpoints?: unknown;
+}
+
+interface NotificationCandidate {
+  type?: unknown;
+  sessionId?: unknown;
+  sessionName?: unknown;
+  id?: unknown;
+  provider?: unknown;
+  usedBefore?: unknown;
+  usedBeforeSeenAt?: unknown;
+}
+
+type InboxNotification = {
+  type: "session.attention";
+  sessionId: string;
+  sessionName?: unknown;
+} | {
+  type: "usage.reset";
+  id: string;
+  provider: string;
+  usedBefore: number;
+  usedBeforeSeenAt: number;
+};
+
+interface NotificationData {
+  type?: string;
+  sessionId?: string;
+}
+
 const TITLE = "Kotgent — needs attention";
-const NOTIFICATIONS_URL = "/api/v1/notifications";
 const NOTIFICATIONS_TIMEOUT_MS = 10_000;
-const PUSH_SUBSCRIBE_URL = "/api/v1/push/subscribe";
-const PUSH_UNSUBSCRIBE_URL = "/api/v1/push/unsubscribe";
 const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 const PUSH_PREFERENCE_CACHE = "kotgent-push-preference-v1";
 const PUSH_PREFERENCE_URL = "/.kotgent-push-preference";
@@ -34,14 +74,15 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  const message = event.data;
+  const message: PushPreferenceMessage | null = event.data;
   if (!message || message.type !== PUSH_PREFERENCE_MESSAGE || typeof message.enabled !== "boolean") return;
   const reply = event.ports && event.ports[0];
+  const enabled = message.enabled;
   const endpoints = Array.isArray(message.endpoints)
-    ? message.endpoints.filter((endpoint) => typeof endpoint === "string" && endpoint.length > 0)
+    ? message.endpoints.filter((endpoint: unknown): endpoint is string => typeof endpoint === "string" && endpoint.length > 0)
     : [];
-  const applied = queuePushLifecycle(() => applyPushPreference(message.enabled, endpoints));
-  const answer = (value) => {
+  const applied = queuePushLifecycle(() => applyPushPreference(enabled, endpoints));
+  const answer = (value: boolean) => {
     try {
       if (reply) reply.postMessage(value);
     } catch (_) {}
@@ -54,11 +95,11 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const data = event.notification.data || {};
+  const data: NotificationData = event.notification.data || {};
   event.waitUntil(openNotification(data));
 });
 
-async function postPushState(url, body) {
+async function postPushState(url: string, body: unknown) {
   const response = await fetch(url, {
     method: "POST",
     credentials: "include",
@@ -68,28 +109,28 @@ async function postPushState(url, body) {
   if (!response.ok) throw new Error("push subscription synchronization failed: HTTP " + response.status);
 }
 
-async function registerPushSubscription(subscription) {
+async function registerPushSubscription(subscription: PushSubscription) {
   const json = subscription.toJSON();
   const keys = json.keys || {};
-  await postPushState(PUSH_SUBSCRIBE_URL, {
+  await postPushState(apiPath(SUBSCRIBE_URL), {
     endpoint: json.endpoint,
-    p256dh: keys.p256dh || "",
-    auth: keys.auth || "",
+    p256dh: keys["p256dh"] || "",
+    auth: keys["auth"] || "",
   });
 }
 
-async function unregisterPushSubscription(endpoint) {
-  await postPushState(PUSH_UNSUBSCRIBE_URL, { endpoint: endpoint });
+async function unregisterPushSubscription(endpoint: string) {
+  await postPushState(apiPath(UNSUBSCRIBE_URL), { endpoint: endpoint });
 }
 
-function queuePushLifecycle(operation) {
+function queuePushLifecycle(operation: () => Promise<void>) {
   const queued = pushLifecycle.catch(() => {}).then(operation);
   pushLifecycle = queued.catch(() => {});
   return queued;
 }
 
 // Cache is only a one-record preference store; it is never used for fetch responses.
-async function storePushPreference(enabled) {
+async function storePushPreference(enabled: boolean) {
   const cache = await self.caches.open(PUSH_PREFERENCE_CACHE);
   await cache.put(PUSH_PREFERENCE_URL, new Response(enabled ? "1" : "0"));
 }
@@ -108,11 +149,11 @@ async function pushIsStillWanted() {
 }
 
 // Persist OFF before deleting both remembered daemon endpoints and the current browser subscription.
-async function applyPushPreference(enabled, rememberedEndpoints) {
+async function applyPushPreference(enabled: boolean, rememberedEndpoints: readonly string[]) {
   await storePushPreference(enabled);
   if (enabled) return;
-  const daemonDrops = new Map();
-  const startDaemonDrop = (endpoint) => {
+  const daemonDrops = new Map<string, Promise<boolean>>();
+  const startDaemonDrop = (endpoint: string) => {
     if (!endpoint || daemonDrops.has(endpoint)) return;
     daemonDrops.set(
       endpoint,
@@ -120,7 +161,7 @@ async function applyPushPreference(enabled, rememberedEndpoints) {
     );
   };
   rememberedEndpoints.forEach(startDaemonDrop);
-  let subscription = null;
+  let subscription: PushSubscription | null = null;
   try {
     subscription = await self.registration.pushManager.getSubscription();
   } catch (_) {}
@@ -131,7 +172,7 @@ async function applyPushPreference(enabled, rememberedEndpoints) {
   ]);
 }
 
-async function discardPushSubscription(subscription) {
+async function discardPushSubscription(subscription: PushSubscription) {
   await Promise.allSettled([
     unregisterPushSubscription(subscription.endpoint),
     subscription.unsubscribe(),
@@ -139,7 +180,7 @@ async function discardPushSubscription(subscription) {
 }
 
 // Store a rotated endpoint before removing the old one; recreate a missing replacement only if still wanted.
-async function syncPushSubscription(event) {
+async function syncPushSubscription(event: PushSubscriptionChangeEvent) {
   const oldSubscription = event.oldSubscription || null;
   let replacement = event.newSubscription || null;
   if (!replacement && oldSubscription && await pushIsStillWanted()) {
@@ -166,25 +207,26 @@ async function syncPushSubscription(event) {
   }
 }
 
-async function currentNotifications() {
+async function currentNotifications(): Promise<InboxNotification[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), NOTIFICATIONS_TIMEOUT_MS);
   try {
-    const resp = await fetch(NOTIFICATIONS_URL, {
+    const resp = await fetch(apiPath(NOTIFICATIONS_URL), {
       credentials: "include",
       cache: "no-store",
       signal: controller.signal,
     });
     if (!resp.ok) return [];
-    const list = await resp.json();
+    const list: unknown = await resp.json();
     if (!Array.isArray(list)) return [];
-    return list.filter((item) => {
+    return list.filter((item: NotificationCandidate | null): item is InboxNotification => {
       if (!item) return false;
       if (item.type === "session.attention") return typeof item.sessionId === "string" && item.sessionId.length > 0;
       return item.type === "usage.reset" && typeof item.id === "string" && item.id.length > 0
         && typeof item.provider === "string" && item.provider.length > 0
-        && Number.isFinite(item.usedBefore) && item.usedBefore >= 0 && item.usedBefore <= 100
-        && Number.isFinite(item.usedBeforeSeenAt) && Number.isFinite(new Date(item.usedBeforeSeenAt).getTime());
+        && typeof item.usedBefore === "number" && Number.isFinite(item.usedBefore) && item.usedBefore >= 0 && item.usedBefore <= 100
+        && typeof item.usedBeforeSeenAt === "number" && Number.isFinite(item.usedBeforeSeenAt)
+        && Number.isFinite(new Date(item.usedBeforeSeenAt).getTime());
     });
   } catch (_) {
     return [];
@@ -223,12 +265,12 @@ async function showNotifications() {
 }
 
 // Focused clients must also switch sessions; focus alone leaves the old session selected.
-async function openNotification(data) {
+async function openNotification(data: NotificationData) {
   const overview = data.type === "usage.reset";
   const sessionId = overview ? null : data.sessionId;
   const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (clients.length > 0) {
-    const client = clients[0];
+  const client = clients[0];
+  if (client) {
     if (sessionId) {
       try { client.postMessage({ type: "select-session", sessionId: sessionId }); } catch (_) {}
     } else if (overview) {

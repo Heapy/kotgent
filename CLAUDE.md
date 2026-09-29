@@ -16,8 +16,8 @@ the common workflow and links to those guides; implementation invariants belong 
   `./kotlin build -p <host-target> -p jvm`, then `./kotlin test -p <host-target> -p jvm` in that order
   (`macosArm64` on macOS, `linuxX64` on Linux): the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it.
-- Run `npm run build --prefix webui` for changed `webui/src` modules and `node --check` for changed
-  `webui/public/sw.js` or `webuitest/js/*.js`; browser behavior is tested in `webuitest`.
+- Run `npm run typecheck --prefix webui` and `npm run build --prefix webui` for changed `webui/src`
+  modules and `node --check` for changed `webuitest/js/*.js`; browser behavior is tested in `webuitest`.
 - Run browser-independent tests from the repository root with
   `node --test 'webuitest/js/**/*.test.js'`; see [docs/TESTING.md](docs/TESTING.md) for the runner contract.
 - Never overlap `./kotlin` invocations, including across worktrees: they share build output. Keep aggregate
@@ -141,8 +141,8 @@ the common workflow and links to those guides; implementation invariants belong 
 - Authorization decisions belong in the shared authorization function. Never put the master token in a
   URL; browser access uses one-time tickets and the stateless session cookie.
 - Drain `incoming` in every WebSocket handler, including handlers that only send frames.
-- The service worker remains a classic, network-only worker at `/sw.js`; do not add module imports or an
-  offline shell. Root shell and worker responses must revalidate.
+- Service-worker sources may import shared modules; the built `/sw.js` remains a classic, root-scoped,
+  network-only IIFE with no offline shell. Root shell and worker responses must revalidate.
 - Files under `assets/` are cached as immutable; all other static files revalidate. Content-hashed names
   make immutability safe: changed bytes have a different URL.
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running

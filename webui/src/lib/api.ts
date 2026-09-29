@@ -1,3 +1,5 @@
+import { apiPath } from "./api-paths.ts";
+
 export interface ApiRequestOptions extends Omit<RequestInit, "headers" | "signal"> {
   headers?: Record<string, string>;
   signal?: AbortSignal | null | undefined;
@@ -16,13 +18,8 @@ function errorField(error: unknown, key: string): unknown {
 
 export const AUTH_PATH = "/auth";
 
-const API_PREFIX = "/api/v1";
 const API_REQUEST_TIMEOUT_MS = 60_000;
 export const AUTH_TICKET_PATH = "/auth/ticket";
-
-function apiPath(path: string) {
-  return API_PREFIX + path;
-}
 
 export function isUnauthenticated(error: unknown) {
   return !!(errorField(error, "unauthenticated"));

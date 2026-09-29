@@ -1,7 +1,10 @@
 // On iOS, request notification permission before the first await or the user gesture is lost.
 
 import { apiRequest } from "./api.ts";
+import { SUBSCRIBE_URL, UNSUBSCRIBE_URL } from "./api-paths.ts";
 import { ensurePermission, isEnabled as notifyEnabled, setPushActive } from "./notify.ts";
+
+export { SUBSCRIBE_URL, UNSUBSCRIBE_URL };
 
 export interface PushTransition {
   isCurrent: () => boolean;
@@ -16,12 +19,9 @@ export interface VapidKeyResponse {
 export const SW_URL = "/sw.js";
 
 export const VAPID_KEY_URL = "/push/vapid-key";
-export const SUBSCRIBE_URL = "/push/subscribe";
-export const UNSUBSCRIBE_URL = "/push/unsubscribe";
 
 const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
 const PUSH_PREFERENCE_ACK_TIMEOUT_MS = 2_000;
-// The classic worker duplicates this value because it cannot import modules.
 export const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 export const PUSH_REPAIR_SIGNAL_KEY = "kotgent.push.repair.v1";
 let endpointMemory: string | null | undefined = null;
