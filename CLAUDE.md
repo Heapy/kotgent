@@ -70,6 +70,8 @@ the common workflow and links to those guides; implementation invariants belong 
   `setName` advances `rev` without changing activity order.
 - `sessions.adhd` is operator-owned ADHD-mode membership, handled exactly like `name`: `upsert` preserves
   it, `setAdhd` advances `rev` without changing activity order, and `emitFromRow` reads it off the row.
+  Start and import take it in the request and write it with the row's INSERT, not a follow-up PATCH; the
+  Web UI asks for it while its screen is reduced, so a new session outlives its selection.
   Folder membership lives in `folder_settings`, keyed by absolute path because folders are derived from
   each session's `cwd` and have no identity. Clearing a mark updates its column and keeps the row, which
   will carry the folder's other settings.

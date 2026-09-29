@@ -208,10 +208,11 @@ class SessionManager(
         cwd: String,
         name: String? = null,
         tags: List<String> = emptyList(),
+        adhd: Boolean = false,
     ): SessionMeta {
         val sessionId = freshSessionId()
         try {
-            return startReserved(sessionId, agentKind, cwd, name, tags)
+            return startReserved(sessionId, agentKind, cwd, name, tags, adhd)
         } finally {
             releaseSessionId(sessionId)
         }
@@ -223,6 +224,7 @@ class SessionManager(
         cwd: String,
         name: String?,
         tags: List<String>,
+        adhd: Boolean,
     ): SessionMeta {
         val shortId = sessionId.value
         val tmuxSession = tmux.sessionName(shortId)
@@ -252,6 +254,7 @@ class SessionManager(
                     createdAt = ts,
                     updatedAt = ts,
                     projectId = projectId,
+                    adhd = adhd,
                 )
                 // Publish the row first: hook routing may begin as soon as the pane is registered.
                 store.upsertSession(meta)
@@ -507,6 +510,7 @@ class SessionManager(
         cwd: String? = null,
         name: String? = null,
         tags: List<String> = emptyList(),
+        adhd: Boolean = false,
     ): SessionMeta = importMutex.withLock {
         // Import is registration-only: binary resolution and tmux launch remain resume's responsibility.
         if (agentKind !in supportedAgentKinds) {
@@ -561,6 +565,7 @@ class SessionManager(
                 createdAt = ts,
                 updatedAt = ts,
                 projectId = projectId,
+                adhd = adhd,
             )
             // Commit the resumable row first. If SessionBound append fails, resume still works from the
             // row; only replay of this imported session lacks its provider binding.

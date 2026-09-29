@@ -863,7 +863,7 @@ function App() {
       try {
         created = await apiRequest<Session>("/sessions", {
           method: "POST",
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, adhd: adhdMode }),
         }) as Session;
       } catch (e) {
         // Late failures surface globally if the submitting form has unmounted.
@@ -876,7 +876,7 @@ function App() {
       say("Started " + displayName(created) + ".");
       if (selectionUnmoved()) showSession(created);
     });
-  }, [showSession]);
+  }, [showSession, adhdMode]);
 
   const renameSession = useCallback((sessionId: string, name: string) => {
     const submittedDialog = dialogSignal.value;
@@ -910,7 +910,7 @@ function App() {
       try {
         created = await apiRequest<Session>("/sessions/import", {
           method: "POST",
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, adhd: adhdMode }),
         }) as Session;
       } catch (e) {
         if (dialogSignal.value === submittedDialog) throw e;
@@ -946,7 +946,7 @@ function App() {
         say("Imported, but resume failed: " + errorMessage(e), true);
       }
     });
-  }, [fetchSessionRow, showSession]);
+  }, [fetchSessionRow, showSession, adhdMode]);
 
   const controlSession = useCallback(async (action: "interrupt" | "resume" | "stop" | "done" | "undone", id?: string) => {
     const s = findSession(id || activeSessionId.value);

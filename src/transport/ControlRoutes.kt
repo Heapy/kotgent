@@ -109,7 +109,7 @@ fun Route.controlRoutes(
             }
         }
         val meta = try {
-            sessionManager.start(req.agent, req.cwd, startName, req.tags)
+            sessionManager.start(req.agent, req.cwd, startName, req.tags, req.adhd)
         } catch (e: UnsupportedAgentException) {
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
@@ -152,7 +152,7 @@ fun Route.controlRoutes(
         suspend fun importFailure(e: RuntimeException, status: HttpStatusCode) =
             call.respondText("cannot import session: ${e.message}", status = status)
         val meta = try {
-            sessionManager.importSession(req.agent, importProviderId, req.cwd, importName, req.tags)
+            sessionManager.importSession(req.agent, importProviderId, req.cwd, importName, req.tags, req.adhd)
         } catch (e: UnknownAgentKindException) {
             importFailure(e, HttpStatusCode.BadRequest)
             return@post
@@ -355,6 +355,7 @@ data class StartSessionRequest(
     val name: String? = null,
     val tags: List<String> = emptyList(),
     val taskRef: String? = null,
+    val adhd: Boolean = false,
 )
 
 @Serializable
@@ -364,6 +365,7 @@ data class ImportSessionRequest(
     val cwd: String? = null,
     val name: String? = null,
     val tags: List<String> = emptyList(),
+    val adhd: Boolean = false,
 )
 
 @Serializable

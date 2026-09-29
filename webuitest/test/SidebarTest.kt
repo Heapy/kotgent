@@ -554,6 +554,35 @@ class SidebarTest {
     }
 
     @Test
+    fun aSessionStartedInAdhdModeStaysListedAfterAnotherIsSelected() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mode-start") { _, _, page ->
+            clickRowPin(page, "s-delta")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+            page.locator("#adhd-toggle").click()
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+
+            runLeaderCommand(page, "New session")
+            assertThat(page.locator("#new-session-dialog")).isVisible()
+            page.locator("label.agent-option:has(#session-agent-claude)").click()
+            page.locator("#session-cwd").fill("/a/b")
+            page.keyboard().press("Tab")
+            page.locator("#new-session-submit").click()
+
+            assertThat(page.locator("#new-session-dialog")).hasCount(0)
+            val started = page.locator("#session-list .session-row.active")
+            assertThat(started).hasCount(1)
+            val startedId = started.getAttribute("data-id")
+            assertThat(rowMark(page, startedId)).hasAttribute("aria-pressed", "true")
+
+            page.locator("#session-list .session-row[data-id='s-delta']").click()
+
+            assertThat(page.locator("#session-list .session-row.active[data-id='s-delta']")).hasCount(1)
+            assertThat(page.locator("#session-list .session-row")).hasCount(2)
+            assertThat(page.locator("#session-list .session-row[data-id='$startedId']")).hasCount(1)
+        }
+    }
+
+    @Test
     fun theDoneSectionIgnoresAdhdModeEntirely() {
         signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mode-done") { _, _, page ->
             page.onDialog { it.accept() }

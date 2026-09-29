@@ -600,10 +600,11 @@ draw stays pinned but has no effect until it is drawn again. What is pinned is d
 a laptop agree on it; whether a given screen is reduced is that browser's own setting and survives a
 reload. The mode hides the "needs attention" section altogether, even for pinned sessions; a pinned
 session still shows its state on its own row, and notifications still fire. The session you have selected
-keeps its row whatever its pin says, and the toggle never hides on the sessions screen. Turning the mode
-on with nothing pinned says so and offers the way back. A session listed through a pinned folder shows a
-dimmed pin that names the folder; clicking it pins the session on its own, so it stays listed after the
-folder is unpinned.
+keeps its row whatever its pin says, and the toggle never hides on the sessions screen. A session you start
+or import while the mode is on is pinned on its own, so it stays listed after you select another one.
+Turning the mode on with nothing pinned says so and offers the way back. A session listed through a pinned
+folder shows a dimmed pin that names the folder; clicking it pins the session on its own, so it stays
+listed after the folder is unpinned.
 The Done list ignores the mode entirely.
 
 The per-browser notifications toggle registers `/sw.js` and the browser's Web Push subscription. A

@@ -998,6 +998,36 @@ class TransportTest {
     }
 
     @Test
+    fun startingASessionFromAReducedScreenInsertsItMarked() = withServer { ctx ->
+        val marked = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","adhd":true}""")
+        val plain = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp"}""")
+
+        assertEquals(HttpStatusCode.Created, marked.status, "answered ${marked.bodyAsText()}")
+        assertEquals(HttpStatusCode.Created, plain.status, "answered ${plain.bodyAsText()}")
+        val markedDto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), marked.bodyAsText())
+        val plainDto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), plain.bodyAsText())
+        assertTrue(markedDto.adhd, "the started row carries the mark the caller asked for")
+        val rows = ctx.getSessions().associateBy { it.id }
+        assertTrue(rows.getValue(markedDto.id).adhd, "and reads back marked")
+        assertEquals(false, rows.getValue(plainDto.id).adhd, "a start that does not ask stays unmarked")
+    }
+
+    @Test
+    fun importingASessionFromAReducedScreenInsertsItMarked() = withServer(
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        val resp = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp","adhd":true}""",
+        )
+
+        assertEquals(HttpStatusCode.Created, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertTrue(dto.adhd, "the imported row carries the mark the caller asked for")
+        assertTrue(ctx.getSessions().single { it.id == dto.id }.adhd, "and reads back marked")
+    }
+
+    @Test
     fun importingASessionWithAControlCharacterInTheNameIs400AndImportsNothing() = withServer(
         probe = VendorStoreProbe { _, _, _ -> true },
     ) { ctx ->
