@@ -59,7 +59,7 @@ observe.
 | HTTP and WebSocket transport | Integration through a real server and client | Authentication, Origin rules, routing, status codes, DTOs, frame order, reconnect behavior |
 | Provider adapters | Fixture and contract tests | Launch arguments, hook normalization, on-disk discovery, versioned provider formats |
 | Process and OS edges | Isolated subprocess integration | `tmux`, PTY, signals, descriptors, locale, filesystem permissions, teardown ordering |
-| Browser-independent Web logic | JavaScript unit and state-machine tests | Routing, reducers, merge rules, retry classification, command selection, scheduling decisions |
+| Browser-independent Web logic | TypeScript unit and state-machine tests | Routing, reducers, merge rules, retry classification, command selection, scheduling decisions |
 | Browser UI | Component and real-browser tests | DOM behavior, focus, keyboard input, dialogs, accessibility, reconnects, service workers |
 | CLI | Parser, protocol, and executable tests | Arguments, JSON output, exit codes, errors, daemon requests, terminal attach behavior |
 | Installation and packaging | Artifact-level smoke tests | Launch configuration, bundled resources, permissions, executable discovery, startup and shutdown |
@@ -230,7 +230,7 @@ the operator's real sessions, configuration, provider home, or long-lived daemon
 
 Web testing should be divided by what must actually execute.
 
-### Browser-independent JavaScript
+### Browser-independent TypeScript
 
 Pure modules and explicit state machines should run under a lightweight JavaScript test runner without a
 browser. This layer should cover routing, data merges, command matching, path handling, retry
@@ -239,15 +239,16 @@ classification, preference transitions, notification decisions, and reconnect sc
 Timers, visibility, network results, and storage events should enter through controlled inputs. Tests should
 advance virtual time and inspect declared effects instead of sleeping or depending on wall time.
 
-This layer runs under Node's built-in runner, `node --test`. Its JavaScript tests live in `webuitest/js/`
-and import the TypeScript sources in `webui/src/` directly through Node's type stripping, so those modules
-must use erasable-only syntax. Packages resolve from `webui/node_modules`, making `npm ci --prefix webui`
-a prerequisite. Tests stay outside the served build in `resources/webui/`. The service-worker tests
+This layer runs under Node's built-in runner, `node --test`. Its TypeScript tests live in `webuitest/js/`
+and import the TypeScript sources in `webui/src/`; Node runs both through type stripping, so both must use
+erasable-only syntax. `npm run typecheck --prefix webui` checks the tests against
+`webuitest/js/tsconfig.json`, which keeps the Web UI's strict settings and adds Node's types. Packages
+resolve from `webui/node_modules`, making `npm ci --prefix webui` a prerequisite. Tests stay outside the served build in `resources/webui/`. The service-worker tests
 execute the built `resources/webui/sw.js` in a Node VM, so the full tier also requires
 `npm run build --prefix webui`.
 
 `WebUiLogicTest` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
-is `node --test 'webuitest/js/**/*.test.js'` from the repository root. The prerequisite is **Node v24 or
+is `node --test 'webuitest/js/**/*.test.ts'` from the repository root. The prerequisite is **Node v24 or
 newer**, the same floor `README.md` and `webuitest/module.yaml` state. Name the files through a quoted pattern
 rather than by their directory: Node treats every positional argument as a glob, and a bare directory matches
 only itself and then fails to load as a module. A pattern that matches nothing exits zero, so the wrapper
@@ -423,7 +424,7 @@ integration test that exercises it, and prove pure, tangled logic with a unit te
 it. When a requirement is architectural, prefer a parser, linter, module-graph check, or compiler-enforced
 boundary.
 
-`webuitest/js/module-graph.test.js` checks that state modules and Preact signals resolve the same
+`webuitest/js/module-graph.test.ts` checks that state modules and Preact signals resolve the same
 signals-core file. The service worker imports shared API paths from `webui/src/lib/api-paths.ts`; Vite
 builds `webui/src/sw.ts` as a classic IIFE at `/sw.js`, and Node VM tests execute that output, including
 notification deep links. Behavioral coverage for history and shared-list ownership, name caps mirrored
@@ -563,7 +564,7 @@ Use layered gates so feedback is both fast and representative.
 ### Every change
 
 - compilation and static analysis;
-- pure Kotlin and JavaScript tests;
+- pure Kotlin and TypeScript tests;
 - component tests for affected application services;
 - focused persistence and transport tests;
 - syntax and schema validation for changed artifacts.
@@ -618,7 +619,7 @@ The suite should make internal change inexpensive while making externally visibl
 
 ## Native platform matrix
 
-The full native/JVM/browser/JavaScript suite runs on macOS ARM64 and Ubuntu 22.04 x64, with explicit
+The full native/JVM/browser/TypeScript suite runs on macOS ARM64 and Ubuntu 22.04 x64, with explicit
 `-p macosArm64 -p jvm` or `-p linuxX64 -p jvm` selectors on build and test. ARM64 Linux has no native
 compiler host: CI cross-compiles its application, harness and native test binaries on x64, then executes
 them on `ubuntu-22.04-arm`. Native suites include the real PTY, SQLite, transport, provider and signing

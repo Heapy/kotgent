@@ -836,7 +836,7 @@ class TaskCommandsTest {
             // composition is still open. This picker's Enter is the only one in the app that commits a
             // mutating POST, so it must read as composition and link nothing. The arrow belongs to the
             // IME's own candidate list for the same reason. The legacy `keyCode === 229` spelling of
-            // the same event is proven in webuitest/js/typeahead.test.js, where the event is built by
+            // the same event is proven in webuitest/js/typeahead.test.ts, where the event is built by
             // hand rather than by a browser.
             val query = page.locator("#link-task-query")
             query.evaluate(

@@ -5,16 +5,24 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { createSerialRefresh } from "../../webui/src/lib/refresh.ts";
-import { deferred, flush } from "./fixtures.js";
+import { deferred, flush } from "./fixtures.ts";
+
+type Rows = string[];
 
 /** A recording adapter whose reads are resolved by hand, so ordering is chosen rather than raced. */
-function harness(applyRows = null) {
-  const reads = [];
-  const calls = { begin: 0, succeed: [], fail: [], report: [], order: [] };
+function harness(applyRows: ((rows: Rows | null) => void) | null = null) {
+  const reads: ReturnType<typeof deferred<Rows>>[] = [];
+  const calls: {
+    begin: number;
+    succeed: (Rows | null)[];
+    fail: { token: string; error: unknown }[];
+    report: unknown[];
+    order: string[];
+  } = { begin: 0, succeed: [], fail: [], report: [], order: [] };
   let tokens = 0;
   const refresh = createSerialRefresh({
     read: () => {
-      const gate = deferred();
+      const gate = deferred<Rows>();
       reads.push(gate);
       return gate.promise;
     },
@@ -47,7 +55,7 @@ describe("one read at a time", () => {
     const result = h.refresh();
     await flush();
     assert.equal(h.reads.length, 1);
-    h.reads[0].resolve(["p1"]);
+    h.reads[0]!.resolve(["p1"]);
     assert.deepEqual(await result, ["p1"]);
     assert.deepEqual(h.calls.succeed, [["p1"]]);
     assert.equal(h.calls.begin, 1);
@@ -66,14 +74,14 @@ describe("one read at a time", () => {
     const h = harness();
     const first = h.refresh();
     await flush();
-    h.reads[0].resolve(["p1"]);
+    h.reads[0]!.resolve(["p1"]);
     await first;
     await flush();
 
     const second = h.refresh();
     await flush();
     assert.equal(h.reads.length, 2);
-    h.reads[1].resolve(["p2"]);
+    h.reads[1]!.resolve(["p2"]);
     assert.deepEqual(await second, ["p2"]);
   });
 });
@@ -86,12 +94,12 @@ describe("a later request is a later observation", () => {
     const second = h.refresh();
     await flush();
 
-    h.reads[0].resolve(["stale"]);
+    h.reads[0]!.resolve(["stale"]);
     await flush();
     assert.deepEqual(h.calls.succeed, [], "the overtaken read applies nothing");
     assert.equal(h.reads.length, 2, "the queue reads again for the newer request");
 
-    h.reads[1].resolve(["fresh"]);
+    h.reads[1]!.resolve(["fresh"]);
     assert.deepEqual(await first, ["fresh"]);
     assert.deepEqual(await second, ["fresh"]);
     assert.deepEqual(h.calls.succeed, [["fresh"]]);
@@ -104,7 +112,7 @@ describe("a later request is a later observation", () => {
     h.refresh();
     await flush();
 
-    h.reads[0].reject(new Error("overtaken"));
+    h.reads[0]!.reject(new Error("overtaken"));
     await flush();
     assert.deepEqual(h.calls.fail, []);
     assert.deepEqual(h.calls.report, []);
@@ -117,9 +125,9 @@ describe("a later request is a later observation", () => {
     const b = h.refresh();
     const c = h.refresh();
     await flush();
-    h.reads[0].resolve(["stale"]);
+    h.reads[0]!.resolve(["stale"]);
     await flush();
-    h.reads[1].resolve(["fresh"]);
+    h.reads[1]!.resolve(["fresh"]);
     assert.deepEqual(await Promise.all([a, b, c]), [["fresh"], ["fresh"], ["fresh"]]);
     assert.deepEqual(h.calls.succeed, [["fresh"]], "the list is applied once, not once per waiter");
   });
@@ -130,7 +138,7 @@ describe("failure", () => {
     const h = harness();
     const result = h.refresh();
     await flush();
-    h.reads[0].reject(new Error("503"));
+    h.reads[0]!.reject(new Error("503"));
     assert.equal(await result, null);
   });
 
@@ -139,10 +147,10 @@ describe("failure", () => {
     const boom = new Error("503");
     h.refresh();
     await flush();
-    h.reads[0].reject(boom);
+    h.reads[0]!.reject(boom);
     await flush();
     assert.equal(h.calls.fail.length, 1);
-    assert.equal(h.calls.fail[0].error, boom);
+    assert.equal(h.calls.fail[0]!.error, boom);
     assert.deepEqual(h.calls.report, [boom]);
   });
 
@@ -150,7 +158,7 @@ describe("failure", () => {
     const h = harness();
     h.refresh(false);
     await flush();
-    h.reads[0].reject(new Error("503"));
+    h.reads[0]!.reject(new Error("503"));
     await flush();
     assert.equal(h.calls.fail.length, 1, "the picker still needs its retry state");
     assert.deepEqual(h.calls.report, [], "nobody asked to be told");
@@ -162,9 +170,9 @@ describe("failure", () => {
     await flush();
     h.refresh(true);
     await flush();
-    h.reads[0].reject(new Error("first"));
+    h.reads[0]!.reject(new Error("first"));
     await flush();
-    h.reads[1].reject(new Error("second"));
+    h.reads[1]!.reject(new Error("second"));
     await flush();
     assert.equal(h.calls.report.length, 1);
   });
@@ -175,9 +183,9 @@ describe("failure", () => {
     await flush();
     h.refresh(true);
     await flush();
-    h.reads[0].reject(new Error("first"));
+    h.reads[0]!.reject(new Error("first"));
     await flush();
-    h.reads[1].reject(new Error("second"));
+    h.reads[1]!.reject(new Error("second"));
     await flush();
     assert.equal(h.calls.report.length, 1, "announced once for the read, not once per waiter");
   });
@@ -186,13 +194,13 @@ describe("failure", () => {
     const h = harness();
     const first = h.refresh();
     await flush();
-    h.reads[0].reject(new Error("503"));
+    h.reads[0]!.reject(new Error("503"));
     assert.equal(await first, null);
     await flush();
 
     const second = h.refresh();
     await flush();
-    h.reads[1].resolve(["p1"]);
+    h.reads[1]!.resolve(["p1"]);
     assert.deepEqual(await second, ["p1"]);
   });
 });
@@ -210,18 +218,18 @@ describe("a port that throws", () => {
 
     const first = h.refresh();
     await flush();
-    h.reads[0].resolve(["p1"]);
+    h.reads[0]!.resolve(["p1"]);
     assert.equal(await first, null, "no caller builds on rows the store could not confirm");
     assert.deepEqual(h.calls.succeed, [["p1"]], "the rows may well be on screen already");
     assert.equal(h.calls.fail.length, 1);
-    assert.equal(h.calls.fail[0].error, boom);
+    assert.equal(h.calls.fail[0]!.error, boom);
     assert.deepEqual(h.calls.report, [boom], "the operator hears the real reason");
 
     await flush();
     const second = h.refresh();
     await flush();
     assert.equal(h.reads.length, 2, "the queue is not wedged");
-    h.reads[1].resolve(["p2"]);
+    h.reads[1]!.resolve(["p2"]);
     assert.deepEqual(await second, ["p2"]);
   });
 });
@@ -231,7 +239,7 @@ describe("failure port order", () => {
     const h = harness();
     h.refresh(true);
     await flush();
-    h.reads[0].reject(new Error("503"));
+    h.reads[0]!.reject(new Error("503"));
     await flush();
     assert.deepEqual(h.calls.order, ["report", "fail"]);
   });
@@ -247,7 +255,7 @@ describe("readiness tokens", () => {
     await flush();
     assert.equal(h.calls.begin, 1, "three requests, one read so far");
 
-    h.reads[0].resolve(["stale"]);
+    h.reads[0]!.resolve(["stale"]);
     await flush();
     assert.equal(h.calls.begin, 2, "the second read opens its own attempt");
   });
@@ -258,11 +266,11 @@ describe("readiness tokens", () => {
     await flush();
     h.refresh();
     await flush();
-    h.reads[0].resolve(["stale"]);
+    h.reads[0]!.resolve(["stale"]);
     await flush();
-    h.reads[1].reject(new Error("503"));
+    h.reads[1]!.reject(new Error("503"));
     await flush();
     assert.equal(h.calls.fail.length, 1);
-    assert.equal(h.calls.fail[0].token, "token-2");
+    assert.equal(h.calls.fail[0]!.token, "token-2");
   });
 });

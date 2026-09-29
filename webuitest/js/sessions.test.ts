@@ -12,11 +12,12 @@ import {
   tmuxAttachCommand,
   upsertIfNewer,
 } from "../../webui/src/lib/sessions.ts";
-import { listOf, patchFrame, sessionRow } from "./fixtures.js";
+import type { Session, SessionUpdate } from "../../webui/src/lib/sessions.ts";
+import { listOf, patchFrame, sessionRow } from "./fixtures.ts";
 
 describe("upsertIfNewer", () => {
   test("a session the list has never seen is appended", () => {
-    const empty = listOf();
+    const empty = listOf<Session>();
     const row = sessionRow({});
 
     assert.deepEqual(upsertIfNewer(empty, row), [row]);
@@ -48,16 +49,16 @@ describe("upsertIfNewer", () => {
 
   test("a row carrying no revision never displaces a stored row", () => {
     const list = listOf(sessionRow({ rev: 2 }));
-    const unstamped = sessionRow({ rev: undefined, state: "crashed" });
+    const unstamped = sessionRow({ rev: undefined as unknown as number, state: "crashed" });
 
     assert.strictEqual(upsertIfNewer(list, unstamped), list);
   });
 
   test("a first observation is appended even when it carries no revision", () => {
     // Documented behavior, not an oversight: a row with no counterpart has nothing to lose a comparison to.
-    const unstamped = sessionRow({ rev: undefined });
+    const unstamped = sessionRow({ rev: undefined as unknown as number });
 
-    assert.deepEqual(upsertIfNewer(listOf(), unstamped), [unstamped]);
+    assert.deepEqual(upsertIfNewer(listOf<Session>(), unstamped), [unstamped]);
   });
 });
 
@@ -69,7 +70,7 @@ describe("patchIfNewer", () => {
   });
 
   test("a patch on an empty collection is a no-op", () => {
-    const empty = listOf();
+    const empty = listOf<Session>();
 
     assert.strictEqual(patchIfNewer(empty, patchFrame({ rev: 99 })), empty);
   });
@@ -79,9 +80,9 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, state: "stopped" }));
 
-    assert.equal(merged[0].rev, 4);
-    assert.equal(merged[0].state, "stopped");
-    assert.equal(merged[0].alive, false, "liveness is derived from the patched state, never carried over");
+    assert.equal(merged[0]!.rev, 4);
+    assert.equal(merged[0]!.state, "stopped");
+    assert.equal(merged[0]!.alive, false, "liveness is derived from the patched state, never carried over");
   });
 
   test("an absent adhd keeps the mark the row already holds", () => {
@@ -89,7 +90,7 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4 }));
 
-    assert.equal(merged[0].adhd, true, "an older daemon omits the field and must not clear the mark");
+    assert.equal(merged[0]!.adhd, true, "an older daemon omits the field and must not clear the mark");
   });
 
   test("an explicit false clears the mark", () => {
@@ -97,13 +98,13 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, adhd: false }));
 
-    assert.equal(merged[0].adhd, false);
+    assert.equal(merged[0]!.adhd, false);
   });
 
   test("an explicit true sets the mark", () => {
     const list = listOf(sessionRow({ rev: 2, adhd: false }));
 
-    assert.equal(patchIfNewer(list, patchFrame({ rev: 4, adhd: true }))[0].adhd, true);
+    assert.equal(patchIfNewer(list, patchFrame({ rev: 4, adhd: true }))[0]!.adhd, true);
   });
 
   test("an older patch carrying a mark is still discarded", () => {
@@ -117,7 +118,7 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, taskRef: null }));
 
-    assert.equal(merged[0].taskRef, null);
+    assert.equal(merged[0]!.taskRef, null);
   });
 
   test("fields the patch does not carry survive from the stored row", () => {
@@ -125,8 +126,8 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4 }));
 
-    assert.equal(merged[0].name, "one");
-    assert.equal(merged[0].cwd, "/work/one");
+    assert.equal(merged[0]!.name, "one");
+    assert.equal(merged[0]!.cwd, "/work/one");
   });
 
   test("a patch carrying a new name renames the row", () => {
@@ -134,15 +135,15 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, name: "two" }));
 
-    assert.equal(merged[0].name, "two");
+    assert.equal(merged[0]!.name, "two");
   });
 
   test("a patch from a daemon that omits name keeps the previous name", () => {
     const list = listOf(sessionRow({ rev: 2, name: "one" }));
 
-    const merged = patchIfNewer(list, patchFrame({ rev: 4, name: undefined }));
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, name: undefined as unknown as string }));
 
-    assert.equal(merged[0].name, "one");
+    assert.equal(merged[0]!.name, "one");
   });
 
   test("a patch carrying an empty name clears it back to the automatic label", () => {
@@ -150,23 +151,23 @@ describe("patchIfNewer", () => {
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, name: "" }));
 
-    assert.equal(merged[0].name, "");
-    assert.equal(displayName(merged[0]), "kotgent-one");
+    assert.equal(merged[0]!.name, "");
+    assert.equal(displayName(merged[0]!), "kotgent-one");
   });
 
   test("a stale patch is ignored, the name it carries included", () => {
     const list = listOf(sessionRow({ rev: 4, name: "one" }));
 
     assert.strictEqual(patchIfNewer(list, patchFrame({ rev: 2, name: "two" })), list);
-    assert.equal(list[0].name, "one");
+    assert.equal(list[0]!.name, "one");
   });
 
   test("a patch from a daemon that omits updatedAt keeps the snapshot's stamp", () => {
     const list = listOf(sessionRow({ rev: 2, updatedAt: 100 }));
 
-    const merged = patchIfNewer(list, patchFrame({ rev: 4, updatedAt: undefined }));
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, updatedAt: undefined as unknown as number }));
 
-    assert.equal(merged[0].updatedAt, 100);
+    assert.equal(merged[0]!.updatedAt, 100);
   });
 
   test("an equal revision is a no-op that returns the very same list", () => {
@@ -184,7 +185,7 @@ describe("patchIfNewer", () => {
   test("a patch carrying no revision is a no-op", () => {
     const list = listOf(sessionRow({ rev: 2 }));
 
-    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: undefined, state: "crashed" })), list);
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: undefined as unknown as number, state: "crashed" })), list);
   });
 });
 
@@ -202,24 +203,25 @@ describe("out-of-order arrival", () => {
     taskRef: "local:12",
     updatedAt: 500,
   });
-  const FRAMES = [
+  type Frame = { kind: "upsert"; frame: Session } | { kind: "patch"; frame: SessionUpdate };
+  const FRAMES: Frame[] = [
     { kind: "upsert", frame: FIRST },
     { kind: "patch", frame: patchFrame({ rev: 3, state: "needs_approval", needsAttention: true, updatedAt: 300 }) },
     { kind: "patch", frame: patchFrame({ rev: 4, state: "stopped", updatedAt: 400 }) },
     { kind: "upsert", frame: NEWEST },
   ];
 
-  function permutations(items) {
+  function permutations<T>(items: readonly T[]): T[][] {
     if (items.length <= 1) return [items.slice()];
-    const out = [];
+    const out: T[][] = [];
     for (let index = 0; index < items.length; index += 1) {
       const rest = items.slice(0, index).concat(items.slice(index + 1));
-      for (const tail of permutations(rest)) out.push([items[index], ...tail]);
+      for (const tail of permutations(rest)) out.push([items[index]!, ...tail]);
     }
     return out;
   }
 
-  function applyFrame(list, entry) {
+  function applyFrame(list: readonly Session[], entry: Frame) {
     return entry.kind === "upsert" ? upsertIfNewer(list, entry.frame) : patchIfNewer(list, entry.frame);
   }
 
@@ -230,7 +232,7 @@ describe("out-of-order arrival", () => {
     assert.equal(orders.length, 24, "all 4! orders must be exercised, or the rule below is partly untested");
 
     for (const order of orders) {
-      const settled = order.reduce(applyFrame, listOf());
+      const settled = order.reduce(applyFrame, listOf<Session>());
       assert.deepEqual(
         settled,
         [NEWEST],
@@ -259,9 +261,9 @@ describe("out-of-order arrival", () => {
     assert.equal(orders.length, 24, "all 4! orders of the frames that follow the snapshot");
 
     for (const order of orders) {
-      const settled = [FRAMES[0], ...order].reduce(applyFrame, listOf());
+      const settled = [FRAMES[0]!, ...order].reduce(applyFrame, listOf<Session>());
       assert.equal(settled.length, 1);
-      const row = settled[0];
+      const row = settled[0]!;
       assert.equal(row.rev, 6, `order ${order.map((e) => e.frame.rev).join(" -> ")} did not converge`);
       assert.equal(row.state, "needs_approval");
       assert.equal(row.needsAttention, true);
@@ -294,7 +296,7 @@ describe("a rename and the done-list ordering", () => {
     const ordered = byRecentChange(merged);
 
     assert.deepEqual(ordered.map((s) => s.id), ["newer", "older"]);
-    assert.equal(ordered[1].name, "renamed", "the row moved nowhere, but it did take the new name");
+    assert.equal(ordered[1]!.name, "renamed", "the row moved nowhere, but it did take the new name");
   });
 });
 

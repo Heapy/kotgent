@@ -16,10 +16,10 @@ the common workflow and links to those guides; implementation invariants belong 
   `./kotlin build -p <host-target> -p jvm`, then `./kotlin test -p <host-target> -p jvm` in that order
   (`macosArm64` on macOS, `linuxX64` on Linux): the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it.
-- Run `npm run typecheck --prefix webui` and `npm run build --prefix webui` for changed `webui/src`
-  modules and `node --check` for changed `webuitest/js/*.js`; browser behavior is tested in `webuitest`.
+- Run `npm run typecheck --prefix webui` for changed `webui/src` modules and `webuitest/js/*.ts` tests, and
+  `npm run build --prefix webui` for changed `webui/src` modules; browser behavior is tested in `webuitest`.
 - Run browser-independent tests from the repository root with
-  `node --test 'webuitest/js/**/*.test.js'`; see [docs/TESTING.md](docs/TESTING.md) for the runner contract.
+  `node --test 'webuitest/js/**/*.test.ts'`; see [docs/TESTING.md](docs/TESTING.md) for the runner contract.
 - Never overlap `./kotlin` invocations, including across worktrees: they share build output. Keep aggregate
   tests serial as well because integration tests share the `kotgent-test` tmux socket.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent-macos` or `-m kotgent-linux`, `launchctl`, or real agent commands in
@@ -170,7 +170,7 @@ the common workflow and links to those guides; implementation invariants belong 
   `webui/src/state/`, one owner per concern; callers must use that module's writers.
 - State modules import `@preact/signals-core` directly and must share one reactive graph with
   `@preact/signals`. The `overrides` pin in `webui/package.json` and
-  `webuitest/js/module-graph.test.js` guard that single-copy invariant.
+  `webuitest/js/module-graph.test.ts` guard that single-copy invariant.
 - Reading `.value` in a render body is what subscribes a component to a signal. `app.tsx`'s bare
   `import "@preact/signals"` installs the required Preact hooks and is load-bearing.
 - Only an application-level singleton may hold a bare `computed()`. Anything a component can mount more
@@ -201,7 +201,7 @@ the common workflow and links to those guides; implementation invariants belong 
   `components/Typeahead.tsx`, compare rows by key, and share path-picker behavior through
   `components/PathSuggestions.tsx`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
-  uppercase `I` differently. Keep `webuitest/js/turkish-fold.js` coverage for every matching rule.
+  uppercase `I` differently. Keep `webuitest/js/turkish-fold.ts` coverage for every matching rule.
 - In TSX use `spellcheck={false}`, `autoCorrect="off"`, and `autocapitalize="off"` without casts; served-DOM
   tests require `spellcheck="false"`, `autocorrect="off"`, and `autocapitalize="off"`.
   `spellCheck={false}` fails Preact's property test and sets nothing;

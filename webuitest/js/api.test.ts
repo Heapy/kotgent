@@ -10,20 +10,22 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
+import type { ApiError } from "../../webui/src/lib/api.ts";
+
 import { apiRequest, errorMessage, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
 import { fetchProjects, fetchTasks } from "../../webui/src/lib/tasks.ts";
 
 const realFetch = globalThis.fetch;
 
-function respondWith(status, body = "") {
+function respondWith(status: number, body = "") {
   globalThis.fetch = async () => ({
     status: status,
     ok: status >= 200 && status < 300,
     text: async () => body,
-  });
+  }) as Response;
 }
 
-let signOuts;
+let signOuts: number;
 
 beforeEach(() => {
   signOuts = 0;
@@ -35,11 +37,11 @@ afterEach(() => {
   setSignOutHandler(() => { throw new Error("no test installed a sign-out handler"); });
 });
 
-async function failureOf(path) {
+async function failureOf(path: string): Promise<ApiError | null> {
   try {
     await apiRequest(path);
   } catch (error) {
-    return error;
+    return error as ApiError;
   }
   return null;
 }
@@ -50,8 +52,8 @@ describe("an expired session cookie", () => {
     const error = await failureOf("/sessions/s1");
     assert.equal(signOuts, 1);
     assert.equal(isUnauthenticated(error), true);
-    assert.match(error.message, /Signed out/);
-    assert.equal(error.status, 401);
+    assert.match(error!.message, /Signed out/);
+    assert.equal(error!.status, 401);
   });
 
   test("is answered the same way whichever read met it", async () => {
@@ -68,7 +70,7 @@ describe("every other outcome", () => {
     for (const [body, expected] of [
       ["plain text", "plain text"], ["", null], ["null", null], ["false", false], ["0", 0],
       ['"a JSON string"', "a JSON string"], ['{"extra":true}', { extra: true }],
-    ]) {
+    ] as const) {
       respondWith(200, body);
       assert.deepEqual(await apiRequest("/example"), expected);
     }
@@ -79,7 +81,7 @@ describe("every other outcome", () => {
       for (const [body, expected] of [
         ["", []], ["false", []], ["0", []], ["plain text", "plain text"],
         ['{"projects":[]}', { projects: [] }], ['[{"extra":true}]', [{ extra: true }]],
-      ]) {
+      ] as const) {
         respondWith(200, body);
         assert.deepEqual(await read(), expected);
       }
@@ -91,7 +93,7 @@ describe("every other outcome", () => {
     const error = await failureOf("/sessions/gone");
     assert.equal(signOuts, 0);
     assert.equal(isUnauthenticated(error), false);
-    assert.equal(error.status, 404);
+    assert.equal(error!.status, 404);
   });
 
   test("a 500 leaves the session alone", async () => {
@@ -113,7 +115,7 @@ test("error messages preserve the selected value's text and the falsy-message fa
     [{ message: 42 }, "42"], [{ message: { toString: () => "details" } }, "details"],
     [{ message: "", toString: () => "fallback" }, "fallback"],
     [{ message: 0, toString: () => "fallback" }, "fallback"],
-  ]) {
+  ] as const) {
     assert.equal(errorMessage(error), expected);
   }
 });

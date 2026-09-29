@@ -3,29 +3,57 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Script, createContext } from "node:vm";
 
-import { deferred } from "./fixtures.js";
+import { deferred } from "./fixtures.ts";
 
 const workerSource = readFileSync(new URL("../../resources/webui/sw.js", import.meta.url), "utf8");
 const workerScript = new Script(workerSource, { filename: "resources/webui/sw.js" });
-const clone = (value) => JSON.parse(JSON.stringify(value));
+const clone = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
 
 test("the built worker compiles as a classic script", () => {
   assert.doesNotThrow(() => new Script(workerSource, { filename: "resources/webui/sw.js" }));
 });
 
+interface WorkerRequestInit extends RequestInit {
+  signal: AbortSignal;
+}
+
+interface FakeResponse {
+  ok: boolean;
+  status?: number;
+  json(): Promise<unknown>;
+}
+
+type FetchResponse = (url: string, options: WorkerRequestInit) => Promise<FakeResponse>;
+
+interface ShownNotification {
+  title: string;
+  body: string;
+  tag: string;
+  renotify: boolean;
+  data: { type?: string; sessionId?: string };
+}
+
+interface HarnessOptions {
+  fetchResponse?: FetchResponse;
+  clients?: readonly object[];
+  showNotification?: ((title: string, options: object) => Promise<void>) | null;
+}
+
+type Listener = (event: object) => void;
+
 function fakeClock() {
   let now = 0;
   let nextId = 0;
-  const timers = new Map();
+  const timers = new Map<number, { at: number; callback: () => void }>();
   return {
     timers,
-    setTimeout(callback, delay) {
+    setTimeout(callback: () => void, delay: number) {
       const id = ++nextId;
       timers.set(id, { at: now + Number(delay), callback });
       return id;
     },
-    clearTimeout(id) { timers.delete(id); },
-    advance(millis) {
+    clearTimeout(id: number) { timers.delete(id); },
+    advance(millis: number) {
       const target = now + millis;
       while (true) {
         const next = Array.from(timers).sort((a, b) => a[1].at - b[1].at)[0];
@@ -39,30 +67,32 @@ function fakeClock() {
   };
 }
 
-function harness({ fetchResponse = async () => response([]), clients = [], showNotification = null } = {}) {
-  const listeners = new Map();
+function harness(
+  { fetchResponse = async () => response([]), clients = [], showNotification = null }: HarnessOptions = {},
+) {
+  const listeners = new Map<string, Listener[]>();
   const clock = fakeClock();
-  const requests = [];
-  const shown = [];
-  const clientCalls = [];
+  const requests: { url: string; options: WorkerRequestInit }[] = [];
+  const shown: ShownNotification[] = [];
+  const clientCalls: unknown[][] = [];
   let closed = 0;
   const self = {
-    addEventListener(type, handler) {
+    addEventListener(type: string, handler: Listener) {
       if (!listeners.has(type)) listeners.set(type, []);
-      listeners.get(type).push(handler);
+      listeners.get(type)!.push(handler);
     },
     skipWaiting: async () => {},
     clients: {
       claim: async () => {},
-      matchAll: async (options) => {
+      matchAll: async (options: unknown) => {
         clientCalls.push(["matchAll", clone(options)]);
         return clients;
       },
-      openWindow: async (url) => { clientCalls.push(["openWindow", url]); },
+      openWindow: async (url: string) => { clientCalls.push(["openWindow", url]); },
     },
     registration: {
-      showNotification: async (title, options) => {
-        shown.push(clone({ title, ...options }));
+      showNotification: async (title: string, options: object) => {
+        shown.push(clone({ title, ...options }) as ShownNotification);
         if (showNotification) await showNotification(title, options);
       },
     },
@@ -79,31 +109,31 @@ function harness({ fetchResponse = async () => response([]), clients = [], showN
     Notification: { permission: "granted" },
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
-    fetch: (url, options) => {
+    fetch: (url: string, options: WorkerRequestInit) => {
       requests.push({ url, options });
       return fetchResponse(url, options);
     },
   });
   // Script parsing and execution exercise the served classic worker without extracting its helpers.
   workerScript.runInContext(context, { timeout: 1_000 });
-  function dispatch(type, fields = {}) {
+  function dispatch(type: string, fields: object = {}) {
     const handlers = listeners.get(type);
     assert.ok(handlers?.length, "the actual worker registered a " + type + " listener");
-    const pending = [];
-    const event = { ...fields, waitUntil: (promise) => pending.push(Promise.resolve(promise)) };
+    const pending: Promise<unknown>[] = [];
+    const event = { ...fields, waitUntil: (promise: unknown) => pending.push(Promise.resolve(promise)) };
     handlers.forEach((handler) => handler(event));
     return { pending, done: Promise.all(pending) };
   }
   return {
     clock, requests, shown, clientCalls, dispatch,
     get closed() { return closed; },
-    click(data) {
+    click(data: object) {
       return dispatch("notificationclick", { notification: { data, close() { closed += 1; } } });
     },
   };
 }
 
-function response(body, ok = true) {
+function response(body: unknown, ok = true) {
   return { ok, status: ok ? 200 : 503, json: async () => body };
 }
 
@@ -117,11 +147,11 @@ const usage = Object.freeze({
   usedBefore: 67.5, usedBeforeSeenAt: 1_799_999_940_000, windowSeconds: 604_800,
 });
 
-function assertGeneric(h) {
+function assertGeneric(h: ReturnType<typeof harness>) {
   assert.equal(h.shown.length, 1);
-  assert.equal(h.shown[0].title, "Kotgent");
-  assert.match(h.shown[0].body, /^Open Kotgent\b/);
-  assert.equal(h.shown[0].renotify, false);
+  assert.equal(h.shown[0]!.title, "Kotgent");
+  assert.match(h.shown[0]!.body, /^Open Kotgent\b/);
+  assert.equal(h.shown[0]!.renotify, false);
   assert.equal(h.clock.timers.size, 0, "completion releases the deadline timer");
 }
 
@@ -133,7 +163,7 @@ test("one authenticated network-only inbox fetch displays both kinds with their 
   await push.done;
 
   assert.equal(h.requests.length, 1);
-  const { url, options } = h.requests[0];
+  const { url, options } = h.requests[0]!;
   assert.equal(url, "/api/v1/notifications");
   assert.equal(options.method || "GET", "GET");
   assert.equal(options.credentials, "include");
@@ -141,11 +171,13 @@ test("one authenticated network-only inbox fetch displays both kinds with their 
   assert.equal(options.signal.aborted, false);
   assert.equal(h.shown.length, 2);
   const session = h.shown.find((item) => item.tag === attention.sessionId);
+  assert.ok(session);
   assert.equal(session.title, "Kotgent — needs attention");
   assert.equal(session.body, "Review the change needs your attention.");
   assert.deepEqual(session.data, { type: "session.attention", sessionId: attention.sessionId });
   assert.equal(session.renotify, false);
   const reset = h.shown.find((item) => item.tag === usage.id);
+  assert.ok(reset);
   assert.match(reset.body, /codex.*weekly.*reset/i);
   assert.ok(reset.body.includes("67.5%"));
   assert.ok(reset.body.includes(new Date(usage.usedBeforeSeenAt).toLocaleString()));
@@ -157,8 +189,8 @@ test("one authenticated network-only inbox fetch displays both kinds with their 
 });
 
 test("the push lifetime includes completion of every showNotification call", async () => {
-  const delivery = deferred();
-  const showing = deferred();
+  const delivery = deferred<void>();
+  const showing = deferred<void>();
   const h = harness({
     fetchResponse: async () => response([attention]),
     showNotification: async () => { showing.resolve(); await delivery.promise; },
@@ -184,7 +216,7 @@ for (const [name, fetchResponse] of [
     { ...attention, sessionId: "" }, { ...usage, id: "" }, { ...usage, usedBefore: 101 },
     { ...usage, usedBeforeSeenAt: 1e100 },
   ])],
-]) {
+] satisfies [string, FetchResponse][]) {
   test(name + " still produces one neutral user-visible banner", async () => {
     const h = harness({ fetchResponse });
     await h.dispatch("push").done;
@@ -197,7 +229,7 @@ test("unknown entries cannot suppress a valid notification or add a generic bann
   const h = harness({ fetchResponse: async () => response([null, { type: "future" }, attention]) });
   await h.dispatch("push").done;
   assert.equal(h.shown.length, 1);
-  assert.equal(h.shown[0].tag, attention.sessionId);
+  assert.equal(h.shown[0]!.tag, attention.sessionId);
 });
 
 test("the fetch aborts at ten seconds and shows fallback without waiting on wall time", async () => {
@@ -205,7 +237,7 @@ test("the fetch aborts at ten seconds and shows fallback without waiting on wall
     signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
   }) });
   const push = h.dispatch("push");
-  const signal = h.requests[0].options.signal;
+  const signal = h.requests[0]!.options.signal;
   h.clock.advance(9_999);
   assert.equal(signal.aborted, false);
   assert.deepEqual(h.shown, []);
@@ -216,7 +248,7 @@ test("the fetch aborts at ten seconds and shows fallback without waiting on wall
 });
 
 test("the same deadline also aborts a body that stalls after successful response headers", async () => {
-  const reading = deferred();
+  const reading = deferred<void>();
   const h = harness({ fetchResponse: async (_url, { signal }) => ({
     ok: true,
     json: () => {
@@ -230,13 +262,19 @@ test("the same deadline also aborts a body that stalls after successful response
   await reading.promise;
   h.clock.advance(10_000);
   await push.done;
-  assert.equal(h.requests[0].options.signal.aborted, true);
+  assert.equal(h.requests[0]!.options.signal.aborted, true);
   assertGeneric(h);
 });
 
-function windowClient({ navigateResult = "self" } = {}) {
-  const calls = [];
-  const client = {
+interface FakeWindowClient {
+  postMessage(message: unknown): void;
+  focus(): Promise<FakeWindowClient>;
+  navigate(url: string): Promise<unknown>;
+}
+
+function windowClient({ navigateResult = "self" }: { navigateResult?: unknown } = {}) {
+  const calls: unknown[][] = [];
+  const client: FakeWindowClient = {
     postMessage(message) { calls.push(["postMessage", clone(message)]); },
     async focus() { calls.push(["focus"]); return client; },
     async navigate(url) {
@@ -278,7 +316,7 @@ test("a generic click focuses the current window without navigating or changing 
 });
 
 test("a usage click navigates to the overview even if its data includes a stray session", async () => {
-  const rootCalls = [];
+  const rootCalls: string[] = [];
   const root = { async focus() { rootCalls.push("focus"); } };
   const window = windowClient({ navigateResult: root });
   const h = harness({ clients: [window.client] });
@@ -289,7 +327,7 @@ test("a usage click navigates to the overview even if its data includes a stray 
   assert.equal(h.closed, 1);
 });
 
-for (const [name, data] of [["usage", { type: "usage.reset" }], ["generic", {}]]) {
+for (const [name, data] of [["usage", { type: "usage.reset" }], ["generic", {}]] as const) {
   test(name + " clicks open the overview when no window exists", async () => {
     const h = harness();
     await h.click(data).done;

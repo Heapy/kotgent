@@ -4,7 +4,7 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { effect } from "./signals.ts";
 import { IDLE, READY } from "../../webui/src/lib/readiness.ts";
 import {
   findSession,
@@ -32,7 +32,8 @@ import {
   removeProjectRow,
   replaceProjects,
 } from "../../webui/src/state/projects.ts";
-import { patchFrame, sessionRow, taskRow } from "./fixtures.js";
+import type { Project } from "../../webui/src/lib/tasks.ts";
+import { patchFrame, sessionRow, taskRow } from "./fixtures.ts";
 
 // Reset singleton values between tests.
 function resetState() {
@@ -45,13 +46,17 @@ function resetState() {
 }
 
 // The effect's first run establishes the subscription; later runs count render notifications.
-function countRenders(target) {
-  const seen = { renders: 0 };
+function countRenders(target: { readonly value: unknown }) {
+  const seen = { renders: 0, stop: () => {} };
   seen.stop = effect(() => {
     target.value;
     seen.renders += 1;
   });
   return seen;
+}
+
+function projectRow(id: string, name = id): Project {
+  return { id: id, name: name, path: null, updatedAt: 0, archived: false };
 }
 
 beforeEach(resetState);
@@ -72,8 +77,8 @@ describe("session writers compose instead of discarding each other", () => {
     const patched = mergeSessionPatch(patchFrame({ rev: 3, unread: 4 }));
 
     assert.equal(patched.changed, true);
-    assert.equal(patched.winner.unread, 4);
-    assert.equal(findSession("s1").unread, 4);
+    assert.equal(patched.winner!.unread, 4);
+    assert.equal(findSession("s1")!.unread, 4);
   });
 
   test("the writers never mutate the list they were handed", () => {
@@ -91,13 +96,13 @@ describe("out-of-order and duplicate session frames converge", () => {
     const stale = mergeSessionRow(sessionRow({ rev: 3, state: "running" }));
 
     assert.equal(stale.changed, false, "an older revision is not applied");
-    assert.equal(findSession("s1").state, "ready");
+    assert.equal(findSession("s1")!.state, "ready");
 
     resetState();
     mergeSessionRow(sessionRow({ rev: 3, state: "running" }));
     mergeSessionRow(sessionRow({ rev: 5, state: "ready" }));
 
-    assert.equal(findSession("s1").state, "ready", "both arrival orders reach the same value");
+    assert.equal(findSession("s1")!.state, "ready", "both arrival orders reach the same value");
   });
 
   test("a duplicate row leaves the list identical, so no component re-renders", () => {
@@ -117,8 +122,8 @@ describe("out-of-order and duplicate session frames converge", () => {
     mergeSessionPatch(patchFrame({ rev: 9, unread: 2 }));
     mergeSessionPatch(patchFrame({ rev: 4, unread: 0 }));
 
-    assert.equal(findSession("s1").unread, 2);
-    assert.equal(findSession("s1").rev, 9);
+    assert.equal(findSession("s1")!.unread, 2);
+    assert.equal(findSession("s1")!.rev, 9);
   });
 
   test("a patch for a session the list has never seen is dropped", () => {
@@ -151,8 +156,8 @@ describe("the equal-revision rule", () => {
     const redelivered = mergeSessionPatch(patchFrame({ rev: 4, unread: 99 }));
 
     assert.equal(redelivered.winner, findSession("s1"));
-    assert.equal(redelivered.winner.cwd, "/work/one");
-    assert.equal(redelivered.winner.unread, 5, "the declined frame's fields are not adopted");
+    assert.equal(redelivered.winner!.cwd, "/work/one");
+    assert.equal(redelivered.winner!.unread, 5, "the declined frame's fields are not adopted");
   });
 
   test("an older frame reports the current row too, and still costs no render", () => {
@@ -183,12 +188,12 @@ describe("the equal-revision rule", () => {
     mergeSessionRow(sessionRow({ rev: 1, needsAttention: false }));
 
     const raised = mergeSessionPatch(patchFrame({ rev: 2, needsAttention: true }));
-    assert.equal(raised.previous.needsAttention, false);
-    assert.equal(raised.winner.needsAttention, true);
+    assert.equal(raised.previous!.needsAttention, false);
+    assert.equal(raised.winner!.needsAttention, true);
 
     const redelivered = mergeSessionPatch(patchFrame({ rev: 2, needsAttention: true }));
     assert.equal(redelivered.changed, false, "the redelivery must not notify a second time");
-    assert.equal(redelivered.previous.needsAttention, true);
+    assert.equal(redelivered.previous!.needsAttention, true);
   });
 });
 
@@ -209,7 +214,7 @@ describe("session snapshots", () => {
     const applied = replaceSessions([sessionRow({ id: "s1", needsAttention: true, rev: 3 })]);
 
     assert.equal(applied.previous.length, 1);
-    assert.equal(applied.previous[0].needsAttention, false);
+    assert.equal(applied.previous[0]!.needsAttention, false);
   });
 
   test("only the first snapshot is the readiness transition", () => {
@@ -234,7 +239,7 @@ describe("session lookup", () => {
   test("the index finds the row a linear scan would", () => {
     replaceSessions([sessionRow({ id: "s1" }), sessionRow({ id: "s2", name: "two" })]);
 
-    assert.equal(findSession("s2").name, "two");
+    assert.equal(findSession("s2")!.name, "two");
   });
 
   test("an unknown or absent id is null rather than undefined", () => {
@@ -282,7 +287,7 @@ describe("task writers", () => {
     const stale = mergeTaskRow(taskRow({ ref: "local:1", rev: 1, title: "stale" }));
 
     assert.equal(stale.changed, false);
-    assert.equal(findTask("local:1").title, "wire the board");
+    assert.equal(findTask("local:1")!.title, "wire the board");
     assert.deepEqual(tasks.value.map((t) => t.ref), ["local:1", "local:2"]);
   });
 
@@ -292,8 +297,8 @@ describe("task writers", () => {
     const moved = mergeTaskPatch({ ref: "local:1", state: "in_progress", rev: 3 });
 
     assert.equal(moved.changed, true);
-    assert.equal(moved.winner.state, "in_progress");
-    assert.equal(moved.winner.title, "wire the board", "a patch keeps the fields it does not carry");
+    assert.equal(moved.winner!.state, "in_progress");
+    assert.equal(moved.winner!.title, "wire the board", "a patch keeps the fields it does not carry");
   });
 
   test("a patch for an unknown ref is dropped", () => {
@@ -331,23 +336,23 @@ describe("project writers", () => {
   test("a refresh replaces the list and establishes readiness", () => {
     assert.equal(projectsReadiness.status.value.state, IDLE);
 
-    replaceProjects([{ id: "p1", name: "one" }]);
+    replaceProjects([projectRow("p1", "one")]);
 
     assert.equal(projectsReadiness.status.value.state, READY);
-    assert.equal(findProject("p1").name, "one");
+    assert.equal(findProject("p1")!.name, "one");
   });
 
   test("a confirmed row is applied verbatim, appending when it is new", () => {
-    replaceProjects([{ id: "p1", name: "one" }]);
+    replaceProjects([projectRow("p1", "one")]);
 
-    applyProjectRow({ id: "p2", name: "two" });
-    applyProjectRow({ id: "p1", name: "renamed" });
+    applyProjectRow(projectRow("p2", "two"));
+    applyProjectRow(projectRow("p1", "renamed"));
 
     assert.deepEqual(projects.value.map((p) => p.name), ["renamed", "two"]);
   });
 
   test("removing a row drops it, and removing it again writes nothing at all", () => {
-    replaceProjects([{ id: "p1" }, { id: "p2" }]);
+    replaceProjects([projectRow("p1"), projectRow("p2")]);
 
     removeProjectRow("p1");
     const afterRemoval = projects.value;
@@ -362,7 +367,7 @@ describe("project writers", () => {
   });
 
   test("liveness answers the question the link guard asks", () => {
-    replaceProjects([{ id: "p1" }]);
+    replaceProjects([projectRow("p1")]);
 
     assert.equal(isLiveProject("p1"), true);
     assert.equal(isLiveProject("p2"), false, "a deleted project must not be linkable");
@@ -370,7 +375,7 @@ describe("project writers", () => {
   });
 
   test("a null refresh body is an empty list", () => {
-    replaceProjects([{ id: "p1" }]);
+    replaceProjects([projectRow("p1")]);
     replaceProjects(null);
 
     assert.deepEqual(projects.value, []);

@@ -48,12 +48,12 @@ class WebUiLogicTest {
             "node --test ran $ran tests, fewer than the ${testFiles.size} test files $jsDir holds " +
                 "(${testFiles.joinToString()}), so at least one of them contributed nothing$report",
         )
-        assertEquals(0, tapCount(result.stdout, FAIL_SUMMARY) ?: -1, "the JavaScript tier reported failures$report")
+        assertEquals(0, tapCount(result.stdout, FAIL_SUMMARY) ?: -1, "the TypeScript tier reported failures$report")
         // Node reports a timed-out test as cancelled rather than failed.
         assertEquals(
             0,
             tapCount(result.stdout, CANCELLED_SUMMARY) ?: -1,
-            "the JavaScript tier cancelled a test, which is how a test that never settles is reported " +
+            "the TypeScript tier cancelled a test, which is how a test that never settles is reported " +
                 "once --test-timeout=${TEST_TIMEOUT_MILLIS}ms cuts it off$report",
         )
         assertEquals(0, result.exitCode, "node --test exited non-zero$report")
@@ -237,7 +237,7 @@ class WebUiLogicTest {
         const val NODE_MAJOR_FLOOR = 24
         const val PROJECT_MANIFEST = "project.yaml"
         const val JS_RELATIVE = "webuitest/js"
-        const val TEST_SUFFIX = ".test.js"
+        const val TEST_SUFFIX = ".test.ts"
 
         // Node treats every positional argument as a glob and does not expand a bare directory,
         // so the directory is named through a pattern rather than on its own.

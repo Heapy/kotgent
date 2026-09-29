@@ -26,21 +26,28 @@ import {
   terminalClosed,
   timerFired,
 } from "../../webui/src/lib/reattach.ts";
-import { sessionRow } from "./fixtures.js";
+import type {
+  ReattachEffect,
+  ReattachEnvironment,
+  ReattachEvent,
+  ReattachState,
+  ReattachStep,
+} from "../../webui/src/lib/reattach.ts";
+import { sessionRow } from "./fixtures.ts";
 
-const VISIBLE = Object.freeze({ visible: true, activeSessionId: "s1", pending: null });
-const HIDDEN = Object.freeze({ visible: false, activeSessionId: "s1", pending: null });
+const VISIBLE: Readonly<ReattachEnvironment> = Object.freeze({ visible: true, activeSessionId: "s1", pending: null });
+const HIDDEN: Readonly<ReattachEnvironment> = Object.freeze({ visible: false, activeSessionId: "s1", pending: null });
 
 /** Reset all state except the monotonic generation that rejects pre-cancel effects. */
-function idle(state) {
+function idle(state: Readonly<ReattachState>) {
   return { candidate: state.candidate, granted: state.granted, timer: state.timer, probe: state.probe };
 }
 
 const IDLE = Object.freeze(idle(initialReattachState()));
 
-function run(state, events, env = VISIBLE) {
+function run(state: Readonly<ReattachState>, events: ReattachEvent[], env = VISIBLE): ReattachStep {
   let current = state;
-  let effects = [];
+  let effects: ReattachEffect[] = [];
   for (const event of events) {
     const step = reduceReattach(current, event, env);
     current = step.state;
@@ -49,8 +56,13 @@ function run(state, events, env = VISIBLE) {
   return { state: current, effects: effects };
 }
 
-function kinds(effects) {
+function kinds(effects: ReattachEffect[]) {
   return effects.map((effect) => effect.kind);
+}
+
+function effectOf<K extends ReattachEffect["kind"]>(effect: ReattachEffect | undefined, kind: K) {
+  assert.equal(effect?.kind, kind);
+  return effect as ReattachEffect & { kind: K };
 }
 
 /** The state a probe for `s1` is running in: closed, granted, timer fired, request in flight. */
@@ -114,17 +126,17 @@ describe("grants and scheduling", () => {
 describe("the timer", () => {
   test("firing with a candidate spends the grant and probes it", () => {
     const armed = run(initialReattachState(), [grant(), terminalClosed("s1")]);
-    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer), VISIBLE);
+    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer!), VISIBLE);
     assert.equal(state.timer, null);
     assert.equal(state.granted, false);
-    assert.equal(state.probe.id, "s1");
+    assert.equal(state.probe!.id, "s1");
     assert.deepEqual(kinds(effects), [PROBE]);
-    assert.equal(effects[0].id, "s1");
+    assert.equal(effectOf(effects[0], PROBE).id, "s1");
   });
 
   test("firing with no candidate preserves the grant for the close that follows", () => {
     const armed = run(initialReattachState(), [grantAndSchedule()]);
-    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer), VISIBLE);
+    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer!), VISIBLE);
     assert.equal(state.granted, true);
     assert.equal(state.probe, null);
     assert.deepEqual(effects, []);
@@ -132,7 +144,7 @@ describe("the timer", () => {
 
   test("firing while hidden preserves the grant", () => {
     const armed = run(initialReattachState(), [grant(), terminalClosed("s1")]);
-    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer), HIDDEN);
+    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer!), HIDDEN);
     assert.equal(state.granted, true);
     assert.equal(state.candidate, "s1");
     assert.equal(state.probe, null);
@@ -141,7 +153,7 @@ describe("the timer", () => {
 
   test("a stale generation changes nothing and says nothing", () => {
     const armed = run(initialReattachState(), [grant(), terminalClosed("s1")]);
-    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer + 100), VISIBLE);
+    const { state, effects } = reduceReattach(armed.state, timerFired(armed.state.timer! + 100), VISIBLE);
     assert.deepEqual(state, armed.state);
     assert.deepEqual(effects, []);
   });
@@ -149,17 +161,17 @@ describe("the timer", () => {
   test("a probe replaces an earlier one by aborting it first", () => {
     const first = probing();
     const again = run(first.state, [grant(), terminalClosed("s2")]);
-    const { state, effects } = reduceReattach(again.state, timerFired(again.state.timer), VISIBLE);
+    const { state, effects } = reduceReattach(again.state, timerFired(again.state.timer!), VISIBLE);
     assert.deepEqual(kinds(effects), [ABORT_PROBE, PROBE]);
-    assert.equal(effects[0].gen, first.state.probe.gen);
-    assert.equal(state.probe.id, "s2");
+    assert.equal(effectOf(effects[0], ABORT_PROBE).gen, first.state.probe!.gen);
+    assert.equal(state.probe!.id, "s2");
   });
 });
 
 describe("probeResolved, in guard order", () => {
   test("A: a stale generation changes nothing and says nothing", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeResolved(state.probe.gen + 100, sessionRow()), VISIBLE);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen + 100, sessionRow()), VISIBLE);
     assert.deepEqual(step.state, state);
     assert.deepEqual(step.effects, []);
   });
@@ -167,7 +179,7 @@ describe("probeResolved, in guard order", () => {
   test("B: a probe about a session that is no longer the candidate changes nothing", () => {
     const first = probing();
     const moved = run(first.state, [terminalClosed("s2")]);
-    const step = reduceReattach(moved.state, probeResolved(first.state.probe.gen, sessionRow()), VISIBLE);
+    const step = reduceReattach(moved.state, probeResolved(first.state.probe!.gen, sessionRow()), VISIBLE);
     assert.equal(step.state.candidate, "s2");
     assert.deepEqual(step.effects, []);
     assert.equal(step.state.probe, null, "the request settled, whoever it turned out to be about");
@@ -176,14 +188,14 @@ describe("probeResolved, in guard order", () => {
   test("B: a settled probe is not aborted again by the cancel that follows", () => {
     const first = probing();
     const moved = run(first.state, [terminalClosed("s2")]);
-    const settled = reduceReattach(moved.state, probeResolved(first.state.probe.gen, sessionRow()), VISIBLE);
+    const settled = reduceReattach(moved.state, probeResolved(first.state.probe!.gen, sessionRow()), VISIBLE);
     const step = reduceReattach(settled.state, cancel(), VISIBLE);
     assert.deepEqual(step.effects, [], "app.tsx released that generation when the answer arrived");
   });
 
   test("C: hidden keeps the candidate and attaches nothing", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), HIDDEN);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), HIDDEN);
     assert.equal(step.state.candidate, "s1");
     assert.equal(step.state.probe, null);
     assert.deepEqual(step.effects, []);
@@ -192,7 +204,7 @@ describe("probeResolved, in guard order", () => {
   test("D: a selection that moved clears the candidate and says nothing", () => {
     const { state } = probing();
     const env = { visible: true, activeSessionId: "s2", pending: null };
-    const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), env);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), env);
     assert.equal(step.state.candidate, null);
     assert.deepEqual(step.effects, []);
   });
@@ -200,7 +212,7 @@ describe("probeResolved, in guard order", () => {
   test("D outranks E: a moved selection clears even while a mutation is pending", () => {
     const { state } = probing();
     const env = { visible: true, activeSessionId: "s2", pending: "resume" };
-    const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), env);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), env);
     assert.equal(step.state.candidate, null);
     assert.deepEqual(step.effects, []);
   });
@@ -209,7 +221,7 @@ describe("probeResolved, in guard order", () => {
     for (const pending of ["stop", "done", "resume", "import"]) {
       const { state } = probing();
       const env = { visible: true, activeSessionId: "s1", pending: pending };
-      const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), env);
+      const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), env);
       assert.equal(step.state.candidate, "s1", pending + " must retain the candidate");
       assert.equal(step.state.probe, null);
       assert.deepEqual(step.effects, []);
@@ -221,7 +233,7 @@ describe("probeResolved, in guard order", () => {
     for (const pending of ["rename", "link-task", "preferences", "start", "delete-project"]) {
       const { state } = probing();
       const env = { visible: true, activeSessionId: "s1", pending: pending };
-      const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), env);
+      const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), env);
       assert.deepEqual(kinds(step.effects), [ATTACH, HINT_CLEAR], pending + " must not hold the attach");
     }
   });
@@ -229,38 +241,38 @@ describe("probeResolved, in guard order", () => {
   test("F: a dead session retires the candidate and explains why", () => {
     const { state } = probing();
     const row = sessionRow({ state: "resumable", alive: false });
-    const step = reduceReattach(state, probeResolved(state.probe.gen, row), VISIBLE);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, row), VISIBLE);
     assert.equal(step.state.candidate, null);
     assert.deepEqual(kinds(step.effects), [HINT_DEAD]);
-    assert.equal(step.effects[0].state, "resumable");
+    assert.equal(effectOf(step.effects[0], HINT_DEAD).state, "resumable");
   });
 
   test("F: an absent row is a dead row, and its state is unknown", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeResolved(state.probe.gen, null), VISIBLE);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, null), VISIBLE);
     assert.equal(step.state.candidate, null);
     assert.deepEqual(kinds(step.effects), [HINT_DEAD]);
-    assert.equal(step.effects[0].state, null);
+    assert.equal(effectOf(step.effects[0], HINT_DEAD).state, null);
   });
 
   test("G: a live session is attached and the hint is cleared", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow()), VISIBLE);
+    const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow()), VISIBLE);
     assert.equal(step.state.candidate, null);
     assert.equal(step.state.probe, null);
     assert.deepEqual(kinds(step.effects), [ATTACH, HINT_CLEAR]);
-    assert.equal(step.effects[0].id, "s1");
+    assert.equal(effectOf(step.effects[0], ATTACH).id, "s1");
   });
 
   test("every alive state attaches and no dead state does", () => {
     for (const alive of ["running", "ready", "needs_approval", "needs_answer"]) {
       const { state } = probing();
-      const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow({ state: alive })), VISIBLE);
+      const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow({ state: alive })), VISIBLE);
       assert.deepEqual(kinds(step.effects), [ATTACH, HINT_CLEAR], alive + " must attach");
     }
     for (const dead of ["stopped", "crashed", "resumable"]) {
       const { state } = probing();
-      const step = reduceReattach(state, probeResolved(state.probe.gen, sessionRow({ state: dead })), VISIBLE);
+      const step = reduceReattach(state, probeResolved(state.probe!.gen, sessionRow({ state: dead })), VISIBLE);
       assert.deepEqual(kinds(step.effects), [HINT_DEAD], dead + " must not attach");
     }
   });
@@ -269,14 +281,14 @@ describe("probeResolved, in guard order", () => {
 describe("probeFailed", () => {
   test("a definite answer retires the candidate", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeFailed(state.probe.gen, { definite: true }), VISIBLE);
+    const step = reduceReattach(state, probeFailed(state.probe!.gen, { definite: true }), VISIBLE);
     assert.equal(step.state.candidate, null);
     assert.deepEqual(kinds(step.effects), [HINT_DETACHED]);
   });
 
   test("a transient failure keeps the candidate for the next grant", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeFailed(state.probe.gen, { definite: false }), VISIBLE);
+    const step = reduceReattach(state, probeFailed(state.probe!.gen, { definite: false }), VISIBLE);
     assert.equal(step.state.candidate, "s1");
     assert.equal(step.state.probe, null);
     assert.deepEqual(kinds(step.effects), [HINT_DETACHED]);
@@ -285,13 +297,13 @@ describe("probeFailed", () => {
   test("the hint belongs to the selected session, so another selection is told nothing", () => {
     const { state } = probing();
     const env = { visible: true, activeSessionId: "s2", pending: null };
-    const step = reduceReattach(state, probeFailed(state.probe.gen, { definite: false }), env);
+    const step = reduceReattach(state, probeFailed(state.probe!.gen, { definite: false }), env);
     assert.deepEqual(step.effects, []);
   });
 
   test("a stale generation changes nothing and says nothing", () => {
     const { state } = probing();
-    const step = reduceReattach(state, probeFailed(state.probe.gen + 100, { definite: true }), VISIBLE);
+    const step = reduceReattach(state, probeFailed(state.probe!.gen + 100, { definite: true }), VISIBLE);
     assert.deepEqual(step.state, state);
     assert.deepEqual(step.effects, []);
   });
@@ -300,7 +312,7 @@ describe("probeFailed", () => {
   test("a failure about one session does not retire another session's candidate", () => {
     const first = probing();
     const moved = run(first.state, [terminalClosed("s2")]);
-    const step = reduceReattach(moved.state, probeFailed(first.state.probe.gen, { definite: true }), VISIBLE);
+    const step = reduceReattach(moved.state, probeFailed(first.state.probe!.gen, { definite: true }), VISIBLE);
     assert.equal(step.state.candidate, "s2");
     assert.deepEqual(step.effects, []);
     assert.equal(step.state.probe, null, "the request settled, whoever it turned out to be about");
@@ -309,7 +321,7 @@ describe("probeFailed", () => {
   test("a settled failure is not aborted again by the cancel that follows", () => {
     const first = probing();
     const moved = run(first.state, [terminalClosed("s2")]);
-    const settled = reduceReattach(moved.state, probeFailed(first.state.probe.gen, { definite: true }), VISIBLE);
+    const settled = reduceReattach(moved.state, probeFailed(first.state.probe!.gen, { definite: true }), VISIBLE);
     const step = reduceReattach(settled.state, cancel(), VISIBLE);
     assert.deepEqual(step.effects, [], "app.tsx released that generation when the failure arrived");
   });
@@ -372,7 +384,7 @@ describe("hidden, cancel and the reconnect snapshot", () => {
     const cancelled = reduceReattach(state, cancel(), VISIBLE);
     const rearmed = run(cancelled.state, [grant(), terminalClosed("s1")]);
     assert.notEqual(rearmed.state.timer, state.timer);
-    const stale = reduceReattach(rearmed.state, timerFired(state.timer), VISIBLE);
+    const stale = reduceReattach(rearmed.state, timerFired(state.timer!), VISIBLE);
     assert.deepEqual(stale.effects, []);
   });
 
@@ -410,7 +422,7 @@ describe("a candidate whose session is dead", () => {
     ]);
     assert.equal(stopped.state.candidate, null);
     const back = run(stopped.state, [hidden(), grantAndSchedule()]);
-    const fired = reduceReattach(back.state, timerFired(back.state.timer), VISIBLE);
+    const fired = reduceReattach(back.state, timerFired(back.state.timer!), VISIBLE);
     assert.deepEqual(fired.effects, [], "foregrounding has nothing to probe");
     assert.equal(fired.state.granted, true, "the grant waits for a real drop");
   });
@@ -452,24 +464,24 @@ describe("the reconnect journey", () => {
   // A failed liveness read retains the candidate for the recovered socket's grant.
   test("an unreachable daemon keeps the candidate and the recovered socket spends it", () => {
     const first = probing();
-    const failed = reduceReattach(first.state, probeFailed(first.state.probe.gen, { definite: false }), VISIBLE);
+    const failed = reduceReattach(first.state, probeFailed(first.state.probe!.gen, { definite: false }), VISIBLE);
     assert.equal(failed.state.candidate, "s1");
     assert.equal(failed.state.granted, false);
 
     const regranted = reduceReattach(failed.state, grantAndSchedule(), VISIBLE);
     assert.deepEqual(kinds(regranted.effects), [SCHEDULE]);
 
-    const second = reduceReattach(regranted.state, timerFired(regranted.state.timer), VISIBLE);
+    const second = reduceReattach(regranted.state, timerFired(regranted.state.timer!), VISIBLE);
     assert.deepEqual(kinds(second.effects), [PROBE]);
-    assert.equal(second.effects[0].id, "s1");
+    assert.equal(effectOf(second.effects[0], PROBE).id, "s1");
   });
 
   test("a snapshot arriving between the grant and the timer leaves the journey intact", () => {
     const first = probing();
-    const failed = reduceReattach(first.state, probeFailed(first.state.probe.gen, { definite: false }), VISIBLE);
+    const failed = reduceReattach(first.state, probeFailed(first.state.probe!.gen, { definite: false }), VISIBLE);
     const regranted = reduceReattach(failed.state, grantAndSchedule(), VISIBLE);
     const pruned = reduceReattach(regranted.state, snapshotApplied(new Set(["s1"])), VISIBLE);
-    const second = reduceReattach(pruned.state, timerFired(pruned.state.timer), VISIBLE);
+    const second = reduceReattach(pruned.state, timerFired(pruned.state.timer!), VISIBLE);
     assert.deepEqual(kinds(second.effects), [PROBE]);
   });
 
@@ -477,8 +489,8 @@ describe("the reconnect journey", () => {
     const closed = run(initialReattachState(), [grant(), terminalClosed("s1")]);
     const away = reduceReattach(closed.state, hidden(), HIDDEN);
     const back = reduceReattach(away.state, grantAndSchedule(), VISIBLE);
-    const fired = reduceReattach(back.state, timerFired(back.state.timer), VISIBLE);
+    const fired = reduceReattach(back.state, timerFired(back.state.timer!), VISIBLE);
     assert.deepEqual(kinds(fired.effects), [PROBE]);
-    assert.equal(fired.effects[0].id, "s1");
+    assert.equal(effectOf(fired.effects[0], PROBE).id, "s1");
   });
 });

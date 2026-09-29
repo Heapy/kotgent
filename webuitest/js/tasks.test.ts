@@ -16,11 +16,12 @@ import {
   taskStateRank,
   upsertTaskIfNewer,
 } from "../../webui/src/lib/tasks.ts";
-import { listOf, taskRow } from "./fixtures.js";
+import type { Task } from "../../webui/src/lib/tasks.ts";
+import { listOf, taskRow } from "./fixtures.ts";
 
 describe("upsertTaskIfNewer", () => {
   test("a task the list has never seen is appended", () => {
-    const empty = listOf();
+    const empty = listOf<Task>();
     const row = taskRow({});
 
     assert.deepEqual(upsertTaskIfNewer(empty, row), [row]);
@@ -53,7 +54,7 @@ describe("upsertTaskIfNewer", () => {
   test("a row carrying no revision never displaces a stored row", () => {
     const list = listOf(taskRow({ rev: 2 }));
 
-    assert.strictEqual(upsertTaskIfNewer(list, taskRow({ rev: undefined, state: "done" })), list);
+    assert.strictEqual(upsertTaskIfNewer(list, taskRow({ rev: undefined as unknown as number, state: "done" })), list);
   });
 });
 
@@ -65,7 +66,7 @@ describe("patchTaskIfNewer", () => {
   });
 
   test("a patch on an empty collection is a no-op", () => {
-    const empty = listOf();
+    const empty = listOf<Task>();
 
     assert.strictEqual(patchTaskIfNewer(empty, { ref: "local:12", rev: 99, state: "done" }), empty);
   });
@@ -75,10 +76,10 @@ describe("patchTaskIfNewer", () => {
 
     const merged = patchTaskIfNewer(list, { ref: "local:12", rev: 4, state: "in_progress", position: 250 });
 
-    assert.equal(merged[0].state, "in_progress");
-    assert.equal(merged[0].position, 250);
+    assert.equal(merged[0]!.state, "in_progress");
+    assert.equal(merged[0]!.position, 250);
     // A stale full row must lose the next comparison, which it only does if the patch's revision survives.
-    assert.equal(merged[0].rev, 4);
+    assert.equal(merged[0]!.rev, 4);
   });
 
   test("fields the patch does not carry survive from the stored row", () => {
@@ -86,8 +87,8 @@ describe("patchTaskIfNewer", () => {
 
     const merged = patchTaskIfNewer(list, { ref: "local:12", rev: 4, state: "review" });
 
-    assert.equal(merged[0].title, "wire the board");
-    assert.equal(merged[0].createdAt, 10);
+    assert.equal(merged[0]!.title, "wire the board");
+    assert.equal(merged[0]!.createdAt, 10);
   });
 
   test("an equal revision is a no-op that returns the very same list", () => {
@@ -105,7 +106,7 @@ describe("patchTaskIfNewer", () => {
   test("a patch carrying no revision is a no-op", () => {
     const list = listOf(taskRow({ rev: 2 }));
 
-    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:12", state: "done" }), list);
+    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:12", state: "done" } as unknown as Pick<Task, "ref" | "rev">), list);
   });
 });
 
@@ -131,7 +132,7 @@ describe("removeTask", () => {
   });
 
   test("an empty collection is a no-op that returns the very same list", () => {
-    const empty = listOf();
+    const empty = listOf<Task>();
 
     assert.strictEqual(removeTask(empty, "local:a"), empty);
   });
@@ -170,7 +171,7 @@ describe("open-state classification", () => {
     // A newer daemon's state must not be counted as open work by an older page.
     assert.equal(isOpenTaskState("archived"), false);
     assert.equal(isOpenTaskState(""), false);
-    assert.equal(isOpenTaskState(undefined), false);
+    assert.equal(isOpenTaskState(undefined as unknown as string), false);
   });
 
   test("ranks follow board order and an unknown state sorts last", () => {
@@ -178,19 +179,19 @@ describe("open-state classification", () => {
 
     assert.deepEqual(ranks, [0, 1, 2, 3]);
     assert.equal(taskStateRank("archived"), Number.MAX_SAFE_INTEGER);
-    assert.equal(taskStateRank(undefined), Number.MAX_SAFE_INTEGER);
+    assert.equal(taskStateRank(undefined as unknown as string), Number.MAX_SAFE_INTEGER);
   });
 
   test("an unlabelled state falls back to the raw value, then to unknown", () => {
     assert.equal(taskStateLabel("in_progress"), "In progress");
     assert.equal(taskStateLabel("archived"), "archived");
-    assert.equal(taskStateLabel(undefined), "unknown");
+    assert.equal(taskStateLabel(undefined as unknown as string), "unknown");
   });
 });
 
 // Board order uses state rank, explicit position, creation time, then ref.
 describe("compareTasksByBoardOrder", () => {
-  const sorted = (...rows) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
+  const sorted = (...rows: Task[]) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
 
   test("position comes first", () => {
     const low = taskRow({ ref: "local:a1", position: 10, createdAt: 99 });
@@ -224,9 +225,9 @@ describe("compareTasksByBoardOrder", () => {
 
   test("a row missing a field sorts after one that has it, and never throws", () => {
     const placed = taskRow({ ref: "local:d1", position: 10 });
-    const unplaced = taskRow({ ref: "local:d0", position: null });
-    const created = taskRow({ ref: "local:e1", position: null, createdAt: 3 });
-    const uncreated = taskRow({ ref: "local:e0", position: null, createdAt: undefined });
+    const unplaced = taskRow({ ref: "local:d0", position: null as unknown as number });
+    const created = taskRow({ ref: "local:e1", position: null as unknown as number, createdAt: 3 });
+    const uncreated = taskRow({ ref: "local:e0", position: null as unknown as number, createdAt: undefined as unknown as number });
 
     assert.deepEqual(sorted(unplaced, placed), ["local:d1", "local:d0"]);
     assert.deepEqual(sorted(uncreated, created), ["local:e1", "local:e0"]);

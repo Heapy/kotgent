@@ -10,9 +10,12 @@ import {
   headChain,
   orderGroupsByRecentChange,
 } from "../../webui/src/lib/paths.ts";
-import { sessionRow } from "./fixtures.js";
+import type { SessionGroup } from "../../webui/src/lib/paths.ts";
+import { sessionRow } from "./fixtures.ts";
 
-const at = (id, cwd, updatedAt) => sessionRow({ id: id, cwd: cwd, updatedAt: updatedAt });
+type Row = ReturnType<typeof sessionRow>;
+
+const at = (id: string, cwd: string, updatedAt: number) => sessionRow({ id: id, cwd: cwd, updatedAt: updatedAt });
 
 const SESSIONS = Object.freeze([
   at("s1", "/Users/me/dev/api", 30),
@@ -26,7 +29,7 @@ const SESSIONS = Object.freeze([
   at("s8", "/Users/me/dev/api/x/deep/er", 80),
 ]);
 
-function outline(groups, depth = 0) {
+function outline(groups: readonly SessionGroup<Row>[], depth = 0): string[] {
   return groups.flatMap((group) => [
     "  ".repeat(depth) + group.label + " [" + group.path + "]" + (group.inBase ? "" : " outside") +
       " (" + group.sessionCount + ")" +
@@ -35,7 +38,7 @@ function outline(groups, depth = 0) {
   ]);
 }
 
-function drawn(basePath, level) {
+function drawn(basePath: string, level: unknown) {
   return outline(groupSessions(SESSIONS, basePath, level)).join("\n");
 }
 
@@ -119,8 +122,8 @@ describe("groupSessions", () => {
   });
 
   test("every node has the same fields, holding the caller's own session objects", () => {
-    const nodes = [];
-    const walk = (groups) => groups.forEach((group) => { nodes.push(group); walk(group.children); });
+    const nodes: SessionGroup<Row>[] = [];
+    const walk = (groups: SessionGroup<Row>[]) => groups.forEach((group) => { nodes.push(group); walk(group.children); });
     walk(groupSessions(SESSIONS, "/Users/me/dev", 2));
 
     for (const node of nodes) {
@@ -130,7 +133,7 @@ describe("groupSessions", () => {
   });
 
   test("the Done tree orders the same heads by their newest change", () => {
-    const done = (groups, depth = 0) => groups.flatMap((group) => [
+    const done = (groups: readonly SessionGroup<Row>[], depth = 0): string[] => groups.flatMap((group) => [
       "  ".repeat(depth) + group.label + " [" + group.path + "] newest " + group.newestChange,
       ...groupEntries(group).flatMap((entry) => (entry.session
         ? ["  ".repeat(depth + 1) + entry.session.id]
@@ -160,13 +163,13 @@ describe("groupSessions", () => {
 });
 
 describe("headChain", () => {
-  function drawnAbove(cwd, basePath, level) {
-    const chain = [];
+  function drawnAbove(cwd: string, basePath: string, level: unknown) {
+    const chain: string[] = [];
     let groups = groupSessions([at("only", cwd, 1)], basePath, level);
     while (groups.length > 0) {
       assert.equal(groups.length, 1, "one session draws one head per level");
-      chain.push(groups[0].path);
-      groups = groups[0].children;
+      chain.push(groups[0]!.path);
+      groups = groups[0]!.children;
     }
     return chain;
   }

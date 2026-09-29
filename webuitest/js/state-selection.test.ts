@@ -4,7 +4,7 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { effect } from "./signals.ts";
 import { DEFAULT_PREFS } from "../../webui/src/lib/prefs.ts";
 import { mergeSessionRow, replaceSessions } from "../../webui/src/state/sessions.ts";
 import {
@@ -21,6 +21,7 @@ import {
   dialog,
   openDialog,
 } from "../../webui/src/state/dialog.ts";
+import type { DialogDescriptor } from "../../webui/src/state/dialog.ts";
 import { EMPTY_STATUS, announcementHolds, say, status } from "../../webui/src/state/status.ts";
 import {
   applyDevicePreferences,
@@ -31,36 +32,31 @@ import {
   prefs,
   serverPrefs,
 } from "../../webui/src/state/prefs.ts";
+import type { Session } from "../../webui/src/lib/sessions.ts";
+import { sessionRow as baseSessionRow } from "./fixtures.ts";
 
-// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
-function sessionRow(overrides) {
-  return Object.freeze({
-    id: "a",
-    name: "one",
-    state: "running",
-    needsAttention: false,
-    alive: true,
-    lastSeq: 1,
-    unread: 0,
-    rev: 1,
-    ...overrides,
-  });
+function sessionRow(overrides?: Partial<Session>) {
+  return baseSessionRow({ id: "a", lastSeq: 1, rev: 1, ...overrides });
+}
+
+function overwrite<T>(target: { readonly value: T }, value: T) {
+  (target as { value: T }).value = value;
 }
 
 // Module state is a singleton and node isolates per file, not per test.
 beforeEach(() => {
   replaceSessions([]);
-  activeSessionId.value = null;
-  selectionGeneration.value = 0;
-  dialog.value = null;
-  status.value = EMPTY_STATUS;
-  prefs.value = { ...DEFAULT_PREFS };
-  serverPrefs.value = {
+  overwrite(activeSessionId, null);
+  overwrite(selectionGeneration, 0);
+  overwrite(dialog, null);
+  overwrite(status, EMPTY_STATUS);
+  overwrite(prefs, { ...DEFAULT_PREFS });
+  overwrite(serverPrefs, {
     basePath: DEFAULT_PREFS.basePath,
     groupingLevel: DEFAULT_PREFS.groupingLevel,
     revision: DEFAULT_PREFS.revision,
     adhdPaths: [],
-  };
+  });
 });
 
 describe("state/selection.ts", () => {
@@ -167,16 +163,16 @@ describe("state/selection.ts", () => {
     selectSessionId("a");
     assert.equal(activeSession.value, null, "the selected row has not arrived yet");
     replaceSessions([sessionRow({ id: "a" }), sessionRow({ id: "b", name: "two" })]);
-    assert.equal(activeSession.value.name, "one");
+    assert.equal(activeSession.value!.name, "one");
     selectSessionId("b");
-    assert.equal(activeSession.value.name, "two");
+    assert.equal(activeSession.value!.name, "two");
   });
 
   test("the derived active session costs a render only when its own row changes", () => {
     replaceSessions([sessionRow({ id: "a" }), sessionRow({ id: "b", name: "two" })]);
     selectSessionId("a");
 
-    const seen = [];
+    const seen: (Session | null)[] = [];
     const stop = effect(() => { seen.push(activeSession.value); });
     assert.equal(seen.length, 1);
 
@@ -185,14 +181,14 @@ describe("state/selection.ts", () => {
 
     mergeSessionRow(sessionRow({ id: "a", name: "one renamed", rev: 2 }));
     assert.equal(seen.length, 2);
-    assert.equal(seen[1].name, "one renamed");
+    assert.equal(seen[1]!.name, "one renamed");
     stop();
   });
 });
 
 describe("state/dialog.ts", () => {
   test("opening publishes the descriptor and closing clears it", () => {
-    const form = { kind: "prefs" };
+    const form: DialogDescriptor = { kind: "prefs" };
     openDialog(form);
     assert.equal(dialog.value, form);
     closeDialog();
@@ -206,16 +202,16 @@ describe("state/dialog.ts", () => {
   });
 
   test("a late completion closes the instance that submitted it", () => {
-    const form = { kind: "new" };
+    const form: DialogDescriptor = { kind: "new" };
     openDialog(form);
     assert.equal(closeDialogFrom(form), true);
     assert.equal(dialog.value, null);
   });
 
   test("a late completion cannot close a dialog that replaced its own", () => {
-    const submitted = { kind: "new" };
+    const submitted: DialogDescriptor = { kind: "new" };
     openDialog(submitted);
-    const replacement = { kind: "link-task" };
+    const replacement: DialogDescriptor = { kind: "link-task", session: sessionRow() };
     openDialog(replacement);
     assert.equal(closeDialogFrom(submitted), false);
     assert.equal(dialog.value, replacement, "the operator's current form stays open");
@@ -223,7 +219,7 @@ describe("state/dialog.ts", () => {
 
   test("a completion submitted with no dialog open cannot close a later one", () => {
     const submitted = dialog.value;
-    const later = { kind: "help" };
+    const later: DialogDescriptor = { kind: "help" };
     openDialog(later);
     assert.equal(closeDialogFrom(submitted), false);
     assert.equal(dialog.value, later);
@@ -287,7 +283,7 @@ describe("state/prefs.ts", () => {
   const committed = { basePath: "/work", groupingLevel: 2, revision: 5 };
 
   test("a newer revision applies and merges over the device fields", () => {
-    prefs.value = { ...prefs.value, terminalFontSize: 16 };
+    overwrite(prefs, { ...prefs.value, terminalFontSize: 16 });
     assert.equal(applyServerPreferences(committed), PREFS_APPLIED);
     assert.equal(prefs.value.basePath, "/work");
     assert.equal(prefs.value.groupingLevel, 2);
@@ -329,7 +325,7 @@ describe("state/prefs.ts", () => {
   });
 
   test("the daemon's own fields are kept apart from the merged view", () => {
-    prefs.value = { ...prefs.value, terminalFontSize: 16 };
+    overwrite(prefs, { ...prefs.value, terminalFontSize: 16 });
     applyServerPreferences(committed);
     assert.deepEqual(serverPrefs.value, { basePath: "/work", groupingLevel: 2, revision: 5, adhdPaths: [] });
   });

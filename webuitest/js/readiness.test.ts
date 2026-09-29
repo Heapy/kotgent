@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { effect } from "./signals.ts";
 import {
   FAILED,
   IDLE,
@@ -14,7 +14,8 @@ import {
   combineReadiness,
   createReadiness,
 } from "../../webui/src/lib/readiness.ts";
-import { deferred } from "./fixtures.js";
+import type { ReadinessStatus } from "../../webui/src/lib/readiness.ts";
+import { deferred } from "./fixtures.ts";
 
 describe("createReadiness", () => {
   test("a source nobody has read yet is idle, and idle carries no error", () => {
@@ -44,7 +45,7 @@ describe("createReadiness", () => {
       const status = readiness.status.value;
       assert.equal(status.state, FAILED);
       assert.equal(typeof status.error, "string");
-      assert.ok(status.error.trim().length > 0, "a terminal state with no user-visible outcome");
+      assert.ok(status.error!.trim().length > 0, "a terminal state with no user-visible outcome");
     }
   });
 
@@ -55,7 +56,7 @@ describe("createReadiness", () => {
   });
 
   test("loading → failed → loading on retry, and the retry re-runs the registered load", async () => {
-    const calls = [];
+    const calls: number[] = [];
     const readiness = createReadiness();
     readiness.setLoader(() => {
       const token = readiness.begin();
@@ -171,11 +172,11 @@ describe("createReadiness", () => {
 });
 
 describe("combineReadiness", () => {
-  const idle = { state: IDLE, error: null };
-  const loading = { state: LOADING, error: null };
-  const ready = { state: READY, error: null };
-  const failed = { state: FAILED, error: "Could not load projects: 503" };
-  const alsoFailed = { state: FAILED, error: "Could not load tasks: 503" };
+  const idle: ReadinessStatus = { state: IDLE, error: null };
+  const loading: ReadinessStatus = { state: LOADING, error: null };
+  const ready: ReadinessStatus = { state: READY, error: null };
+  const failed: ReadinessStatus = { state: FAILED, error: "Could not load projects: 503" };
+  const alsoFailed: ReadinessStatus = { state: FAILED, error: "Could not load tasks: 503" };
 
   test("the picker is ready only when every source it judges with is", () => {
     assert.equal(combineReadiness(ready, ready).state, READY);

@@ -10,8 +10,9 @@ import {
   sessionTaskLinkSubmitBlocked,
   taskMatchesQuery,
 } from "../../webui/src/lib/sessions.ts";
-import { sessionRow } from "./fixtures.js";
-import { underTurkishFold } from "./turkish-fold.js";
+import type { Project } from "../../webui/src/lib/tasks.ts";
+import { sessionRow, taskRow } from "./fixtures.ts";
+import { underTurkishFold } from "./turkish-fold.ts";
 
 describe("sessionTaskLinkDisabledReason", () => {
   test("a running session in a project with no task is linkable", () => {
@@ -24,7 +25,7 @@ describe("sessionTaskLinkDisabledReason", () => {
     for (const state of ["running", "ready", "needs_approval", "needs_answer"]) {
       assert.equal(sessionTaskLinkDisabledReason(sessionRow({ state: state }), null), null, state);
     }
-    for (const state of ["stopped", "crashed", "resumable", "unknown", undefined]) {
+    for (const state of ["stopped", "crashed", "resumable", "unknown", undefined as unknown as string]) {
       assert.equal(
         sessionTaskLinkDisabledReason(sessionRow({ state: state }), null),
         "the selected session is not running",
@@ -78,15 +79,21 @@ describe("sessionTaskLinkDisabledReason", () => {
 
 describe("sessionTaskLinkSubmitBlocked", () => {
   // Re-check every mutable input against live state immediately before the POST.
-  function submission(overrides) {
+  type Submission = Parameters<typeof sessionTaskLinkSubmitBlocked>[0];
+
+  function project(id: string, name: string): Project {
+    return { id: id, name: name, path: null, updatedAt: 0, archived: false };
+  }
+
+  function submission(overrides: Partial<Submission>): Submission {
     return {
       session: sessionRow({}),
       pendingAction: null,
       activeSessionId: "s1",
       sessionId: "s1",
       expectedProjectId: "p1",
-      projects: [{ id: "p1", name: "kotgent" }],
-      task: { ref: "local:12", project: "p1", state: "todo" },
+      projects: [project("p1", "kotgent")],
+      task: taskRow({ ref: "local:12", project: "p1", state: "todo" }),
       ...overrides,
     };
   }
@@ -126,7 +133,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
   test("a project that is no longer active blocks the submission", () => {
     assert.equal(sessionTaskLinkSubmitBlocked(submission({ projects: [] })), true);
     assert.equal(
-      sessionTaskLinkSubmitBlocked(submission({ projects: [{ id: "p2", name: "other" }] })),
+      sessionTaskLinkSubmitBlocked(submission({ projects: [project("p2", "other")] })),
       true,
     );
   });
@@ -139,7 +146,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
   test("a task that moved to another project blocks the submission", () => {
     assert.equal(
       sessionTaskLinkSubmitBlocked(
-        submission({ task: { ref: "local:12", project: "p2", state: "todo" } }),
+        submission({ task: taskRow({ ref: "local:12", project: "p2", state: "todo" }) }),
       ),
       true,
     );
@@ -149,16 +156,16 @@ describe("sessionTaskLinkSubmitBlocked", () => {
     for (const state of ["todo", "in_progress", "review"]) {
       assert.equal(
         sessionTaskLinkSubmitBlocked(
-          submission({ task: { ref: "local:12", project: "p1", state: state } }),
+          submission({ task: taskRow({ ref: "local:12", project: "p1", state: state }) }),
         ),
         false,
         state,
       );
     }
-    for (const state of ["done", "unknown", undefined]) {
+    for (const state of ["done", "unknown", undefined as unknown as string]) {
       assert.equal(
         sessionTaskLinkSubmitBlocked(
-          submission({ task: { ref: "local:12", project: "p1", state: state } }),
+          submission({ task: taskRow({ ref: "local:12", project: "p1", state: state }) }),
         ),
         true,
         String(state),
@@ -168,7 +175,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
 });
 
 describe("task query matching", () => {
-  const INDEX_TASK = Object.freeze({ ref: "local:12", project: "p1", title: "Index the API", state: "todo" });
+  const INDEX_TASK = taskRow({ ref: "local:12", project: "p1", title: "Index the API", state: "todo" });
 
   test("an empty or blank query matches every task", () => {
     assert.equal(normalizeTaskQuery(""), "");
@@ -185,8 +192,9 @@ describe("task query matching", () => {
   });
 
   test("a task with no title still matches on its ref", () => {
-    assert.equal(taskMatchesQuery({ ref: "local:12", title: null }, normalizeTaskQuery("12")), true);
-    assert.equal(taskMatchesQuery({ ref: "local:12", title: null }, normalizeTaskQuery("index")), false);
+    const untitled = taskRow({ ref: "local:12", title: null as unknown as string });
+    assert.equal(taskMatchesQuery(untitled, normalizeTaskQuery("12")), true);
+    assert.equal(taskMatchesQuery(untitled, normalizeTaskQuery("index")), false);
   });
 
   test("a task the list no longer holds matches nothing", () => {
@@ -229,7 +237,7 @@ describe("sessionTaskLinkOutcome", () => {
     const winner = sessionRow({ name: "one", taskRef: REF });
 
     assert.deepEqual(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: winner, winner: winner }),
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: true, winner: winner }),
       { text: "Linked one to " + REF + ".", error: false },
     );
   });
@@ -238,14 +246,14 @@ describe("sessionTaskLinkOutcome", () => {
     const winner = sessionRow({ name: "renamed", taskRef: REF });
 
     assert.equal(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: winner, winner: winner }).text,
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: true, winner: winner }).text,
       "Linked renamed to " + REF + ".",
     );
   });
 
   test("a link that could not be re-read is reported as a warning, not a failure", () => {
     assert.deepEqual(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: null, winner: null }),
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: false, winner: null }),
       {
         text: "Linked one to " + REF +
           ", but the session could not be re-read. A live update may still bring the badge in.",
@@ -258,7 +266,7 @@ describe("sessionTaskLinkOutcome", () => {
     const winner = sessionRow({ name: "one", taskRef: "local:99" });
 
     assert.deepEqual(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: winner, winner: winner }),
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: true, winner: winner }),
       { text: "The link request completed, but one is now linked to local:99.", error: true },
     );
   });
@@ -267,7 +275,7 @@ describe("sessionTaskLinkOutcome", () => {
     const winner = sessionRow({ name: "one", taskRef: null });
 
     assert.equal(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: winner, winner: winner }).text,
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: true, winner: winner }).text,
       "The link request completed, but one is now linked to no task.",
     );
   });
@@ -276,7 +284,7 @@ describe("sessionTaskLinkOutcome", () => {
     // Defensive: the caller resolves `winner` from the live list falling back to the re-read row, so a
     // readable session always has one. The sentence must still name something if that ever changes.
     assert.equal(
-      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: sessionRow({}), winner: null }).text,
+      sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: true, winner: null }).text,
       "The link request completed, but one is now linked to no task.",
     );
   });

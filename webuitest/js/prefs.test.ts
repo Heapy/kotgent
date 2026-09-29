@@ -17,34 +17,40 @@ import {
   sanitizeServerPreferences,
 } from "../../webui/src/lib/prefs.ts";
 
-const server = (overrides) => Object.assign({ basePath: "/work", groupingLevel: 1, revision: 3 }, overrides);
+interface FakeStorage {
+  getItem(key: string): unknown;
+  setItem(key: string, value: string): unknown;
+}
 
-function withStorage(storage) {
-  globalThis.window = { localStorage: storage };
+const server = <T extends object>(overrides: T) =>
+  Object.assign({ basePath: "/work", groupingLevel: 1, revision: 3 }, overrides);
+
+function withStorage(storage: FakeStorage) {
+  globalThis.window = { localStorage: storage } as typeof globalThis.window;
 }
 
 function memoryStorage() {
-  const entries = new Map();
+  const entries = new Map<string, string>();
   return {
     entries: entries,
-    getItem: (key) => (entries.has(key) ? entries.get(key) : null),
-    setItem: (key, value) => entries.set(key, String(value)),
+    getItem: (key: string) => (entries.has(key) ? entries.get(key) : null),
+    setItem: (key: string, value: string) => entries.set(key, String(value)),
   };
 }
 
 afterEach(() => {
-  delete globalThis.window;
+  delete (globalThis as { window?: unknown }).window;
 });
 
 describe("sanitizeServerPreferences", () => {
   test("a daemon that omits adhdPaths publishes no marks", () => {
-    assert.deepEqual(sanitizeServerPreferences(server({})).adhdPaths, []);
+    assert.deepEqual(sanitizeServerPreferences(server({}))!.adhdPaths, []);
   });
 
   test("a list of paths is published as given", () => {
     const next = sanitizeServerPreferences(server({ adhdPaths: ["/a", "/b/c"] }));
 
-    assert.deepEqual(next.adhdPaths, ["/a", "/b/c"]);
+    assert.deepEqual(next!.adhdPaths, ["/a", "/b/c"]);
   });
 
   test("the published list is a copy, so a later response cannot mutate an applied one", () => {
@@ -53,7 +59,7 @@ describe("sanitizeServerPreferences", () => {
     const next = sanitizeServerPreferences(raw);
     raw.adhdPaths.push("/b");
 
-    assert.deepEqual(next.adhdPaths, ["/a"]);
+    assert.deepEqual(next!.adhdPaths, ["/a"]);
   });
 
   test("anything but a list of strings makes the whole payload unreadable", () => {

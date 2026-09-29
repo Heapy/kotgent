@@ -3,20 +3,21 @@
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { effect } from "./signals.ts";
 import {
   MUTATION_BUSY_MESSAGE,
   pendingMutation,
   runMutation,
 } from "../../webui/src/lib/mutation.ts";
 import { buildCommands } from "../../webui/src/lib/commands.ts";
-import { deferred } from "./fixtures.js";
+import type { CommandActions } from "../../webui/src/lib/commands.ts";
+import { deferred, sessionRow } from "./fixtures.ts";
 
-async function settle(promise) {
+async function settle<T>(promise: Promise<T>) {
   try {
     return { value: await promise, error: null };
   } catch (error) {
-    return { value: null, error: error };
+    return { value: null, error: error as Error };
   }
 }
 
@@ -25,14 +26,14 @@ describe("runMutation", () => {
     pendingMutation.value = null;
   });
 
-  test("the lock is taken synchronously, before the callback's first await", () => {
+  test("the lock is taken synchronously, before the callback's first await", async () => {
     const gate = deferred();
     const run = runMutation("start", () => gate.promise);
 
     assert.equal(pendingMutation.value, "start");
 
     gate.resolve(null);
-    return run;
+    await run;
   });
 
   test("one flow at a time: a second run is refused and its callback never runs", async () => {
@@ -46,7 +47,7 @@ describe("runMutation", () => {
     }));
 
     assert.equal(secondRan, false, "a refused run must not reach its request");
-    assert.equal(refused.error.message, MUTATION_BUSY_MESSAGE);
+    assert.equal(refused.error?.message, MUTATION_BUSY_MESSAGE);
     assert.equal(pendingMutation.value, "import", "the refusal must not disturb the holder");
 
     gate.resolve("imported");
@@ -57,7 +58,7 @@ describe("runMutation", () => {
   test("the lock survives the mutation's own follow-up read", async () => {
     const post = deferred();
     const read = deferred();
-    const observed = [];
+    const observed: (string | null)[] = [];
 
     const run = runMutation("link-task", async () => {
       await post.promise;
@@ -94,23 +95,23 @@ describe("runMutation", () => {
       throw new Error("nothing was sent");
     }));
 
-    assert.equal(failed.error.message, "nothing was sent");
+    assert.equal(failed.error?.message, "nothing was sent");
     assert.equal(pendingMutation.value, null);
   });
 
   // Exclusivity makes a per-run currency token unnecessary.
   test("the callback is handed no currency token to mistake for one", async () => {
-    let handed = "untouched";
-    await runMutation("delete-project", (context) => {
+    let handed: unknown = "untouched";
+    await runMutation("delete-project", ((context: unknown) => {
       handed = context;
       return Promise.resolve(null);
-    });
+    }) as () => Promise<null>);
 
     assert.equal(handed, undefined);
   });
 
   test("the pending name is a signal, so a reader re-renders on both edges", async () => {
-    const seen = [];
+    const seen: (string | null)[] = [];
     const stop = effect(() => { seen.push(pendingMutation.value); });
     const gate = deferred();
 
@@ -133,18 +134,15 @@ describe("runMutation", () => {
 // The palette gates every registered mutation while any flow holds the lock.
 describe("the palette while a flow holds the lock", () => {
   const BUSY_REASON = "another action is still in progress";
-  const active = {
-    id: "s1", name: "one", state: "running", tmuxSession: "kotgent-one", agent: "claude", cwd: "/work/one",
-    tags: [],
-  };
+  const active = sessionRow();
 
-  function gatedIds(pendingAction) {
+  function gatedIds(pendingAction: string | null) {
     return buildCommands({
       sessions: [active],
       activeSession: active,
       attachedId: active.id,
       pendingAction: pendingAction,
-      actions: {},
+      actions: {} as CommandActions,
     })
       .filter((command) => command.group === "session" && command.disabled === BUSY_REASON)
       .map((command) => command.id);

@@ -318,7 +318,7 @@ and the daemon needs no asset revision bookkeeping. The build uses Vite 8's defa
 jobs download it.
 
 `./kotlin test -p <host-target> -p jvm` runs every tier: the native suite (`test/`), the browser tier
-(`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
+(`webuitest/`, a real Chromium driven through Playwright), the browser-independent TypeScript tier
 (`webuitest/js/` under `node --test`, spawned by `WebUiLogicTest`), JVM tests for the build-info
 plugin, real-PTY tests under `test/pty/` and harness self-checks in `webuicheck/test/`. The
 two module tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops;
@@ -742,9 +742,9 @@ Kotgent is deliberately focused. The current product boundary is:
   over the shared doubles in `fakes` and serves a terminal from a real PTY running a deterministic script
   instead of a provider. Each test spawns its own harness on an ephemeral port, signs in through the real
   login form, and leaves nothing behind outside the checkout.
-- **A browser-independent JavaScript tier.** The pure Web UI rules — revision merges, link eligibility,
+- **A browser-independent TypeScript tier.** The pure Web UI rules — revision merges, link eligibility,
   typeahead selection, readiness transitions — are proven under Node's own `node --test`, in
-  `webuitest/js/`. The tests import TypeScript sources from `webui/src/` directly through Node's type
+  `webuitest/js/`. The tests and the `webui/src/` sources they import run directly through Node's type
   stripping and resolve packages from `webui/node_modules`. The service-worker tests execute the built
   `resources/webui/sw.js`. `WebUiLogicTest` spawns the runner as part of `./kotlin test`.
 
@@ -805,9 +805,9 @@ Issues and pull requests are welcome. A few things worth knowing before you open
   `test/transport/WebUiServingTest.kt` keeps what only an address can prove — URLs, media types, caching
   headers and path safety — and checks that the built shell's references resolve and non-map `assets/`
   files have content-hashed names. Anything a Chromium can answer belongs in `webuitest/`, as executed behaviour
-  against the real server. Changed `webui/src` modules must pass `npm run typecheck --prefix webui` and
-  `npm run build --prefix webui`; use `node --check <file>` for changed `webuitest/js` files. What remains
-  manual is only what desktop automation cannot faithfully reproduce: installed-PWA
+  against the real server. Changed `webui/src` modules and `webuitest/js` tests must pass
+  `npm run typecheck --prefix webui`, and changed `webui/src` modules `npm run build --prefix webui`. What
+  remains manual is only what desktop automation cannot faithfully reproduce: installed-PWA
   lifecycle, safe areas, software-keyboard geometry, touch physics and notification prompts. The full
   strategy is [docs/TESTING.md](docs/TESTING.md).
 - **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It

@@ -8,7 +8,7 @@
   "scripts": {
     "build": "vite build",
     "watch": "vite build --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.sw.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.sw.json && tsc --noEmit -p ../webuitest/js/tsconfig.json"
   },
   "dependencies": {
     "@preact/signals": "2.11.2",
@@ -20,6 +20,7 @@
     "preact": "10.29.8"
   },
   "devDependencies": {
+    "@types/node": "24.19.0",
     "typescript": "7.0.2",
     "vite": "8.3.1"
   },

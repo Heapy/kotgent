@@ -15,8 +15,9 @@ import {
   stepActiveKey,
   typeaheadIntent,
 } from "../../webui/src/lib/typeahead.ts";
+import type { KeyChoice } from "../../webui/src/lib/typeahead.ts";
 import { filterCommands } from "../../webui/src/lib/commands.ts";
-import { underTurkishFold } from "./turkish-fold.js";
+import { underTurkishFold } from "./turkish-fold.ts";
 
 const KEYS = ["local:1", "local:2", "local:3"];
 
@@ -139,7 +140,7 @@ describe("navigating and committing", () => {
   // Navigation and commit must compose without an intervening render.
   test("commitsTheRowNavigationJustChose", () => {
     const options = { autoFirst: true, token: "" };
-    let chosen = null;
+    let chosen: KeyChoice<string | null> | null = null;
     const active = () => resolveActiveKey(KEYS, chosen, options);
     assert.equal(active(), "local:1");
 
@@ -153,7 +154,7 @@ describe("navigating and committing", () => {
 
   test("a choice made by pointer is read back by the very next keystroke", () => {
     const options = { autoFirst: true, token: "q" };
-    let chosen = chooseKey("local:2", "q");
+    let chosen: KeyChoice<string | null> = chooseKey("local:2", "q");
     assert.equal(resolveActiveKey(KEYS, chosen, options), "local:2");
     chosen = chooseKey(stepActiveKey(KEYS, resolveActiveKey(KEYS, chosen, options), 1), "q");
     assert.equal(resolveActiveKey(KEYS, chosen, options), "local:3");

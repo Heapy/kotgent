@@ -1,12 +1,17 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCommands } from "../../webui/src/lib/commands.ts";
+import type { CommandActions } from "../../webui/src/lib/commands.ts";
 
-function resumeCommand(state) {
-  const session = { id: "s0", name: "kt-s0", agent: "claude", cwd: "/tmp", tags: [], state: state };
-  const items = buildCommands({ activeSession: session, actions: {} });
-  return items.find((item) => item.id === "session.resume");
+import { buildCommands } from "../../webui/src/lib/commands.ts";
+import { sessionRow } from "./fixtures.ts";
+
+function resumeCommand(state: string) {
+  const session = sessionRow({ id: "s0", name: "kt-s0", agent: "claude", cwd: "/tmp", tags: [], state: state });
+  const items = buildCommands({ activeSession: session, actions: {} as CommandActions });
+  const command = items.find((item) => item.id === "session.resume");
+  assert.ok(command);
+  return command;
 }
 
 describe("the resume command", () => {

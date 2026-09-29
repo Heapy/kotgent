@@ -4,10 +4,11 @@ import {
   applyUsageSnapshot, atUsageReceipt, providerUsageStaleAt, upsertUsageIfNewer,
   usageTimeLeft, usageWindowSeconds, usageWindowTime,
 } from "../../webui/src/lib/usage.ts";
+import type { UsageWindow } from "../../webui/src/lib/usage.ts";
 import { mergeUsageWindow, replaceUsage, usage, usageClockOffset } from "../../webui/src/state/usage.ts";
-import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
+import { effect } from "./signals.ts";
 
-function window(overrides = {}) {
+function window(overrides: Partial<UsageWindow> = {}): Readonly<UsageWindow> {
   return Object.freeze({
     provider: "claude", windowKey: "seven_day", usedPercent: 40,
     resetsAt: 1_800_604_800_000, windowSeconds: 604_800,
@@ -47,19 +48,21 @@ test("snapshots are authoritative and take the newest duplicate within the snaps
 
 test("the signal writers share the reactive graph and publish only admitted updates", () => {
   replaceUsage([]);
-  const observed = [];
-  const dispose = effect(() => observed.push(usage.value.map((row) => row.observedAt)));
+  const observed: number[][] = [];
+  const dispose = effect(() => {
+    observed.push(usage.value.map((row) => row.observedAt));
+  });
   try {
     replaceUsage([window()]);
     mergeUsageWindow(window({ observedAt: 101 }));
     mergeUsageWindow(window({ observedAt: 100, usedPercent: 99 }));
     mergeUsageWindow(window({ observedAt: 101, usedPercent: 99 }));
     assert.deepEqual(observed, [[], [100], [101]]);
-    assert.equal(usage.value[0].usedPercent, 40);
+    assert.equal(usage.value[0]!.usedPercent, 40);
 
     replaceUsage([window({ provider: "codex", observedAt: 50 })]);
     assert.equal(usage.value.length, 1);
-    assert.equal(usage.value[0].provider, "codex");
+    assert.equal(usage.value[0]!.provider, "codex");
     assert.deepEqual(observed.at(-1), [50], "reconnect replaces the previous account projection");
     replaceUsage([window({ provider: "codex", observedAt: 1 })]);
     assert.deepEqual(observed.at(-1), [1], "a restored daemon snapshot also replaces a newer cached row");
@@ -83,8 +86,8 @@ test("snapshot age is independent of a phone clock hours ahead or behind the dae
         window({ observedAt: serverNow - 599_999 }),
         window({ provider: "codex", observedAt: serverNow - 600_001 }),
       ], serverNow);
-      assert.equal(usage.value[0].staleAt, 1002, "a nearly ten-minute-old reading retains only two milliseconds");
-      assert.equal(usage.value[1].staleAt, 1000, "an old snapshot is already stale when it arrives");
+      assert.equal(usage.value[0]!.staleAt, 1002, "a nearly ten-minute-old reading retains only two milliseconds");
+      assert.equal(usage.value[1]!.staleAt, 1000, "an old snapshot is already stale when it arrives");
     }
   } finally {
     replaceUsage([]);
@@ -94,7 +97,7 @@ test("snapshot age is independent of a phone clock hours ahead or behind the dae
 test("an admitted heartbeat restores freshness without replacing usage history, but replay cannot extend it", () => {
   try {
     replaceUsage([window()], 100, 1000);
-    assert.equal(usage.value[0].staleAt, 601_001);
+    assert.equal(usage.value[0]!.staleAt, 601_001);
     mergeUsageWindow(window({ observedAt: 900_100 }), 900_100, 901_000);
     const refreshed = usage.value;
     assert.deepEqual(refreshed[0], {
@@ -114,10 +117,10 @@ test("reconnecting ages the authoritative snapshot instead of granting old value
   try {
     replaceUsage([window()], 100, 0);
     replaceUsage([window()], 600_200, 20);
-    assert.ok(usage.value[0].staleAt < 20);
-    assert.equal(usage.value[0].usedPercent, 40);
+    assert.ok(usage.value[0]!.staleAt < 20);
+    assert.equal(usage.value[0]!.usedPercent, 40);
     replaceUsage([window({ observedAt: 600_100 })], 600_200, 30);
-    assert.equal(usage.value[0].staleAt, 599_931, "a recent persisted observation keeps its existing age");
+    assert.equal(usage.value[0]!.staleAt, 599_931, "a recent persisted observation keeps its existing age");
   } finally {
     replaceUsage([]);
   }
@@ -128,14 +131,14 @@ test("missing receipt or server time is stale and a future receipt cannot extend
     for (const serverNow of [undefined, null, NaN]) {
       replaceUsage([window()], 100, 10);
       replaceUsage([window()], serverNow, 10);
-      assert.equal(usage.value[0].staleAt, 10);
-      assert.equal(usageWindowTime(usage.value[0], 10, usageClockOffset.value).now, null,
+      assert.equal(usage.value[0]!.staleAt, 10);
+      assert.equal(usageWindowTime(usage.value[0]!, 10, usageClockOffset.value).now, null,
         "an authoritative snapshot with unknown time clears the previous clock");
     }
-    replaceUsage([window({ receivedAt: undefined })], 100, 10);
-    assert.equal(usage.value[0].staleAt, 10);
+    replaceUsage([window({ receivedAt: undefined as unknown as number })], 100, 10);
+    assert.equal(usage.value[0]!.staleAt, 10);
     replaceUsage([window({ observedAt: 999_999 })], 100, 20);
-    assert.equal(usage.value[0].staleAt, 600_021);
+    assert.equal(usage.value[0]!.staleAt, 600_021);
   } finally {
     replaceUsage([]);
   }
@@ -147,11 +150,11 @@ test("receipt age ignores future ordering revisions and a fresh sibling keeps it
       window({ observedAt: 86_400_000, receivedAt: 100 }),
       window({ windowKey: "five_hour", observedAt: 700_100, receivedAt: 700_100 }),
     ], 700_100, 1000);
-    assert.ok(usage.value[0].staleAt < 1000, "a future logical revision cannot make its old receipt fresh");
+    assert.ok(usage.value[0]!.staleAt < 1000, "a future logical revision cannot make its old receipt fresh");
     assert.equal(providerUsageStaleAt(usage.value), 601_001, "the fresh sibling has the lower ordering revision");
     mergeUsageWindow(window({ observedAt: 86_400_001, receivedAt: 800_100 }), 800_100, 101_000);
     assert.equal(providerUsageStaleAt(usage.value), 701_001);
-    assert.equal(usage.value[0].receivedAt, 800_100);
+    assert.equal(usage.value[0]!.receivedAt, 800_100);
   } finally {
     replaceUsage([]);
   }
@@ -180,7 +183,7 @@ test("the time marker uses the daemon clock and advances independently of quota 
 
 test("a marker stays at the edges before the window and after its deadline without resetting usage", () => {
   const row = window({ windowSeconds: 60, resetsAt: 100_500 });
-  const at = (now) => usageWindowTime(row, now, 99_000);
+  const at = (now: number) => usageWindowTime(row, now, 99_000);
   assert.equal(at(-60_000).elapsedPercent, 0);
   assert.equal(at(1000).nextUpdateAt, 1500, "wake at a reset between minute ticks");
   assert.equal(at(1500).elapsedPercent, 100);
@@ -192,10 +195,10 @@ test("a marker stays at the edges before the window and after its deadline witho
 
 test("native durations take precedence and only known Claude windows have a duration fallback", () => {
   assert.equal(usageWindowSeconds(window({ windowKey: "five_hour", windowSeconds: null })), 18000);
-  assert.equal(usageWindowSeconds(window({ windowSeconds: undefined })), 604800);
+  assert.equal(usageWindowSeconds(window({ windowSeconds: undefined as unknown as number })), 604800);
   assert.equal(usageWindowSeconds(window({ provider: "codex", windowKey: "primary", windowSeconds: 604800 })), 604800);
   assert.equal(usageWindowSeconds(window({ windowKey: "five_hour", windowSeconds: 3600 })), 3600);
-  for (const windowSeconds of [0, -1, NaN, Infinity, "18000"]) {
+  for (const windowSeconds of [0, -1, NaN, Infinity, "18000" as unknown as number]) {
     assert.equal(usageWindowSeconds(window({ windowSeconds })), null);
   }
   assert.equal(usageWindowSeconds(window({ provider: "codex", windowSeconds: null })), null);
@@ -203,8 +206,8 @@ test("native durations take precedence and only known Claude windows have a dura
 });
 
 test("missing reset, duration or server time never fabricates a marker", () => {
-  const timed = (overrides) => usageWindowTime(window(overrides), 20, 90);
-  for (const resetsAt of [null, undefined, NaN, Infinity]) {
+  const timed = (overrides: Partial<UsageWindow>) => usageWindowTime(window(overrides), 20, 90);
+  for (const resetsAt of [null, undefined as unknown as number, NaN, Infinity]) {
     assert.equal(timed({ resetsAt }).elapsedPercent, null);
     assert.equal(timed({ resetsAt }).remainingMs, null);
   }
@@ -225,10 +228,10 @@ test("replayed frames cannot move the clock anchor, while a snapshot reanchors e
     replaceUsage([window({ resetsAt: 10_000 })], 1000, 100);
     mergeUsageWindow(window({ resetsAt: 20_000 }), 9000, 200);
     mergeUsageWindow(window({ observedAt: 99, resetsAt: 30_000 }), 9500, 200);
-    assert.equal(usageWindowTime(usage.value[0], 200, usageClockOffset.value).now, 1100);
-    assert.equal(usageWindowTime(usage.value[0], 200, usageClockOffset.value).remainingMs, 8900);
+    assert.equal(usageWindowTime(usage.value[0]!, 200, usageClockOffset.value).now, 1100);
+    assert.equal(usageWindowTime(usage.value[0]!, 200, usageClockOffset.value).remainingMs, 8900);
     replaceUsage([window({ observedAt: 50, resetsAt: 10_000 })], 5000, 200);
-    assert.equal(usageWindowTime(usage.value[0], 200, usageClockOffset.value).remainingMs, 5000);
+    assert.equal(usageWindowTime(usage.value[0]!, 200, usageClockOffset.value).remainingMs, 5000);
   } finally {
     replaceUsage([]);
   }
@@ -257,7 +260,7 @@ for (const correction of [-3_600_000, 3_600_000]) {
         assert.equal(time.remainingMs, resetsAt - correctedNow);
         assert.equal(time.elapsedPercent, 100 - (resetsAt - correctedNow) / 18_000_000 * 100);
       }
-      assert.equal(usage.value[0].usedPercent, 36, "a clock correction cannot change usage");
+      assert.equal(usage.value[0]!.usedPercent, 36, "a clock correction cannot change usage");
       assert.equal(usage.value[1], silent, "the silent window keeps its quota, revision, receipt and freshness deadline");
     } finally {
       replaceUsage([]);
@@ -267,9 +270,9 @@ for (const correction of [-3_600_000, 3_600_000]) {
 
 test("accepted quota and clock changes reach observers as one consistent state", () => {
   replaceUsage([window()], 1000, 100);
-  const observed = [];
+  const observed: { usedPercent: number; now: number | null }[] = [];
   const dispose = effect(() => {
-    const row = usage.value[0];
+    const row = usage.value[0]!;
     observed.push({
       usedPercent: row.usedPercent,
       now: usageWindowTime(row, 100, usageClockOffset.value).now,

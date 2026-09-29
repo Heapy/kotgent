@@ -13,8 +13,8 @@ const FIRST_BUILD = "https://kotgent.example/assets/index-first.js";
 const NEXT_BUILD = "https://kotgent.example/assets/index-next.js";
 const LATER_BUILD = "https://kotgent.example/assets/index-later.js";
 
-function memoryStorage() {
-  const entries = new Map();
+function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
+  const entries = new Map<string, string>();
   return {
     getItem: (key) => entries.get(key) ?? null,
     setItem: (key, value) => entries.set(key, String(value)),
@@ -22,7 +22,7 @@ function memoryStorage() {
 }
 
 afterEach(() => {
-  delete globalThis.window;
+  delete (globalThis as { window?: unknown }).window;
 });
 
 test("importing the module does not read the browser window", async () => {
@@ -35,7 +35,7 @@ test("importing the module does not read the browser window", async () => {
     },
   });
 
-  await import("../../webui/src/lib/stale-build.ts?node-import");
+  await import(new URL("../../webui/src/lib/stale-build.ts?node-import", import.meta.url).href);
 
   assert.equal(reads, 0);
 });
@@ -77,7 +77,7 @@ describe("claimStaleBuildReload", () => {
 
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), true);
     assert.equal(STALE_BUILD_RELOAD_KEY, "kotgent.staleBuildReload.v1");
-    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [FIRST_BUILD, NEXT_BUILD]);
+    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [FIRST_BUILD, NEXT_BUILD]);
   });
 
   test("the same running and served pair cannot claim another reload", () => {
@@ -85,7 +85,7 @@ describe("claimStaleBuildReload", () => {
 
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), true);
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), false);
-    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [FIRST_BUILD, NEXT_BUILD]);
+    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [FIRST_BUILD, NEXT_BUILD]);
   });
 
   test("a new served target from the same running build can claim a reload", () => {
@@ -93,7 +93,7 @@ describe("claimStaleBuildReload", () => {
 
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), true);
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, LATER_BUILD), true);
-    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [FIRST_BUILD, LATER_BUILD]);
+    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [FIRST_BUILD, LATER_BUILD]);
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, LATER_BUILD), false);
   });
 
@@ -102,7 +102,7 @@ describe("claimStaleBuildReload", () => {
 
     assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, LATER_BUILD), true);
     assert.equal(claimStaleBuildReload(storage, NEXT_BUILD, LATER_BUILD), true);
-    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [NEXT_BUILD, LATER_BUILD]);
+    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [NEXT_BUILD, LATER_BUILD]);
     assert.equal(claimStaleBuildReload(storage, NEXT_BUILD, LATER_BUILD), false);
   });
 
@@ -120,7 +120,7 @@ describe("claimStaleBuildReload", () => {
     const served = NEXT_BUILD + '?build=["c"]&next=%22';
 
     assert.equal(claimStaleBuildReload(storage, running, served), true);
-    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [running, served]);
+    assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [running, served]);
     assert.equal(claimStaleBuildReload(storage, running, served), false);
     assert.equal(claimStaleBuildReload(storage, served, running), true);
   });
@@ -131,7 +131,7 @@ describe("claimStaleBuildReload", () => {
       storage.setItem(STALE_BUILD_RELOAD_KEY, malformed);
 
       assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), true);
-      assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)), [FIRST_BUILD, NEXT_BUILD]);
+      assert.deepEqual(JSON.parse(storage.getItem(STALE_BUILD_RELOAD_KEY)!), [FIRST_BUILD, NEXT_BUILD]);
       assert.equal(claimStaleBuildReload(storage, FIRST_BUILD, NEXT_BUILD), false);
     }
   });
@@ -163,15 +163,15 @@ describe("claimStaleBuildReload", () => {
 describe("sessionStorageOrNull", () => {
   test("it returns the available session storage", () => {
     const storage = memoryStorage();
-    globalThis.window = { sessionStorage: storage };
+    globalThis.window = { sessionStorage: storage } as typeof globalThis.window;
 
     assert.equal(sessionStorageOrNull(), storage);
   });
 
   test("a throwing storage accessor becomes null", () => {
     globalThis.window = {
-      get sessionStorage() { throw new Error("storage access is blocked"); },
-    };
+      get sessionStorage(): Storage { throw new Error("storage access is blocked"); },
+    } as typeof globalThis.window;
 
     assert.equal(sessionStorageOrNull(), null);
   });

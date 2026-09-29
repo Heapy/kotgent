@@ -5,10 +5,18 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../webui/src/lib/adhd.ts";
-import { sessionRow } from "./fixtures.js";
+import type { Preferences } from "../../webui/src/lib/prefs.ts";
+import { sessionRow } from "./fixtures.ts";
 
-const grouping = (basePath, groupingLevel, adhdPaths) => ({ basePath, groupingLevel, adhdPaths });
-const listed = (cwd, prefs) => isSessionInAdhd(sessionRow({ cwd: cwd }), prefs);
+const grouping = (basePath: string, groupingLevel: number, adhdPaths: string[]): Preferences => ({
+  basePath,
+  groupingLevel,
+  adhdPaths,
+  revision: 0,
+  terminalFontSize: 13,
+  terminalUnicode: "default",
+});
+const listed = (cwd: string, prefs: Preferences) => isSessionInAdhd(sessionRow({ cwd: cwd }), prefs);
 
 describe("a folder mark", () => {
   test("covers everything in the base at level 0, and only the base's own sessions below that", () => {
@@ -87,9 +95,9 @@ describe("a folder mark", () => {
 
   test("is absent when nothing is marked or the session has no cwd", () => {
     assert.equal(listed("/a/b", grouping("/", 1, [])), false);
-    assert.equal(listed("/a/b", grouping("/", 1, undefined)), false);
+    assert.equal(listed("/a/b", grouping("/", 1, undefined as unknown as string[])), false);
     assert.equal(listed("", grouping("/", 1, ["/"])), false);
-    assert.equal(listed(undefined, grouping("/", 1, ["/"])), false);
+    assert.equal(listed(undefined as unknown as string, grouping("/", 1, ["/"])), false);
   });
 });
 
@@ -103,8 +111,8 @@ describe("isSessionInAdhd", () => {
   });
 
   test("only an exact true counts as a session mark", () => {
-    assert.equal(isSessionInAdhd(sessionRow({ adhd: undefined, cwd: "/other" }), grouping("/", 1, [])), false);
-    assert.equal(isSessionInAdhd(sessionRow({ adhd: 1, cwd: "/other" }), grouping("/", 1, [])), false);
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: undefined as unknown as boolean, cwd: "/other" }), grouping("/", 1, [])), false);
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: 1 as unknown as boolean, cwd: "/other" }), grouping("/", 1, [])), false);
   });
 
   test("a missing session is not listed", () => {
@@ -135,7 +143,7 @@ describe("adhdFolderOf", () => {
   test("names nothing with grouping off, without a cwd, or without a list", () => {
     assert.equal(adhdFolderOf("/a", grouping("", 1, ["/a"])), null);
     assert.equal(adhdFolderOf("", grouping("/", 1, ["/a"])), null);
-    assert.equal(adhdFolderOf("/a", grouping("/", 1, undefined)), null);
+    assert.equal(adhdFolderOf("/a", grouping("/", 1, undefined as unknown as string[])), null);
   });
 });
 

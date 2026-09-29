@@ -3,16 +3,36 @@ import assert from "node:assert/strict";
 import { createRefreshCoordinator } from "../../webui/src/lib/resync.ts";
 import { createEventsConnection } from "../../webui/src/lib/events.ts";
 import { watchRefreshSources } from "../../webui/src/lib/resume.ts";
+import type {
+  RefreshCoordinatorOptions,
+  RefreshRequest,
+  RefreshRun,
+  TimerHandle,
+} from "../../webui/src/lib/resync.ts";
+import type { EventsConnectionOptions } from "../../webui/src/lib/events.ts";
+
+interface FakeSocket {
+  closed: number;
+  close(): void;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onclose: (() => void) | null;
+  onerror: (() => void) | null;
+}
 
 function clock() {
   let now = 0;
   let id = 0;
-  const timers = new Map();
+  const timers = new Map<TimerHandle, { at: number; fn: () => void }>();
   return {
-    schedule(fn, delay) { const key = ++id; timers.set(key, { at: now + delay, fn }); return key; },
-    cancel(key) { timers.delete(key); },
+    schedule(fn: () => void, delay: number) {
+      const key = ++id as unknown as TimerHandle;
+      timers.set(key, { at: now + delay, fn });
+      return key;
+    },
+    cancel(key: TimerHandle | null) { if (key !== null) timers.delete(key); },
     size() { return timers.size; },
-    tick(ms) {
+    tick(ms: number) {
       const end = now + ms;
       for (;;) {
         const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
@@ -27,10 +47,10 @@ function clock() {
   };
 }
 
-function harness(options = {}) {
+function harness(options: Partial<RefreshCoordinatorOptions> = {}) {
   const time = clock();
-  const runs = [];
-  const failures = [];
+  const runs: (RefreshRun & { stopped: number })[] = [];
+  const failures: Error[] = [];
   const coordinator = createRefreshCoordinator({
     ...time,
     run(port) {
@@ -38,7 +58,7 @@ function harness(options = {}) {
       runs.push(run);
       return () => run.stopped++;
     },
-    onFailure: (error) => failures.push(error),
+    onFailure: (error) => failures.push(error as Error),
     ...options,
   });
   return { ...coordinator, time, runs, failures };
@@ -51,13 +71,13 @@ test("a fixed batch window cannot be postponed by a burst, and duplicate request
   h.request({ reason: "online" });
   h.time.tick(10);
   assert.equal(h.runs.length, 1);
-  assert.deepEqual(h.runs[0].reasons, ["resume", "online"]);
+  assert.deepEqual(h.runs[0]!.reasons, ["resume", "online"]);
   h.request({ reason: "focus" });
   h.time.tick(100);
-  h.runs[0].complete();
+  h.runs[0]!.complete();
   h.time.tick(20_000);
   assert.equal(h.runs.length, 1);
-  assert.equal(h.runs[0].isCurrent(), true, "a synchronized subscription keeps receiving live updates");
+  assert.equal(h.runs[0]!.isCurrent(), true, "a synchronized subscription keeps receiving live updates");
   h.dispose();
 });
 
@@ -65,7 +85,7 @@ test("new invalidations during a read cause one follow-up and retire callbacks f
   const h = harness();
   h.request({ reason: "mount" });
   h.time.tick(100);
-  const first = h.runs[0];
+  const first = h.runs[0]!;
   h.request({ reason: "clock-gap", invalidate: true });
   h.request({ reason: "resume", invalidate: true });
   assert.equal(h.runs.length, 1);
@@ -76,7 +96,7 @@ test("new invalidations during a read cause one follow-up and retire callbacks f
   assert.equal(first.isCurrent(), false);
   first.complete();
   first.fail(new Error("late close"));
-  h.runs[1].complete();
+  h.runs[1]!.complete();
   h.time.tick(60_000);
   assert.equal(h.runs.length, 2);
   assert.deepEqual(h.failures, []);
@@ -89,7 +109,7 @@ test("failures use capped backoff, incoming requests cannot bypass it, and succe
   h.time.tick(100);
   for (const delay of [2000, 4000, 8000, 16000, 30000, 30000]) {
     const count = h.runs.length;
-    const run = h.runs.at(-1);
+    const run = h.runs.at(-1)!;
     run.fail(new Error("offline"));
     assert.equal(run.isCurrent(), false);
     assert.equal(run.stopped, 1);
@@ -100,8 +120,8 @@ test("failures use capped backoff, incoming requests cannot bypass it, and succe
     assert.equal(h.runs.length, count + 1);
   }
   const count = h.runs.length;
-  h.runs.at(-1).complete();
-  h.runs.at(-1).fail(new Error("connection lost"));
+  h.runs.at(-1)!.complete();
+  h.runs.at(-1)!.fail(new Error("connection lost"));
   h.time.tick(2000);
   assert.equal(h.runs.length, count + 1);
   h.dispose();
@@ -111,8 +131,8 @@ test("an operation that never completes times out and retries", () => {
   const h = harness();
   h.request();
   h.time.tick(10_100);
-  assert.equal(h.runs[0].stopped, 1);
-  assert.match(h.failures[0].message, /timed out/i);
+  assert.equal(h.runs[0]!.stopped, 1);
+  assert.match(h.failures[0]!.message, /timed out/i);
   h.time.tick(2000);
   assert.equal(h.runs.length, 2);
   h.dispose();
@@ -124,8 +144,8 @@ test("disposing while batching, reading, ready, or retrying cancels all work", (
     h.request();
     if (phase !== "batch") h.time.tick(100);
     const run = h.runs[0];
-    if (phase === "ready") run.complete();
-    if (phase === "retry") run.fail(new Error("offline"));
+    if (phase === "ready") run!.complete();
+    if (phase === "retry") run!.fail(new Error("offline"));
     h.dispose();
     h.dispose();
     run?.complete();
@@ -150,45 +170,47 @@ test("synchronous completion and a throwing start both preserve lifecycle owners
   const broken = harness({ run() { throw new Error("cannot start"); } });
   broken.request();
   broken.time.tick(100);
-  assert.equal(broken.failures[0].message, "cannot start");
+  assert.equal(broken.failures[0]!.message, "cannot start");
   assert.equal(broken.time.size(), 1);
   broken.dispose();
 });
 
-function eventsHarness(onFrame = () => {}) {
+function eventsHarness(onFrame: EventsConnectionOptions["onFrame"] = () => {}) {
   const time = clock();
-  const sockets = [];
+  const sockets: FakeSocket[] = [];
   let recovered = 0;
   const connection = createEventsConnection({
     ...time, url: () => "/events", onFrame,
     onReady: (result) => { if (result.recovered) recovered++; }, onFailure: () => {},
     createSocket() {
-      const socket = { closed: 0, close() { this.closed++; } };
+      const socket: FakeSocket = {
+        closed: 0, close() { this.closed++; }, onopen: null, onmessage: null, onclose: null, onerror: null,
+      };
       sockets.push(socket);
       return socket;
     },
   });
-  const frame = (socket, type) => socket.onmessage({ data: JSON.stringify({ type }) });
-  const snapshot = (socket) => {
+  const frame = (socket: FakeSocket, type: string) => socket.onmessage!({ data: JSON.stringify({ type }) });
+  const snapshot = (socket: FakeSocket) => {
     for (const type of ["usage_snapshot", "sessions_snapshot", "tasks_snapshot"]) frame(socket, type);
   };
   return { ...connection, time, sockets, frame, snapshot, recovered: () => recovered };
 }
 
 test("socket open and partial snapshots do not complete a refresh; all applied snapshots do", () => {
-  const applied = [];
+  const applied: string[] = [];
   const h = eventsHarness((msg) => applied.push(msg.type));
   h.request();
   h.time.tick(100);
-  const socket = h.sockets[0];
-  socket.onopen();
+  const socket = h.sockets[0]!;
+  socket.onopen!();
   h.frame(socket, "usage_snapshot");
   h.frame(socket, "sessions_snapshot");
   h.time.tick(10_000);
   assert.equal(socket.closed, 1, "missing task snapshot times out even though the socket opened");
   h.time.tick(2000);
-  const next = h.sockets[1];
-  next.onopen();
+  const next = h.sockets[1]!;
+  next.onopen!();
   h.snapshot(next);
   assert.equal(h.recovered(), 1);
   h.time.tick(10_000);
@@ -198,23 +220,23 @@ test("socket open and partial snapshots do not complete a refresh; all applied s
 });
 
 test("late frames and closes from replaced sockets cannot change state or start another retry", () => {
-  const applied = [];
+  const applied: string[] = [];
   const h = eventsHarness((msg) => applied.push(msg.type));
   h.request();
   h.time.tick(100);
-  const first = h.sockets[0];
-  first.onopen();
+  const first = h.sockets[0]!;
+  first.onopen!();
   h.snapshot(first);
   const lateMessage = first.onmessage;
   const lateClose = first.onclose;
   h.request({ reason: "resume" });
   h.time.tick(100);
-  const next = h.sockets[1];
-  next.onopen();
+  const next = h.sockets[1]!;
+  next.onopen!();
   h.snapshot(next);
   const count = applied.length;
-  lateMessage({ data: '{"type":"usage_snapshot"}' });
-  lateClose();
+  lateMessage!({ data: '{"type":"usage_snapshot"}' });
+  lateClose!();
   h.time.tick(60_000);
   assert.equal(applied.length, count);
   assert.equal(h.sockets.length, 2);
@@ -227,9 +249,9 @@ test("a failed snapshot application fails the operation instead of announcing re
   const h = eventsHarness(() => { throw new Error("apply failed"); });
   h.request();
   h.time.tick(100);
-  h.sockets[0].onopen();
-  h.frame(h.sockets[0], "usage_snapshot");
-  assert.equal(h.sockets[0].closed, 1);
+  h.sockets[0]!.onopen!();
+  h.frame(h.sockets[0]!, "usage_snapshot");
+  assert.equal(h.sockets[0]!.closed, 1);
   assert.equal(h.recovered(), 0);
   h.dispose();
 });
@@ -237,20 +259,19 @@ test("a failed snapshot application fails the operation instead of announcing re
 function resumeHarness() {
   const time = clock();
   const window = new EventTarget();
-  const document = new EventTarget();
-  document.visibilityState = "visible";
+  const document = Object.assign(new EventTarget(), { visibilityState: "visible" as DocumentVisibilityState });
   let wall = 1_800_000_000_000;
   let mono = 100;
-  const requests = [];
+  const requests: RefreshRequest[] = [];
   const dispose = watchRefreshSources({
     ...time, window, document, wallNow: () => wall, monotonicNow: () => mono,
     request: (event) => requests.push(event),
   });
   return {
     time, requests, dispose,
-    send(type) { window.dispatchEvent(new Event(type)); },
-    visibility(value) { document.visibilityState = value; document.dispatchEvent(new Event("visibilitychange")); },
-    advance(w, m) { wall += w; mono += m; },
+    send(type: string) { window.dispatchEvent(new Event(type)); },
+    visibility(value: DocumentVisibilityState) { document.visibilityState = value; document.dispatchEvent(new Event("visibilitychange")); },
+    advance(w: number, m: number) { wall += w; mono += m; },
   };
 }
 
@@ -265,7 +286,7 @@ test("a resume burst emits one invalidation and ordinary focus events do not rec
   h.send("focus");
   h.time.tick(10_000);
   assert.equal(h.requests.length, 1);
-  assert.equal(h.requests[0].invalidate, true);
+  assert.equal(h.requests[0]!.invalidate, true);
   h.dispose();
 });
 
