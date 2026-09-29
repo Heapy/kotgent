@@ -563,7 +563,12 @@ export function TerminalPane({
           onClick={onToggleSidebar}
         >{sidebarCollapsed ? "›" : "‹"}</button>
         <div class="terminal-identity">
-          <span id="terminal-title">{session ? displayName(session) : "No session selected"}</span>
+          <div class="terminal-session">
+            <span id="terminal-title">{session ? displayName(session) : "No session selected"}</span>
+            {session?.cwd && (
+              <span id="terminal-cwd" title={session.cwd}>{session.cwd}</span>
+            )}
+          </div>
           <span id="terminal-state" class={badge ? "pill badge " + badge.cls : "pill badge"}>
             {badge ? badge.label : ""}
           </span>

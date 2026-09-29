@@ -3,6 +3,7 @@ package io.kotgent.webuitest
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import com.microsoft.playwright.options.WaitUntilState
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -750,6 +751,77 @@ class BoardStyleTest {
             )
         }
 
+
+    @Test
+    fun theTerminalWorkingDirectoryFollowsTheSelectedSession() =
+        onScreen(SESSIONS_SCENARIO, "terminal-working-directory") { harness, page ->
+            page.navigate(harness.baseUrl + "/")
+            val title = page.locator("#terminal-title")
+            val cwd = page.locator("#terminal-cwd")
+            val head = page.locator("#terminal-head")
+            assertThat(title).hasText("No session selected")
+            assertThat(cwd).hasCount(0)
+            val height = head.rect().height
+
+            for ([id, directory] in listOf("s-alpha" to "/a/b", "s-gamma" to "/a/c")) {
+                page.locator("#session-list .session-row[data-id='$id']").click()
+                assertThat(cwd).isVisible()
+                assertThat(cwd).hasText(directory)
+                assertThat(cwd).hasAttribute("title", directory)
+                assertClose(height, head.rect().height, "showing a working directory keeps the header height")
+            }
+
+            page.goBack(Page.GoBackOptions().setWaitUntil(WaitUntilState.COMMIT))
+            assertThat(cwd).hasText("/a/b")
+            assertThat(cwd).hasAttribute("title", "/a/b")
+        }
+
+    @Test
+    fun aLongTerminalWorkingDirectoryLeavesThePhoneHeaderControlsVisible() =
+        onScreen(
+            TASK_LINKED_SESSION_SCENARIO, "terminal-working-directory-phone", 375, PHONE_HEIGHT, mobile = true,
+        ) { harness, page ->
+            page.navigate(harness.baseUrl + "/s/s-linked-1")
+            val cwd = page.locator("#terminal-cwd")
+            assertThat(cwd).hasText("/repo/linked")
+            val head = page.locator("#terminal-head")
+            val height = head.rect().height
+
+            cwd.setText("/repo/" + "long-working-directory/".repeat(12))
+            page.locator("#terminal-task").setLabel("W".repeat(120))
+            assertEquals("11px", cwd.style("font-size"))
+            assertEquals(page.resolved("var(--muted)"), cwd.style("color"))
+            assertEquals("nowrap", cwd.style("white-space"))
+            assertEquals("hidden", cwd.style("overflow-x"))
+            assertEquals("ellipsis", cwd.style("text-overflow"))
+            assertTrue(
+                cwd.number("el => el.scrollWidth") > cwd.number("el => el.clientWidth"),
+                "a long working directory is truncated inside the phone header",
+            )
+
+            val box = head.rect()
+            for (selector in listOf(
+                "#drawer-toggle", "#terminal-title", "#terminal-cwd", "#terminal-state",
+                "#terminal-task", "#palette-button",
+            )) {
+                val element = page.locator(selector)
+                assertThat(element).isVisible()
+                val bounds = element.rect()
+                assertTrue(
+                    bounds.left >= box.left && bounds.right <= box.right &&
+                        bounds.top >= box.top && bounds.bottom <= box.bottom,
+                    "$selector stays inside the phone header with a long working directory: $bounds in $box",
+                )
+            }
+            val identity = page.locator(".terminal-identity")
+            assertClose(
+                identity.number("el => el.clientWidth"), identity.number("el => el.scrollWidth"),
+                "the working directory leaves room for the state and task badges",
+            )
+            assertClose(height, box.height, "a long working directory keeps the phone header height")
+            page.locator("#palette-button").click()
+            assertThat(page.locator("#command-palette")).isVisible()
+        }
 
     @Test
     fun theUnknownTaskBadgeIsAPillOfItsOwnInTheMonospaceFace() =

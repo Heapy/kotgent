@@ -750,6 +750,12 @@ textarea:focus-visible {
   gap: 10px;
   min-width: 0;
 }
+.terminal-session {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 14px;
+}
 #terminal-title {
   font-size: 13px;
   font-weight: 600;
@@ -1634,7 +1640,8 @@ dialog::backdrop {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.board-project-path {
+.board-project-path,
+#terminal-cwd {
   color: var(--muted);
   font-size: 11px;
   overflow: hidden;
