@@ -1,5 +1,5 @@
 import { html } from "htm/preact";
-import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { UsageStrip } from "./UsageStrip.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.js";
@@ -403,8 +403,9 @@ export function Sidebar({
   const pushPermissionRef = useRef({ transition: 0, request: null });
   const repairPushRef = useRef(() => {});
   const adhdToggleRef = useRef(null);
-  useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
-  useEffect(() => { persistAttentionCollapsed(attentionCollapsed); }, [attentionCollapsed]);
+  // A passive effect runs after paint, so a reload right after a toggle could drop the write.
+  useLayoutEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
+  useLayoutEffect(() => { persistAttentionCollapsed(attentionCollapsed); }, [attentionCollapsed]);
   const queuePushTransition = useCallback((transition, desired, operation, warning) => {
     // Local generations order this tab; the stored preference orders tabs.
     const isGenerationCurrent = () =>

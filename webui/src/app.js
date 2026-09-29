@@ -331,8 +331,9 @@ function App() {
 
   const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
-  useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
-  useEffect(() => { persistAdhdMode(adhdMode); }, [adhdMode]);
+  // A passive effect runs after paint, so a reload right after a toggle could drop the write.
+  useLayoutEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
+  useLayoutEffect(() => { persistAdhdMode(adhdMode); }, [adhdMode]);
   useEffect(() => subscribeToRoute(setRoute), []);
 
   const openTaskEntry = route.screen === SCREEN_TASK ? findTask(route.id) : null;
