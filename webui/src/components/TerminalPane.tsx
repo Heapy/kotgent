@@ -326,6 +326,7 @@ export function TerminalPane({
   const slotRef = useRef<HTMLElement | null>(null);
   const shownRef = useRef(false);
   const [terminalShown, setTerminalShown] = useState(false);
+  const [showRequest, setShowRequest] = useState(0);
   const visibilityRef = useRef<TerminalVisibility | null>(null);
   const slotPortRef = useRef<TerminalSlotPort | null>(null);
   if (slotPortRef.current === null) {
@@ -335,7 +336,7 @@ export function TerminalPane({
         slot.appendChild(hostRef.current!);
         shownRef.current = true;
         setTerminalShown(true);
-        visibilityRef.current?.show();
+        setShowRequest((n) => n + 1);
       },
       release: (slot) => {
         if (slotRef.current !== slot) return;
@@ -351,6 +352,10 @@ export function TerminalPane({
     const host = hostRef.current!;
     if (!host.parentNode) parkingRef.current?.appendChild(host);
   }, []);
+  // Fit only after the render that shows the key bar, whose height the terminal gives up.
+  useLayoutEffect(() => {
+    if (shownRef.current) visibilityRef.current?.show();
+  }, [showRequest]);
   const keyBarRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal>(null);
   const fitRef = useRef<FitAddon>(null);
