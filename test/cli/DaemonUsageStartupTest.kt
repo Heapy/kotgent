@@ -3,6 +3,7 @@ package io.kotgent.cli
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.Notification
@@ -245,7 +246,7 @@ class DaemonUsageStartupTest {
             tmux = FakeTmux(), store = events, registry = PaneRegistry(),
             agentFactory = { _, cwd -> object : AgentAdapter {
                 override val events: Flow<AgentEvent> = emptyFlow()
-                override fun buildLaunchSpec(mode: LaunchMode) = LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
+                override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions) = LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
             } },
             idCapture = ProviderIdCapture(events, scope), vendorProbe = { _, _, _ -> false },
             sessionLocator = { _, _ -> null }, supportedAgentKinds = setOf("claude", "codex"),

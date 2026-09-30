@@ -2,6 +2,7 @@ package io.kotgent.transport
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.MAX_SESSION_NAME_LENGTH
@@ -342,7 +343,7 @@ class SessionRenameRoutesTest {
 
     private class CannedAdapter(private val cwd: String) : AgentAdapter {
         override val events: Flow<AgentEvent> = emptyFlow()
-        override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+        override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec = when (mode) {
             is LaunchMode.New -> LaunchSpec(
                 listOf("claude"),
                 emptyMap(),

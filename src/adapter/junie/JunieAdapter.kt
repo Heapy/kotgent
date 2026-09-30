@@ -2,7 +2,9 @@ package io.kotgent.adapter.junie
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.requireDefault
 import io.kotgent.core.AgentEvent
 import kotlinx.coroutines.flow.Flow
 
@@ -20,7 +22,8 @@ class JunieAdapter(
     private val cliPath: String? = null,
 ) : AgentAdapter {
 
-    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec {
+    override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec {
+        options.requireDefault(AGENT_KIND)
         val command = buildList {
             add(binaryName)
             if (mode is LaunchMode.Resume) {
@@ -42,6 +45,8 @@ class JunieAdapter(
     }
 
     companion object {
+        const val AGENT_KIND: String = "junie"
+
         const val RESUME_FLAG: String = "--resume"
 
         const val SESSION_ID_FLAG: String = "--session-id"

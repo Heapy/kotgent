@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 /** Provider-specific launch planning and provider-neutral event delivery. */
 interface AgentAdapter {
-    fun buildLaunchSpec(mode: LaunchMode): LaunchSpec
+    fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions = LaunchOptions()): LaunchSpec
 
     val events: Flow<AgentEvent>
 }

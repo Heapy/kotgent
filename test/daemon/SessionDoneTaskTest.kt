@@ -2,6 +2,7 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
@@ -623,7 +624,7 @@ class SessionDoneTaskTest {
     ) : AgentFactory {
         override fun create(agentKind: String, cwd: String): AgentAdapter = object : AgentAdapter {
             override val events = emptyFlow<AgentEvent>()
-            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec = when (mode) {
                 is LaunchMode.New -> LaunchSpec(command, emptyMap(), cwd, preallocated)
                 is LaunchMode.Resume -> LaunchSpec(command, emptyMap(), cwd, null)
             }

@@ -2,6 +2,7 @@ package io.kotgent.transport
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.cli.DUPLICATE_IMPORT_ID_IN_BODY
@@ -2045,7 +2046,7 @@ class TransportTest {
     ) : AgentFactory {
         override fun create(agentKind: String, cwd: String): AgentAdapter = object : AgentAdapter {
             override val events: Flow<AgentEvent> = emptyFlow()
-            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec = when (mode) {
                 is LaunchMode.New -> LaunchSpec(command, emptyMap(), cwd, preallocated)
                 is LaunchMode.Resume ->
                     LaunchSpec(command + listOf("--resume", mode.providerSessionId.value), emptyMap(), cwd, null)

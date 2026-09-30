@@ -20,8 +20,11 @@ class FakeAdapter(
 
     val launchModes: MutableList<LaunchMode> = mutableListOf()
 
-    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec {
+    val launchOptions: MutableList<LaunchOptions> = mutableListOf()
+
+    override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec {
         launchModes.add(mode)
+        launchOptions.add(options)
         return when (mode) {
             is LaunchMode.New -> LaunchSpec(
                 command = listOf("claude", "--session-id", newSessionId.value),

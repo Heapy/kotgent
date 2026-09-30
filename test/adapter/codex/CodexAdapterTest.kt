@@ -1,6 +1,8 @@
 package io.kotgent.adapter.codex
 
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
+import io.kotgent.adapter.initialPromptInstruction
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.daemon.SessionManager
 import io.kotgent.tmux.ProcessResult
@@ -52,6 +54,55 @@ class CodexAdapterTest {
             spec.command.drop(3),
             "resumed sessions carry the same hooks and trust",
         )
+    }
+
+    @Test
+    fun readOnlyNewLaunchSandboxesAndPassesTheInitialPromptAfterTheOptions() {
+        val spec = adapter().buildLaunchSpec(
+            LaunchMode.New,
+            LaunchOptions(readOnly = true, promptPath = "/home/u/.kotgent/prompts/s1.md"),
+        )
+
+        assertEquals(
+            listOf(
+                "codex", "-c", CodexHookConfig.hooksToml(hookScript),
+                "--sandbox", "read-only",
+                "--", initialPromptInstruction("/home/u/.kotgent/prompts/s1.md"),
+            ),
+            spec.command,
+        )
+    }
+
+    @Test
+    fun promptWithoutReadOnlyKeepsTheConfiguredSandbox() {
+        val spec = adapter().buildLaunchSpec(LaunchMode.New, LaunchOptions(promptPath = "/p.md"))
+
+        assertEquals(
+            listOf("codex", "-c", CodexHookConfig.hooksToml(hookScript), "--", initialPromptInstruction("/p.md")),
+            spec.command,
+        )
+    }
+
+    @Test
+    fun readOnlyResumeSandboxesAndIgnoresTheInitialPrompt() {
+        val id = ProviderSessionId("019f8ea0-2548-7871-9835-947ff7623ccf")
+        val spec = adapter().buildLaunchSpec(LaunchMode.Resume(id), LaunchOptions(readOnly = true, promptPath = "/p.md"))
+
+        assertEquals(
+            listOf("codex", "resume", id.value, "-c", CodexHookConfig.hooksToml(hookScript), "--sandbox", "read-only"),
+            spec.command,
+        )
+    }
+
+    @Test
+    fun aPromptPathStartingWithADashStaysAnOperandAfterTheEndOfOptions() {
+        val spec = adapter().buildLaunchSpec(LaunchMode.New, LaunchOptions(promptPath = "--dangerously-bypass-hook-trust"))
+
+        assertEquals(spec.command.size - 2, spec.command.indexOf("--"), "only the prompt follows the marker")
+        val prompt = spec.command.last()
+        assertFalse(prompt.startsWith("-"), "the prompt operand is an instruction, never flag-shaped: $prompt")
+        assertTrue("--dangerously-bypass-hook-trust" in prompt)
+        assertFalse(spec.command.contains("--dangerously-bypass-hook-trust"), "the path never becomes its own argument")
     }
 
     @Test

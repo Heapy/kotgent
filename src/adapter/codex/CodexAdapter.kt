@@ -2,7 +2,9 @@ package io.kotgent.adapter.codex
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.initialPromptInstruction
 import io.kotgent.core.AgentEvent
 import kotlinx.coroutines.flow.Flow
 
@@ -19,16 +21,26 @@ class CodexAdapter(
     private val cliPath: String? = null,
 ) : AgentAdapter {
 
-    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec {
+    override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec {
+        val resume = mode as? LaunchMode.Resume
         val command = buildList {
             add(binaryName)
             // Codex parses the resume subcommand before its session config overrides.
-            if (mode is LaunchMode.Resume) {
+            if (resume != null) {
                 add(RESUME_SUBCOMMAND)
-                add(mode.providerSessionId.value)
+                add(resume.providerSessionId.value)
             }
             add(CONFIG_FLAG)
             add(CodexHookConfig.hooksToml(hookScriptPath))
+            if (options.readOnly) {
+                add(SANDBOX_FLAG)
+                add(READ_ONLY_SANDBOX)
+            }
+            val promptPath = options.promptPath
+            if (resume == null && promptPath != null) {
+                add(END_OF_OPTIONS)
+                add(initialPromptInstruction(promptPath))
+            }
         }
         return LaunchSpec(
             command = command,
@@ -44,5 +56,11 @@ class CodexAdapter(
         const val RESUME_SUBCOMMAND: String = "resume"
 
         const val CONFIG_FLAG: String = "-c"
+
+        const val SANDBOX_FLAG: String = "--sandbox"
+
+        const val READ_ONLY_SANDBOX: String = "read-only"
+
+        const val END_OF_OPTIONS: String = "--"
     }
 }

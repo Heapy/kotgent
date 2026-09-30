@@ -1,6 +1,8 @@
 package io.kotgent.adapter.claude
 
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
+import io.kotgent.adapter.initialPromptInstruction
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.newUuidV4
@@ -133,6 +135,61 @@ class ClaudeAdapterTest {
         assertNull(spec.preallocatedSessionId, "fallback preallocates nothing; id comes from SessionStart hook")
         assertTrue(spec.command.contains("--settings"), "fallback still installs the hook settings")
         assertEquals(listOf("claude", "--settings", "/s.json"), spec.command)
+    }
+
+
+    @Test
+    fun readOnlyNewLaunchUsesPlanModeAndPassesTheInitialPromptAfterTheOptions() {
+        val fixedId = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+        val adapter = ClaudeAdapter(cwd = "/w", settingsPath = "/s.json", events = emptyFlow(), generateSessionId = { fixedId })
+        val spec = adapter.buildLaunchSpec(
+            LaunchMode.New,
+            LaunchOptions(readOnly = true, promptPath = "/home/u/.kotgent/prompts/s1.md"),
+        )
+
+        assertEquals(
+            listOf(
+                "claude", "--session-id", fixedId.value, "--settings", "/s.json",
+                "--permission-mode", "plan",
+                "--", initialPromptInstruction("/home/u/.kotgent/prompts/s1.md"),
+            ),
+            spec.command,
+        )
+        assertEquals(fixedId, spec.preallocatedSessionId)
+    }
+
+    @Test
+    fun promptWithoutReadOnlyKeepsTheDefaultPermissionMode() {
+        val spec = ClaudeAdapter(cwd = "/w", settingsPath = "/s.json", events = emptyFlow(), sessionIdSupported = false)
+            .buildLaunchSpec(LaunchMode.New, LaunchOptions(promptPath = "/p.md"))
+
+        assertEquals(listOf("claude", "--settings", "/s.json", "--", initialPromptInstruction("/p.md")), spec.command)
+    }
+
+    @Test
+    fun readOnlyResumeUsesPlanModeAndIgnoresTheInitialPrompt() {
+        val id = ProviderSessionId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        val spec = ClaudeAdapter(cwd = "/w", settingsPath = "/s.json", events = emptyFlow())
+            .buildLaunchSpec(LaunchMode.Resume(id), LaunchOptions(readOnly = true, promptPath = "/p.md"))
+
+        assertEquals(
+            listOf("claude", "--resume", id.value, "--settings", "/s.json", "--permission-mode", "plan"),
+            spec.command,
+        )
+        assertNull(spec.preallocatedSessionId)
+    }
+
+    @Test
+    fun aPromptPathStartingWithADashStaysAnOperandAfterTheEndOfOptions() {
+        val spec = ClaudeAdapter(cwd = "/w", settingsPath = "/s.json", events = emptyFlow())
+            .buildLaunchSpec(LaunchMode.New, LaunchOptions(promptPath = "--dangerously-skip-permissions"))
+
+        val end = spec.command.indexOf("--")
+        assertEquals(spec.command.size - 2, end, "the end-of-options marker precedes only the prompt: ${spec.command}")
+        val prompt = spec.command.last()
+        assertFalse(prompt.startsWith("-"), "the prompt operand is an instruction, never flag-shaped: $prompt")
+        assertTrue("--dangerously-skip-permissions" in prompt)
+        assertFalse(spec.command.contains("--dangerously-skip-permissions"), "the path never becomes its own argument")
     }
 
 

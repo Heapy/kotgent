@@ -1,11 +1,14 @@
 package io.kotgent.adapter.junie
 
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
+import io.kotgent.adapter.UnsupportedLaunchOptionException
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.daemon.SessionManager
 import kotlinx.coroutines.flow.emptyFlow
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -16,6 +19,22 @@ class JunieAdapterTest {
 
     private fun adapter(binaryName: String = "junie") =
         JunieAdapter(cwd = "/work/repo", hookConfigPath = hookConfig, events = emptyFlow(), binaryName = binaryName)
+
+    @Test
+    fun launchOptionsAreRejectedOnNewAndResume() {
+        val id = ProviderSessionId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        for (mode in listOf(LaunchMode.New, LaunchMode.Resume(id))) {
+            val readOnly = assertFailsWith<UnsupportedLaunchOptionException> {
+                adapter().buildLaunchSpec(mode, LaunchOptions(readOnly = true))
+            }
+            assertEquals("junie", readOnly.agentKind)
+            assertEquals("read-only", readOnly.option)
+            val prompt = assertFailsWith<UnsupportedLaunchOptionException> {
+                adapter().buildLaunchSpec(mode, LaunchOptions(promptPath = "/p.md"))
+            }
+            assertEquals("initial prompt", prompt.option)
+        }
+    }
 
     @Test
     fun newLaunchInstallsHooksAndPreallocatesNothing() {

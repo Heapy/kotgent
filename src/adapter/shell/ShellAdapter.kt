@@ -2,7 +2,9 @@ package io.kotgent.adapter.shell
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.requireDefault
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.newUuidV4
@@ -20,15 +22,22 @@ class ShellAdapter(
 ) : AgentAdapter {
     override val events: Flow<AgentEvent> = emptyFlow()
 
-    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = LaunchSpec(
-        command = listOf(shell, "-l"),
-        env = emptyMap(),
-        cwd = cwd,
-        preallocatedSessionId = when (mode) {
-            LaunchMode.New -> generateSessionId()
-            is LaunchMode.Resume -> null
-        },
-        cliVersion = null,
-        cliPath = shell,
-    )
+    override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec {
+        options.requireDefault(AGENT_KIND)
+        return LaunchSpec(
+            command = listOf(shell, "-l"),
+            env = emptyMap(),
+            cwd = cwd,
+            preallocatedSessionId = when (mode) {
+                LaunchMode.New -> generateSessionId()
+                is LaunchMode.Resume -> null
+            },
+            cliVersion = null,
+            cliPath = shell,
+        )
+    }
+
+    companion object {
+        const val AGENT_KIND: String = "shell"
+    }
 }

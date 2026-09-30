@@ -166,5 +166,6 @@ class AdapterContractTest {
             adapter.launchModes,
             "the adapter records, in order, the launch modes it built specs for",
         )
+        assertEquals(listOf(LaunchOptions(), LaunchOptions()), adapter.launchOptions, "callers default to no options")
     }
 }

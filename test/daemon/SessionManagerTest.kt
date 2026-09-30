@@ -2,6 +2,7 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.shell.ShellAdapter
@@ -290,7 +291,7 @@ class SessionManagerTest {
     ) : AgentFactory {
         override fun create(agentKind: String, cwd: String): AgentAdapter = object : AgentAdapter {
             override val events: Flow<AgentEvent> = emptyFlow()
-            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec = when (mode) {
                 is LaunchMode.New ->
                     LaunchSpec(command, emptyMap(), cwd, preallocated, cliVersion = cliVersion, cliPath = cliPath)
                 is LaunchMode.Resume ->

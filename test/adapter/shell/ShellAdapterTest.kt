@@ -1,12 +1,15 @@
 package io.kotgent.adapter.shell
 
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
+import io.kotgent.adapter.UnsupportedLaunchOptionException
 import io.kotgent.core.ProviderSessionId
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.time.Duration.Companion.seconds
@@ -14,6 +17,22 @@ import kotlin.time.Duration.Companion.seconds
 class ShellAdapterTest {
 
     private val fixedId = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+
+    @Test
+    fun launchOptionsAreRejectedOnNewAndResume() {
+        val id = ProviderSessionId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        for (mode in listOf(LaunchMode.New, LaunchMode.Resume(id))) {
+            val readOnly = assertFailsWith<UnsupportedLaunchOptionException> {
+                ShellAdapter(cwd = "/work", shell = "/bin/zsh").buildLaunchSpec(mode, LaunchOptions(readOnly = true))
+            }
+            assertEquals("shell", readOnly.agentKind)
+            assertEquals("read-only", readOnly.option)
+            val prompt = assertFailsWith<UnsupportedLaunchOptionException> {
+                ShellAdapter(cwd = "/work", shell = "/bin/zsh").buildLaunchSpec(mode, LaunchOptions(promptPath = "/p.md"))
+            }
+            assertEquals("initial prompt", prompt.option)
+        }
+    }
 
     @Test
     fun newLaunchUsesTheLoginShellAndMintsTheInjectedSyntheticId() {

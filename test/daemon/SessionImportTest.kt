@@ -2,6 +2,7 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.core.AgentEvent
@@ -42,7 +43,7 @@ class SessionImportTest {
     private val catFactory = AgentFactory { _, cwd ->
         object : AgentAdapter {
             override val events: Flow<AgentEvent> = emptyFlow()
-            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec = when (mode) {
                 is LaunchMode.New -> LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                 is LaunchMode.Resume ->
                     LaunchSpec(listOf("cat", "--resume", mode.providerSessionId.value), emptyMap(), cwd, null)
@@ -269,7 +270,7 @@ class SessionImportTest {
             val startFactory = AgentFactory { _, cwd ->
                 object : AgentAdapter {
                     override val events: Flow<AgentEvent> = emptyFlow()
-                    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
+                    override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec =
                         LaunchSpec(listOf("cat"), emptyMap(), cwd, startProvider)
                 }
             }
