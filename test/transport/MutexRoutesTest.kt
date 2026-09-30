@@ -3,6 +3,7 @@ package io.kotgent.transport
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.PaneId
@@ -335,7 +336,7 @@ class MutexRoutesTest {
                     agentFactory = { _, cwd ->
                         object : AgentAdapter {
                             override val events: Flow<AgentEvent> = emptyFlow()
-                            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
+                            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec =
                                 LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                         }
                     },
