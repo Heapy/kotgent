@@ -297,6 +297,8 @@ configuration, session status, usage meters, and known limitations.
 | Junie | `kotgent start junie` | [Junie](docs/agents/JUNIE.md) |
 | Login shell | `kotgent start shell` | [Shell](docs/agents/SHELL.md) |
 
+Sessions of any type serialize shared work, such as builds, with [mutexes](docs/agents/MUTEX.md).
+
 ## Build & test
 
 ```shell

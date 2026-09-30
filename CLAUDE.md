@@ -107,6 +107,29 @@ the common workflow and links to those guides; implementation invariants belong 
 - A session with a parent is never a task holder: `closeLinkedTask` ignores children, and marking a child
   done archives it without closing the task.
 
+## Mutexes
+
+- Inside a kotgent session, call `./kotlin` only as `kotgent mutex run kotlin-build -- ./kotlin …`, so the
+  serial `./kotlin` rule holds across sessions and worktrees. Outside a session mutex calls are rejected.
+- `SqliteMutexStore` is the only writer of `mutexes` and `mutex_revision`; the revision table keeps `rev`
+  monotonic across releases and restarts. Holdings persist. Waiters live in memory and die with the
+  daemon, like every long-poll; startup reconciliation releases the holdings of sessions whose pane is gone.
+- A holder is a session plus a per-acquisition token, so subagents sharing one pane exclude each other.
+  Acquire and release require a live session resolved from the pane or a checked `--session`; only the
+  holding session releases. Force release is the operator's call: a request with no session identity.
+- A waiter is leased while its long-poll is open and for 30 s after a `pending` answer. A grant to an
+  unleased ticket is skipped; a leased grant becomes a holding only when a `--ticket` call claims it.
+- `SessionEndListeners.fire` runs when the pane is gone: from `onTmuxSessionClosed` whether or not the
+  state changed, from `terminate`, and from `Reconciler.reconcile`. Callers may hold per-session control
+  locks, so a listener only enqueues work and never suspends, blocks or throws into them.
+- Long-poll hang-up detection installs Ktor's `@InternalAPI` `HttpRequestCloseHandlerKey` from a
+  route-scoped plugin, for keep-alive calls only. Recheck it on Ktor upgrades: CIO otherwise keeps a
+  hung-up poll running, and a grant claimed for a gone caller holds the key until its session ends.
+- `webui/src/state/mutexes.ts` owns the listing. Frames carry the whole listing: a snapshot replaces it,
+  an update applies only with a higher `rev`. Durations age a stamp against the frame's `serverNow`, then
+  add local monotonic time, as usage freshness does. Force release goes through the in-app dialog and
+  re-checks the confirmed holder, because the route releases whoever holds the key.
+
 ## Usage and notifications
 
 - `SqliteUsageStore` owns the account projection keyed by provider/window, source baselines, sample
@@ -195,7 +218,7 @@ the common workflow and links to those guides; implementation invariants belong 
   the pump.
 - Event-stream recovery goes through `webui/src/lib/resync.ts`: one coordinator per source batches
   requests, serializes resynchronization and owns retries. Beside it, `resume.ts` emits requests; `events.ts`
-  applies frames through state writers and completes after all three snapshots. Retired socket callbacks
+  applies frames through state writers and completes after every snapshot. Retired socket callbacks
   cannot publish. Wall-clock discontinuities request server time; they never supply usage time or freshness.
 - Session, task, project, usage, selection, dialog, status, and preference state lives in signals under
   `webui/src/state/`, one owner per concern; callers must use that module's writers.
