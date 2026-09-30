@@ -2,8 +2,9 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { createContext } from "preact";
+import type { ComponentChildren, JSX } from "preact";
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
 import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -31,6 +32,33 @@ export interface TerminalPaneProps extends HeaderTaskBadgeProps {
   onToggleSidebar: JSX.MouseEventHandler<HTMLButtonElement>;
   onOpenPalette: (mode: "leader") => void;
   onTerminalClosed: (id: string) => void;
+  workspace: ComponentChildren;
+}
+
+interface TerminalSlotPort {
+  claim: (slot: HTMLElement) => void;
+  release: (slot: HTMLElement) => void;
+}
+
+interface TerminalVisibility {
+  show: () => void;
+  hide: () => void;
+}
+
+const TerminalSlotContext = createContext<TerminalSlotPort | null>(null);
+
+/* The pane's single xterm host moves into whichever slot is mounted; with none mounted it is parked hidden
+ * and keeps its socket and buffer. */
+export function TerminalSlot() {
+  const port = useContext(TerminalSlotContext);
+  const slotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const slot = slotRef.current;
+    if (!port || !slot) return undefined;
+    port.claim(slot);
+    return () => port.release(slot);
+  }, [port]);
+  return <div class="terminal-slot" ref={slotRef}></div>;
 }
 
 function debounce(fn: () => void, ms: number) {
@@ -286,9 +314,43 @@ function installSwipeScroll(term: Terminal) {
 
 export function TerminalPane({
   session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
-  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed,
+  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed, workspace,
 }: TerminalPaneProps) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  if (hostRef.current === null) {
+    const created = document.createElement("div");
+    created.id = "terminal-host";
+    hostRef.current = created;
+  }
+  const parkingRef = useRef<HTMLDivElement>(null);
+  const slotRef = useRef<HTMLElement | null>(null);
+  const shownRef = useRef(false);
+  const [terminalShown, setTerminalShown] = useState(false);
+  const visibilityRef = useRef<TerminalVisibility | null>(null);
+  const slotPortRef = useRef<TerminalSlotPort | null>(null);
+  if (slotPortRef.current === null) {
+    slotPortRef.current = {
+      claim: (slot) => {
+        slotRef.current = slot;
+        slot.appendChild(hostRef.current!);
+        shownRef.current = true;
+        setTerminalShown(true);
+        visibilityRef.current?.show();
+      },
+      release: (slot) => {
+        if (slotRef.current !== slot) return;
+        slotRef.current = null;
+        shownRef.current = false;
+        setTerminalShown(false);
+        visibilityRef.current?.hide();
+        parkingRef.current?.appendChild(hostRef.current!);
+      },
+    };
+  }
+  useLayoutEffect(() => {
+    const host = hostRef.current!;
+    if (!host.parentNode) parkingRef.current?.appendChild(host);
+  }, []);
   const keyBarRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal>(null);
   const fitRef = useRef<FitAddon>(null);
@@ -334,7 +396,7 @@ export function TerminalPane({
     // Use visualViewport for keyboard geometry, tolerating iOS PWA safe-area loss without a keyboard.
     const viewport = window.visualViewport;
     const sizeForVisualViewport = () => {
-      if (!viewport) return;
+      if (!viewport || !shownRef.current) return;
       if (!Number.isFinite(viewport.height) || !Number.isFinite(viewport.offsetTop) ||
           viewport.height <= 0) return; // Safari emits transient zeroes during rotation.
 
@@ -373,7 +435,9 @@ export function TerminalPane({
       host.style.setProperty("--terminal-visible-height", visibleHeight + "px");
     };
     sizeForVisualViewport();
-    try { fit.fit(); } catch (_) { /* ResizeObserver retries after layout. */ }
+    if (shownRef.current) {
+      try { fit.fit(); } catch (_) { /* ResizeObserver retries after layout. */ }
+    }
 
     // Put initial geometry in the URL so tmux attaches at the correct size before emitting bytes.
     const ws = new WebSocket(wsUrl(
@@ -388,11 +452,18 @@ export function TerminalPane({
     };
     sendBytesRef.current = sendBytes;
 
+    // A parked host has no geometry, so tmux keeps the last reported size until a slot shows it again.
+    let fittedBox: { width: number; height: number } | null = null;
+    let fitting = false;
     const fitAndReport = () => {
-      if (teardown) return;
+      if (teardown || !shownRef.current) return;
+      fitting = true;
       // A same-size resize forces measurement when open preceded host layout.
       try { term.resize(term.cols, term.rows); } catch (_) {}
       try { fit.fit(); } catch (_) {}
+      fitting = false;
+      const box = host.getBoundingClientRect();
+      fittedBox = { width: box.width, height: box.height };
       sendResize(ws, term.cols, term.rows);
     };
 
@@ -429,11 +500,24 @@ export function TerminalPane({
       for (let i = 0; i < data.length; i += 1) bytes[i] = data.charCodeAt(i) & 0xff;
       sendBytes(bytes);
     });
-    const resizeSubscription = term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
+    // A fit reports its own result once; xterm fires this synchronously from inside it.
+    const resizeSubscription = term.onResize(({ cols, rows }) => {
+      if (!fitting) sendResize(ws, cols, rows);
+    });
 
     // Host geometry changes without window resize, and initial layout may follow term.open().
     const refit = debounce(fitAndReport, 120);
-    const observer = new ResizeObserver(refit);
+    // Showing the host fits and reports at once; the observer then sees that same box and stays quiet.
+    const observer = new ResizeObserver((entries) => {
+      if (!shownRef.current) {
+        refit.cancel();
+        return;
+      }
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box && fittedBox && Math.abs(box.width - fittedBox.width) < 0.5 &&
+          Math.abs(box.height - fittedBox.height) < 0.5) return;
+      refit();
+    });
     observer.observe(host);
 
     // iOS keyboard focus must happen synchronously from the completed tap, never from ws.onopen.
@@ -452,6 +536,21 @@ export function TerminalPane({
       viewport.addEventListener("resize", viewportChanged);
       viewport.addEventListener("scroll", viewportChanged);
     }
+
+    const visibility: TerminalVisibility = {
+      show: () => {
+        refit.cancel();
+        sizeForVisualViewport();
+        fitAndReport();
+      },
+      hide: () => {
+        refit.cancel();
+        host.classList.remove("visual-viewport-sized");
+        host.style.removeProperty("--terminal-visible-height");
+        app.classList.remove("visual-viewport-shrunken");
+      },
+    };
+    visibilityRef.current = visibility;
 
     terminalRef.current = term;
     fitRef.current = fit;
@@ -485,6 +584,7 @@ export function TerminalPane({
       if (fitRef.current === fit) fitRef.current = null;
       if (socketRef.current === ws) socketRef.current = null;
       if (sendBytesRef.current === sendBytes) sendBytesRef.current = null;
+      if (visibilityRef.current === visibility) visibilityRef.current = null;
     };
   }, [attachedId]);
 
@@ -521,6 +621,7 @@ export function TerminalPane({
     const ws = socketRef.current;
     if (!term || !fit || !ws) return;
     term.options.fontSize = terminalFontSize;
+    if (!shownRef.current) return;
     try { term.resize(term.cols, term.rows); } catch (_) {}
     try { fit.fit(); } catch (_) {}
     sendResize(ws, term.cols, term.rows);
@@ -584,9 +685,12 @@ export function TerminalPane({
         >⋯</button>
       </div>
 
-      <div id="terminal-host" ref={hostRef}></div>
+      <TerminalSlotContext.Provider value={slotPortRef.current}>
+        {workspace ?? <TerminalSlot />}
+      </TerminalSlotContext.Provider>
+      <div class="terminal-parking" ref={parkingRef} hidden></div>
 
-      {attached && (
+      {attached && terminalShown && (
         <KeyBar
           barRef={keyBarRef}
           sendBytesRef={sendBytesRef}

@@ -5,7 +5,7 @@ import type { ComponentChildren, JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
-import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.ts";
+import { navigate, sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
 import type { LinkedSession, Task, TaskActivity, TaskDetail as TaskDetailData, TaskPatch } from "../lib/tasks.ts";
@@ -26,6 +26,8 @@ export interface TaskDetailProps {
   onTaskRemoved?: (ref: string) => void;
   onStartSession: (cwd: string | null, ref: string) => void;
   onAnnounce: (message: string, error?: boolean) => void;
+  // Null embeds the detail in a workspace column, which has its own close control.
+  onClose: (() => void) | null;
 }
 
 const ACTIVITY_FALLBACK: Record<string, string> = {
@@ -97,7 +99,9 @@ export function TaskDetail({
   onTaskRemoved,
   onStartSession,
   onAnnounce,
+  onClose,
 }: TaskDetailProps) {
+  const panelClass = onClose ? "task-detail" : "task-detail task-detail-embedded";
   const [response, setDetail] = useState<ApiResponse<TaskDetailData>>(null);
   const detail = typeof response === "object" ? response : null;
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -186,9 +190,8 @@ export function TaskDetail({
     }
   }, [taskRef, entryTitle, entryBody]);
 
-  const backToBoard = useCallback(() => {
-    navigate(routePath({ screen: SCREEN_TASKS, id: null }));
-  }, []);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   const saveEdits = (event?: JSX.TargetedSubmitEvent<HTMLFormElement>) => {
     if (event) event.preventDefault();
@@ -255,7 +258,7 @@ export function TaskDetail({
       onAnnounce("Deleted " + taskRef + ".");
       // Delete answers with no row to merge, so drop the card here instead of awaiting its frame.
       if (onTaskRemovedRef.current) onTaskRemovedRef.current(taskRef);
-      backToBoard();
+      onCloseRef.current?.();
     }, false);
   };
 
@@ -266,15 +269,16 @@ export function TaskDetail({
   const head = (children: ComponentChildren) => (
     <div class="task-detail-head">
       {children}
-      <button id="task-detail-close" class="icon-button" type="button"
-              aria-label="Back to the board" onClick={backToBoard}>×</button>
+      {onClose && (
+        <button id="task-detail-close" class="icon-button" type="button"
+                aria-label="Back to the board" onClick={onClose}>×</button>)}
     </div>
   );
 
   // A known deletion is more precise than the resulting 404 load error.
   if (vanished) {
     return (
-      <section class="task-detail" aria-label={"Task " + taskRef}>
+      <section class={panelClass} aria-label={"Task " + taskRef}>
         {head(<h2 id="task-detail-title">{taskRef}</h2>)}
         <p id="task-detail-gone" class="field-hint" role="status">
           {taskRef} has been deleted. Nothing here can be edited any more.
@@ -285,7 +289,7 @@ export function TaskDetail({
 
   if (loadError) {
     return (
-      <section class="task-detail" aria-label={"Task " + taskRef}>
+      <section class={panelClass} aria-label={"Task " + taskRef}>
         {head(<h2 id="task-detail-title">{taskRef}</h2>)}
         <p id="task-detail-error" class="form-error" role="alert">
           Could not load {taskRef}: {loadError}
@@ -297,7 +301,7 @@ export function TaskDetail({
   // Dependencies, activity, and project path require the detail response, not just a live row.
   if (!response || !entry) {
     return (
-      <section class="task-detail" aria-label={"Task " + taskRef}>
+      <section class={panelClass} aria-label={"Task " + taskRef}>
         {head(<h2 id="task-detail-title">{taskRef}</h2>)}
         <p id="task-detail-loading" class="field-hint">Loading {taskRef}…</p>
       </section>
@@ -305,7 +309,7 @@ export function TaskDetail({
   }
 
   return (
-    <section class="task-detail" aria-labelledby="task-detail-title">
+    <section class={panelClass} aria-labelledby="task-detail-title">
       {head([
         <div id="task-detail-ident">
           <h2 id="task-detail-title">{taskRef}</h2>

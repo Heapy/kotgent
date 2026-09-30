@@ -122,6 +122,7 @@ import {
 } from "./state/dialog.ts";
 import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
 import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
+import { pruneWorkspaces } from "./state/layout.ts";
 import {
   PREFS_SUPERSEDED,
   PREFS_UNREADABLE,
@@ -136,6 +137,7 @@ import { TaskDetail } from "./components/TaskDetail.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TerminalPane } from "./components/TerminalPane.tsx";
+import { Workspace } from "./components/Workspace.tsx";
 import {
   DeleteProjectDialog,
   HelpDialog,
@@ -153,6 +155,7 @@ import type { EventsFrame } from "./lib/events.ts";
 import type { Preferences } from "./lib/prefs.ts";
 import type { ReattachEvent, ReattachState } from "./lib/reattach.ts";
 import type { Session, SessionUpdate } from "./lib/sessions.ts";
+import type { ColumnType } from "./lib/workspace.ts";
 import type { Project } from "./lib/tasks.ts";
 import type { CommandPaletteProps } from "./components/CommandPalette.tsx";
 import type { TerminalPaneProps } from "./components/TerminalPane.tsx";
@@ -681,6 +684,7 @@ function App() {
     }
     const ids = new Set(rows.map((s) => s.id));
     pruneSelection(ids);
+    pruneWorkspaces(ids);
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
     pruneReadPosters(ids);
     dispatchReattach(snapshotApplied(ids));
@@ -1289,6 +1293,25 @@ function App() {
     },
   });
 
+  const renderPanel = (type: ColumnType) => {
+    if (type !== "task" || !activeSession) return null;
+    const ref = activeSession.taskRef;
+    if (!ref) {
+      return (
+        <section class="task-detail task-detail-embedded" aria-label="Task">
+          <p id="workspace-task-empty" class="field-hint">This session is not linked to a task.</p>
+          <button id="workspace-link-task" class="button button-small" type="button"
+                  onClick={openLinkTask}>Link a task</button>
+        </section>
+      );
+    }
+    return (
+      <TaskDetail key={ref} taskRef={ref} entry={findTask(ref)} sessions={sessions}
+                  onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
+                  onStartSession={startSessionForTask} onAnnounce={say} onClose={null} />
+    );
+  };
+
   return (
     <>
       {palette && (
@@ -1357,7 +1380,7 @@ function App() {
           // The router only produces SCREEN_TASK for a path with a decoded task id.
           <TaskDetail taskRef={route.id!} entry={openTaskEntry} sessions={sessions}
                          onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
-                         onStartSession={startSessionForTask} onAnnounce={say} />)}
+                         onStartSession={startSessionForTask} onAnnounce={say} onClose={openBoard} />)}
         <p id="board-status" class={"status-line board-status" + (status.error ? " error" : "")}
            role="status" aria-live="polite">{status.text}</p>
       </>) : (
@@ -1375,6 +1398,9 @@ function App() {
           onToggleSidebar={toggleSidebar}
           onOpenPalette={openPalette}
           onTerminalClosed={onTerminalClosed}
+          workspace={activeSession
+            ? <Workspace sessionId={activeSession.id} renderPanel={renderPanel} />
+            : null}
         />
       )}
       {dialog && dialog.kind === "new" && (
