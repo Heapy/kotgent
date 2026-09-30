@@ -18,6 +18,7 @@ import io.kotgent.daemon.CodexUsageCapture
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.JunieSessionScan
 import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.PrivatePromptFiles
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SHELL_AGENT_KIND
@@ -318,6 +319,7 @@ internal class SessionModule(
             },
             taskStore = storage.taskStore.value,
             projectFs = storage.projectFs.value,
+            promptFiles = PrivatePromptFiles("${kotgentHome()}/prompts"),
         )
     }
 

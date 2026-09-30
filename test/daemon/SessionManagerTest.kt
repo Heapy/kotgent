@@ -4,6 +4,7 @@ import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.UnsupportedLaunchOptionException
 import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.core.AgentEvent
@@ -113,8 +114,18 @@ class SessionManagerTest {
         cliPath = "/opt/codex",
     )
 
-    private fun codexLaunchCommand(mode: LaunchMode): String =
-        SessionManager.shellCommand(codexAdapter("/tmp").buildLaunchSpec(mode).command)
+    private fun codexLaunchCommand(mode: LaunchMode, options: LaunchOptions = LaunchOptions()): String =
+        SessionManager.shellCommand(codexAdapter("/tmp").buildLaunchSpec(mode, options).command)
+
+    private class RecordingPromptFiles : PromptFiles {
+        val written = mutableMapOf<SessionId, String>()
+
+        override fun pathFor(sessionId: SessionId): String = "/prompts/${sessionId.value}.md"
+
+        override fun write(sessionId: SessionId, prompt: String) {
+            written[sessionId] = prompt
+        }
+    }
 
     private fun CoroutineScope.codexManager(
         store: EventStore,
@@ -126,6 +137,7 @@ class SessionManagerTest {
         captureModelInBackground: (SessionMeta) -> Unit = {},
         newSessionId: () -> SessionId = { SessionId("codex999") },
         now: () -> Long = { 2_000L },
+        promptFiles: PromptFiles? = null,
     ): SessionManager {
         val builders = mapOf<String, (String) -> AgentAdapter>(CODEX_AGENT_KIND to ::codexAdapter)
         return SessionManager(
@@ -137,6 +149,7 @@ class SessionManagerTest {
             probeCliVersion = probeCliVersion,
             newSessionId = newSessionId,
             now = now,
+            promptFiles = promptFiles,
         )
     }
 
@@ -300,6 +313,133 @@ class SessionManagerTest {
                         emptyMap(), cwd, null, cliVersion = cliVersion, cliPath = cliPath,
                     )
             }
+        }
+    }
+
+    @Test
+    fun startWritesThePromptBeforeLaunchingAndRecordsTheLaunchFactsOnTheRow() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val prompts = RecordingPromptFiles()
+            val parent = SessionId("parent01")
+            val mgr = codexManager(store, tmux, promptFiles = prompts, newSessionId = { SessionId("child01") })
+
+            val started = mgr.start(
+                "codex", "/tmp", prompt = "do the task", parentSessionId = parent, readOnly = true,
+            )
+
+            val options = LaunchOptions(readOnly = true, promptPath = "/prompts/child01.md")
+            assertEquals(mapOf(SessionId("child01") to "do the task"), prompts.written)
+            assertEquals(listOf("child01" to codexLaunchCommand(LaunchMode.New, options)), tmux.newSessionCommands)
+            val row = store.getSession(started.id)!!
+            assertEquals(parent, row.parentSessionId)
+            assertTrue(row.readOnly)
+            assertEquals("/prompts/child01.md", row.promptPath)
+        }
+    }
+
+    @Test
+    fun aStartWithoutLaunchOptionsLeavesTheRowPlain() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val prompts = RecordingPromptFiles()
+            val mgr = codexManager(store, FakeTmux(), promptFiles = prompts, newSessionId = { SessionId("plain01") })
+
+            val _ = mgr.start("codex", "/tmp")
+
+            assertTrue(prompts.written.isEmpty(), "no prompt, no file")
+            val row = store.getSession(SessionId("plain01"))!!
+            assertNull(row.parentSessionId)
+            assertFalse(row.readOnly)
+            assertNull(row.promptPath)
+        }
+    }
+
+    @Test
+    fun anAgentThatRejectsTheOptionsLeavesNoPromptPaneOrRow() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val prompts = RecordingPromptFiles()
+            val builders = mapOf<String, (String) -> AgentAdapter>(
+                SHELL_AGENT_KIND to { cwd -> ShellAdapter(cwd, "/bin/zsh") },
+            )
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), agentFactoryOf(builders),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importableAgentKinds(builders.keys),
+                newSessionId = { SessionId("shellro1") },
+                promptFiles = prompts,
+            )
+
+            assertFailsWith<UnsupportedLaunchOptionException> {
+                mgr.start(SHELL_AGENT_KIND, "/tmp", prompt = "hello")
+            }
+            assertFailsWith<UnsupportedLaunchOptionException> {
+                mgr.start(SHELL_AGENT_KIND, "/tmp", readOnly = true)
+            }
+
+            assertTrue(prompts.written.isEmpty(), "the prompt is written only once the adapter accepts it")
+            assertTrue(tmux.newSessionCommands.isEmpty())
+            assertNull(store.getSession(SessionId("shellro1")))
+        }
+    }
+
+    @Test
+    fun aPromptNeedsAPromptDirectory() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val mgr = codexManager(store, tmux)
+
+            assertFailsWith<PromptFilesUnavailableException> { mgr.start("codex", "/tmp", prompt = "x") }
+            assertTrue(tmux.newSessionCommands.isEmpty())
+        }
+    }
+
+    @Test
+    fun resumeKeepsTheSessionReadOnly() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaac1")
+            val mgr = codexManager(store, tmux, vendorProbe = liveTranscriptProbe)
+            val options = LaunchOptions(readOnly = true, promptPath = "/prompts/ro01.md")
+            store.upsertSession(
+                meta("ro01", SessionState.resumable, providerId = provider)
+                    .copy(agent = CODEX_AGENT_KIND, readOnly = true, promptPath = options.promptPath),
+            )
+
+            val _ = mgr.resume(SessionId("ro01"))
+
+            val command = tmux.newSessionCommands.single().second
+            assertEquals(codexLaunchCommand(LaunchMode.Resume(provider), options), command)
+            assertTrue(command.contains("'--sandbox' 'read-only'"), "a resumed read-only session stays read-only")
+            assertFalse(command.contains("ro01.md"), "the prompt seeded the first conversation only")
+        }
+    }
+
+    @Test
+    fun aCodexUpdateRelaunchBeforeAnyProviderIdReappliesThePromptAndReadOnly() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd10")
+            val oldPane = PaneId("%510")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val mgr = codexManager(store, tmux, probeCliVersion = { _, _ -> "0.157.1" })
+            val options = LaunchOptions(readOnly = true, promptPath = "/prompts/upd10.md")
+            store.upsertSession(
+                codexRow(id.value, SessionState.running, EventSource.system, oldPane)
+                    .copy(readOnly = true, promptPath = options.promptPath),
+            )
+
+            mgr.onTmuxSessionClosed(id)
+
+            val command = tmux.newSessionCommands.single().second
+            assertEquals(codexLaunchCommand(LaunchMode.New, options), command)
+            assertTrue(command.contains("'--sandbox' 'read-only'"))
+            assertTrue(command.contains("/prompts/upd10.md"), "the conversation never started, so it is seeded again")
         }
     }
 

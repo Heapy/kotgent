@@ -2,6 +2,7 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
 import io.kotgent.cli.eprintln
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ControlSignal
@@ -173,6 +174,7 @@ class SessionManager(
     private val rows: Int = DEFAULT_ROWS,
     private val taskStore: TaskStore? = null,
     private val projectFs: ProjectFs? = null,
+    private val promptFiles: PromptFiles? = null,
 ) {
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
 
@@ -209,10 +211,13 @@ class SessionManager(
         name: String? = null,
         tags: List<String> = emptyList(),
         adhd: Boolean = false,
+        prompt: String? = null,
+        parentSessionId: SessionId? = null,
+        readOnly: Boolean = false,
     ): SessionMeta {
         val sessionId = freshSessionId()
         try {
-            return startReserved(sessionId, agentKind, cwd, name, tags, adhd)
+            return startReserved(sessionId, agentKind, cwd, name, tags, adhd, prompt, parentSessionId, readOnly)
         } finally {
             releaseSessionId(sessionId)
         }
@@ -225,11 +230,18 @@ class SessionManager(
         name: String?,
         tags: List<String>,
         adhd: Boolean,
+        prompt: String?,
+        parentSessionId: SessionId?,
+        readOnly: Boolean,
     ): SessionMeta {
         val shortId = sessionId.value
         val tmuxSession = tmux.sessionName(shortId)
         val adapter = agentFactory.create(agentKind, cwd)
-        val spec = adapter.buildLaunchSpec(LaunchMode.New)
+        val prompts = prompt?.let { promptFiles ?: throw PromptFilesUnavailableException() }
+        val options = LaunchOptions(readOnly, prompts?.pathFor(sessionId))
+        // Build first: an adapter that rejects the options must not leave a prompt file behind.
+        val spec = adapter.buildLaunchSpec(LaunchMode.New, options)
+        if (prompt != null) prompts?.write(sessionId, prompt)
         val projectId = resolveAndRegisterProject(cwd)
 
         return withControlLock(sessionId) {
@@ -255,6 +267,9 @@ class SessionManager(
                     updatedAt = ts,
                     projectId = projectId,
                     adhd = adhd,
+                    parentSessionId = parentSessionId,
+                    readOnly = options.readOnly,
+                    promptPath = options.promptPath,
                 )
                 // Publish the row first: hook routing may begin as soon as the pane is registered.
                 store.upsertSession(meta)
@@ -356,11 +371,16 @@ class SessionManager(
         }
     }
 
-    /** A non-last holder keeps its link on purpose, so `undone` restores a holder that blocks a later close. */
+    /**
+     * A non-last holder keeps its link on purpose, so `undone` restores a holder that blocks a later close.
+     * A child session is never a holder: its done neither closes the task nor blocks its parent's close.
+     */
     private suspend fun closeLinkedTask(sessionId: SessionId) {
         val tasks = taskStore ?: return
-        val ref = store.getSession(sessionId)?.taskRef ?: return
-        if (store.sessionsHoldingTask(ref).any { !it.archived }) return
+        val session = store.getSession(sessionId) ?: return
+        if (session.parentSessionId != null) return
+        val ref = session.taskRef ?: return
+        if (store.sessionsHoldingTask(ref).any { !it.archived && it.parentSessionId == null }) return
         val _ = tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
         // Snapshot again after the close, as the board path does, so a holder linked during the
         // transition is released rather than left pointing at a done task.
@@ -401,7 +421,7 @@ class SessionManager(
         val providerId = meta.providerSessionId ?: throw ResumeBlockedException(sessionId)
 
         val adapter = agentFactory.create(meta.agent, meta.cwd)
-        val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId))
+        val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId), meta.launchOptions())
         // Check after agent resolution to preserve its errors, and before opening a terminal that cannot resume.
         if (!vendorProbe.hasTranscript(meta.agent, meta.cwd, providerId)) {
             // A provider deletes a transcript without any signal to the daemon, so this refusal is where it shows.
@@ -469,8 +489,9 @@ class SessionManager(
         val launched = meta.cliVersion ?: return false
         val providerId = meta.providerSessionId
         val mode = if (providerId == null) LaunchMode.New else LaunchMode.Resume(providerId)
-        val spec = runCatching { agentFactory.create(meta.agent, meta.cwd).buildLaunchSpec(mode) }
-            .getOrElse { return relaunchSkipped(meta, it) }
+        val spec = runCatching {
+            agentFactory.create(meta.agent, meta.cwd).buildLaunchSpec(mode, meta.launchOptions())
+        }.getOrElse { return relaunchSkipped(meta, it) }
         val installed = probeCliVersion(meta.agent, spec.cliPath) ?: return false
         if (installed == launched) return false
         val paneId = runCatching { tmux.newSession(meta.id.value, meta.cwd, shellCommand(spec.command), cols, rows) }
@@ -634,6 +655,8 @@ class SessionManager(
             argv.joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" }
     }
 }
+
+private fun SessionMeta.launchOptions(): LaunchOptions = LaunchOptions(readOnly, promptPath)
 
 fun randomShortId(random: Random = Random.Default): String {
     val bytes = random.nextBytes(4)

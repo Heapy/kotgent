@@ -86,6 +86,7 @@ class SessionDoneTaskTest {
         ref: TaskRef,
         archived: Boolean = false,
         state: SessionState = if (archived) SessionState.stopped else SessionState.running,
+        parent: SessionId? = null,
     ) {
         store.upsertSession(
             SessionMeta(
@@ -99,6 +100,7 @@ class SessionDoneTaskTest {
                 createdAt = 500L,
                 updatedAt = 500L,
                 archived = archived,
+                parentSessionId = parent,
             ),
         )
         store.setTaskRef(id, ref)
@@ -202,6 +204,54 @@ class SessionDoneTaskTest {
                 "no task-layer write happens at all",
             )
             assertTrue(tasks.snapshotActivity().isEmpty(), "and the feed stays silent")
+        }
+    }
+
+    @Test
+    fun doneOnAChildArchivesItWithoutClosingTheTask() = runBlocking {
+        withTimeout(20.seconds) {
+            val f = Fixture()
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+            val parent = SessionId("parent1")
+            f.seedNeighbour(parent, ref, archived = true)
+            f.seedNeighbour(neighbour, ref, parent = parent)
+            f.journal.clear()
+
+            mgr.markDone(neighbour)
+            val trace = f.journal.filterNot { it.startsWith("sessions.getSession(") }
+
+            assertEquals(
+                TaskState.in_progress,
+                tasks.snapshotEntries().getValue(ref).state,
+                "a child is the last unarchived session on the task, yet it is not a holder",
+            )
+            val child = f.store.getSession(neighbour)!!
+            assertTrue(child.archived, "the child is archived")
+            assertEquals(SessionState.stopped, child.state, "and stopped")
+            assertEquals(listOf("sessions.setArchived(other1 = true)"), trace, "no task-layer write happens")
+        }
+    }
+
+    @Test
+    fun aLiveChildDoesNotBlockItsParentsClose() = runBlocking {
+        withTimeout(20.seconds) {
+            val f = Fixture()
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+
+            val _ = mgr.start("claude", "/tmp")
+            f.store.setTaskRef(worker, ref)
+            f.seedNeighbour(neighbour, ref, parent = worker)
+
+            mgr.markDone(worker)
+
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the parent closes the task")
+            assertNull(f.store.getSession(neighbour)!!.taskRef, "the child's link is released with the rest")
         }
     }
 
