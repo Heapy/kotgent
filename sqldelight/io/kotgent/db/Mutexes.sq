@@ -1,0 +1,37 @@
+-- Existing databases create these tables in SqliteMutexStore's init; keep the two DDL definitions synchronized.
+CREATE TABLE mutexes (
+  key         TEXT NOT NULL PRIMARY KEY,
+  token       TEXT NOT NULL UNIQUE,
+  session_id  TEXT NOT NULL,
+  acquired_at INTEGER NOT NULL,
+  rev         INTEGER NOT NULL
+);
+
+-- Persisted high-water mark: releasing the newest holding must never let the listing revision move back.
+CREATE TABLE mutex_revision (
+  id  INTEGER NOT NULL PRIMARY KEY,
+  rev INTEGER NOT NULL
+);
+
+selectHoldings:
+SELECT key, token, session_id, acquired_at
+FROM mutexes
+ORDER BY key;
+
+insertHolding:
+INSERT INTO mutexes(key, token, session_id, acquired_at, rev)
+VALUES (?, ?, ?, ?, ?);
+
+deleteHolding:
+DELETE FROM mutexes
+WHERE token = ?;
+
+raiseRevision:
+INSERT INTO mutex_revision(id, rev)
+VALUES (0, ?)
+ON CONFLICT(id) DO UPDATE SET rev = max(mutex_revision.rev, excluded.rev);
+
+revision:
+SELECT coalesce(MAX(rev), 0)
+FROM mutex_revision
+WHERE id = 0;
