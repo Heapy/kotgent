@@ -22,6 +22,8 @@ import io.kotgent.daemon.PrivatePromptFiles
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SHELL_AGENT_KIND
+import io.kotgent.daemon.SessionEndListener
+import io.kotgent.daemon.SessionEndListeners
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.daemon.VendorStoreProbe
@@ -42,6 +44,7 @@ import io.kotgent.push.VapidTokenCache
 import io.kotgent.push.vapidSubject
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
+import io.kotgent.store.SqliteMutexStore
 import io.kotgent.store.SqliteTaskStore
 import io.kotgent.store.SqliteUsageStore
 import io.kotgent.store.SqliteNotificationStore
@@ -253,6 +256,21 @@ internal class SessionModule(
 
     val idCapture by bean { ProviderIdCapture(storage.eventStore.value, background.value) }
 
+    // Its session-end and lease workers run in the background scope, which closes before the database.
+    val mutexes by bean {
+        SqliteMutexStore(
+            storage.driver.value,
+            background.value,
+            onError = { failure -> eprintln("kotgent daemon: mutex update failed: ${failure.message}") },
+        )
+    }
+
+    val sessionEnds by bean {
+        SessionEndListeners(
+            onError = { failure -> eprintln("kotgent daemon: session-end listener failed: ${failure.message}") },
+        ).also { it.add(SessionEndListener(mutexes.value::sessionEnded)) }
+    }
+
     val codexUsageCapture by bean {
         CodexUsageCapture(
             scope = background.value,
@@ -320,9 +338,11 @@ internal class SessionModule(
             taskStore = storage.taskStore.value,
             projectFs = storage.projectFs.value,
             promptFiles = PrivatePromptFiles("${kotgentHome()}/prompts"),
+            onSessionEnded = sessionEnds.value::fire,
         )
     }
 
+    // Firing for every dead session at startup is what drops holdings whose session died while the daemon was down.
     val reconciler by bean {
         Reconciler(
             tmux.value,
@@ -331,6 +351,7 @@ internal class SessionModule(
             panes.value,
             taskStore = storage.taskStore.value,
             projectFs = storage.projectFs.value,
+            onSessionEnded = sessionEnds.value::fire,
         )
     }
 

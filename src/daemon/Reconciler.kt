@@ -60,6 +60,7 @@ class Reconciler(
     private val now: () -> Long = ::daemonEpochMillis,
     private val taskStore: TaskStore? = null,
     private val projectFs: ProjectFs? = null,
+    private val onSessionEnded: (SessionId) -> Unit = {},
 ) {
     suspend fun reconcile(): ReconcileResult {
         val sessions = store.listSessions()
@@ -94,7 +95,7 @@ class Reconciler(
                     ),
                 )
             }
-            if (livePane != null) livePanes[livePane.paneId] = meta.id
+            if (livePane != null) livePanes[livePane.paneId] = meta.id else onSessionEnded(meta.id)
             reconciled.add(ReconciledSession(meta.id, meta.state, newState, paneAlive))
         }
 

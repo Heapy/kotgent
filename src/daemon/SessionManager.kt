@@ -175,6 +175,7 @@ class SessionManager(
     private val taskStore: TaskStore? = null,
     private val projectFs: ProjectFs? = null,
     private val promptFiles: PromptFiles? = null,
+    private val onSessionEnded: (SessionId) -> Unit = {},
 ) {
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
 
@@ -472,6 +473,8 @@ class SessionManager(
 
         if (!paneAlive) meta.paneId?.let { registry.unregister(it) }
         if (newState != meta.state) persistDerivedState(meta, newState, EventSource.liveness)
+        // A SessionEnd hook may already have written the final state, so the pane is the only signal.
+        if (!paneAlive) onSessionEnded(sessionId)
     }
 
     private fun isPaneAlive(tmuxSession: String): Boolean =
@@ -627,6 +630,7 @@ class SessionManager(
             throw e
         }
         meta.paneId?.let { registry.unregister(it) }
+        onSessionEnded(sessionId)
     }
 
     private suspend fun persistDerivedState(meta: SessionMeta, state: SessionState, source: EventSource) {
