@@ -118,7 +118,8 @@ class WorkspaceTest {
             val number = { key: String -> (strip[key] as Number).toDouble() }
             assertTrue(number("scrollWidth") > number("clientWidth"), "the tab strip overflows: $strip")
             assertEquals("auto", strip["overflowX"], "and scrolls sideways")
-            assertEquals(1.0, number("activeInView"), "the new active tab is scrolled into view")
+            assertEquals(1.0, number("activeInView"), "the new active tab is scrolled into view: $strip")
+            assertEquals(1.0, number("addInView"), "and + stays at the strip's end: $strip")
             assertTrue(
                 number("pageScrollWidth") <= number("viewportWidth"),
                 "the page itself never scrolls sideways: $strip",
@@ -234,11 +235,13 @@ private val TAB_STRIP_JS = """
       const active = strip.querySelector(".workspace-tab.active");
       const s = strip.getBoundingClientRect();
       const a = active.getBoundingClientRect();
+      const plus = document.querySelector("#workspace-add-tab").getBoundingClientRect();
       return {
         scrollWidth: strip.scrollWidth,
         clientWidth: strip.clientWidth,
         overflowX: getComputedStyle(strip).overflowX,
-        activeInView: a.left >= s.left - 1 && a.right <= s.right + 1 ? 1 : 0,
+        activeInView: a.left >= s.left - 1 && a.right <= plus.left + 1 ? 1 : 0,
+        addInView: plus.left >= s.left - 1 && plus.right <= s.right + 1 ? 1 : 0,
         pageScrollWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth
       };

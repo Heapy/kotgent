@@ -127,7 +127,7 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
   const tab = activeTabOf(ws);
   const phone = usePhone();
   const columnsRef = useRef<HTMLDivElement>(null);
-  const activeTabRef = useRef<HTMLButtonElement>(null);
+  const activeTabRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
 
   useLayoutEffect(() => {
@@ -196,10 +196,10 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
           const active = entry.id === tab.id;
           const label = tabLabel(entry);
           return (
-            <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")} role="presentation">
+            <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")} role="presentation"
+                 ref={active ? activeTabRef : null}>
               <button type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
                       aria-selected={active ? "true" : "false"} aria-controls="workspace-panel"
-                      ref={active ? activeTabRef : null}
                       onClick={() => selectTab(sessionId, entry.id)}>{label}</button>
               {ws.tabs.length > 1 && (
                 <button type="button" class="workspace-tab-close" aria-label={"Close tab " + label}

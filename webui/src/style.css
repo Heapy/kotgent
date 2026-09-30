@@ -817,6 +817,7 @@ textarea:focus-visible {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 3px 8px;
+  scroll-padding-inline: 8px 32px;
   scrollbar-width: none;
 }
 .workspace-tab {
@@ -854,9 +855,12 @@ textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+/* Stays reachable at the strip's end however far the tabs scroll. */
 .workspace-add-tab.icon-button-small {
   flex: 0 0 auto;
   min-height: 24px;
+  position: sticky;
+  right: 0;
   width: 24px;
 }
 .workspace-switcher {
