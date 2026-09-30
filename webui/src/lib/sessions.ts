@@ -29,6 +29,9 @@ export interface Session {
   taskRef: string | null;
   projectId: string | null;
   adhd: boolean;
+  parentSessionId: string | null;
+  readOnly: boolean;
+  promptPath: string | null;
 }
 
 export interface SessionUpdate {
@@ -63,6 +66,17 @@ export function stateBadge(state: string | null | undefined) {
 
 export function isNeedsAttention(state: string | null | undefined) {
   return state === "needs_approval" || state === "needs_answer";
+}
+
+export function sessionIndex(rows: readonly Session[]): Map<string, Session> {
+  const index = new Map<string, Session>();
+  for (const row of rows) index.set(row.id, row);
+  return index;
+}
+
+export function liveParentOf(session: Session, index: ReadonlyMap<string, Session>): Session | null {
+  const parent = session.parentSessionId ? index.get(session.parentSessionId) : undefined;
+  return parent && parent.id !== session.id && !parent.archived ? parent : null;
 }
 
 export function isLostState(state: string | null | undefined) {

@@ -136,6 +136,24 @@ function drawnHeads(cwd: string | null | undefined, base: string, depth: number)
   };
 }
 
+export interface ParentedRow {
+  id: string;
+  cwd: string;
+  parentSessionId?: string | null;
+}
+
+/** A child is drawn in its topmost known ancestor's folder, so its own cwd never picks a head. */
+export function treeCwd<T extends ParentedRow>(row: T, index: ReadonlyMap<string, T>): string {
+  const seen = new Set<string>([row.id]);
+  let current = row;
+  for (;;) {
+    const parent = current.parentSessionId ? index.get(current.parentSessionId) : undefined;
+    if (!parent || seen.has(parent.id)) return current.cwd;
+    seen.add(parent.id);
+    current = parent;
+  }
+}
+
 /** The paths of the folder heads groupSessions draws above a session in this cwd, outermost first. */
 export function headChain(cwd: string | null | undefined, basePath: string | null | undefined, level: unknown) {
   return drawnHeads(cwd, normalizePath(basePath), groupingDepth(level)).heads.map((head) => head.path);
