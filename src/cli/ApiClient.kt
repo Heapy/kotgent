@@ -91,10 +91,16 @@ class ApiClient(
         name: String? = null,
         tags: List<String> = emptyList(),
         taskRef: String? = null,
+        prompt: String? = null,
+        parentSessionId: String? = null,
+        readOnly: Boolean = false,
     ): SessionDto {
         val body = json.encodeToString(
             StartSessionRequest.serializer(),
-            StartSessionRequest(agent, cwd, name, tags, taskRef),
+            StartSessionRequest(
+                agent, cwd, name, tags, taskRef,
+                prompt = prompt, parentSessionId = parentSessionId, readOnly = readOnly,
+            ),
         )
         val resp = client.post(url("/sessions")) {
             bearer()

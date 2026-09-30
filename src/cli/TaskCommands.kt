@@ -204,6 +204,9 @@ object TaskCommands {
         taskRef: String,
         name: String?,
         tags: List<String>,
+        prompt: String? = null,
+        parentSessionId: String? = null,
+        readOnly: Boolean = false,
     ): Int = withTaskApi { api ->
         val fs = PosixProjectFs()
         runStartWithTaskCommand(
@@ -214,7 +217,9 @@ object TaskCommands {
             name = name,
             tags = tags,
             taskDetail = { r -> api.taskDetail(r) },
-            startSession = { a, c, n, t, r -> api.startSession(a, c, n, t, r) },
+            startSession = { a, c, n, t, r ->
+                api.startSession(a, c, n, t, r, prompt = prompt, parentSessionId = parentSessionId, readOnly = readOnly)
+            },
             // Use the daemon's project walk; stale stored paths fall back to the caller safely.
             resolveProjectId = { dir -> resolveProject(fs, dir)?.id?.value },
             isDirectory = fs::isDirectory,

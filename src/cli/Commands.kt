@@ -48,8 +48,19 @@ object Commands {
         0
     }
 
-    fun start(agent: String, cwd: String, name: String?, tags: List<String>): Int = withApi { api ->
-        val s = api.startSession(agent, cwd, name, tags)
+    fun start(
+        agent: String,
+        cwd: String,
+        name: String?,
+        tags: List<String>,
+        prompt: String? = null,
+        parentSessionId: String? = null,
+        readOnly: Boolean = false,
+    ): Int = withApi { api ->
+        val s = api.startSession(
+            agent, cwd, name, tags,
+            prompt = prompt, parentSessionId = parentSessionId, readOnly = readOnly,
+        )
         println("started ${s.id}  (${s.agent})  ${s.state}  cwd=${s.cwd}  tmux=${s.tmuxSession}")
         0
     }

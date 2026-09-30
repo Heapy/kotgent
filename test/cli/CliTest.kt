@@ -87,6 +87,36 @@ class CliTest {
     }
 
     @Test
+    fun parsesStartWithAPromptFileAParentAndReadOnly() {
+        assertEquals(
+            CliCommand.Start(
+                "codex", "/tmp/p", null, emptyList(),
+                promptFile = "task.md", parent = "a1b2c3d4", readOnly = true,
+            ),
+            parseArgs(
+                listOf("start", "codex", "--prompt-file", "task.md", "/tmp/p", "--read-only", "--parent", "a1b2c3d4"),
+            ),
+        )
+        assertEquals(
+            CliCommand.Start("claude", null, null, emptyList(), task = "local:7", readOnly = true),
+            parseArgs(listOf("start", "claude", "--read-only", "--task", "local:7")),
+        )
+    }
+
+    @Test
+    fun startLaunchFlagsWithoutAValueAreInvalid() {
+        for (flag in listOf("--prompt-file", "--parent")) {
+            assertTrue(parseArgs(listOf("start", "claude", flag)) is CliCommand.Invalid, "$flag alone")
+            assertTrue(parseArgs(listOf("start", "claude", flag, "")) is CliCommand.Invalid, "$flag blank")
+            assertTrue(
+                parseArgs(listOf("start", "claude", flag, "--read-only")) is CliCommand.Invalid,
+                "$flag followed by another flag",
+            )
+        }
+        assertTrue("--prompt-file" in USAGE && "--parent" in USAGE && "--read-only" in USAGE)
+    }
+
+    @Test
     fun theUsageNamesEverySupportedAgentKind() {
         for (agent in listOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND, SHELL_AGENT_KIND)) {
             assertTrue("'$agent'" in USAGE, "the usage names the $agent agent: $USAGE")

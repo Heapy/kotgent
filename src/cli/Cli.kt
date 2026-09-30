@@ -1,8 +1,10 @@
 package io.kotgent.cli
 
+import io.kotgent.core.MAX_SESSION_PROMPT_BYTES
 import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.task.MoveTarget
+import io.kotgent.transport.readFileBytesOrNull
 import io.kotgent.versionLine
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -51,6 +53,9 @@ sealed interface CliCommand {
         val name: String?,
         val tags: List<String>,
         val task: String? = null,
+        val promptFile: String? = null,
+        val parent: String? = null,
+        val readOnly: Boolean = false,
     ) : CliCommand
 
     /**
@@ -102,6 +107,7 @@ val USAGE: String = """
       daemon [--port N]              run the control-plane server (default port $DEFAULT_PORT)
       start <agent> [cwd]            start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to .)
                  [--name N] [--tag T] [--task R]
+                 [--prompt-file F] [--parent ID] [--read-only]
       import <agent> <session-id>    register a session started outside kotgent, then resume it
                  [--cwd D] [--name N] [--tag T] [--no-start]
       list | ls                      list sessions
@@ -236,10 +242,23 @@ private fun parseStart(rest: List<String>): CliCommand {
     val tags = mutableListOf<String>()
     var name: String? = null
     var task: String? = null
+    var promptFile: String? = null
+    var parent: String? = null
+    var readOnly = false
+    fun flagValue(i: Int): String? = rest.getOrNull(i + 1)?.takeUnless { it.isBlank() || it.startsWith("--") }
     var i = 0
     while (i < rest.size) {
         when (val a = rest[i]) {
             "--name" -> { name = rest.getOrNull(i + 1); i += 2 }
+            "--prompt-file" -> {
+                promptFile = flagValue(i) ?: return CliCommand.Invalid("start: --prompt-file requires a path")
+                i += 2
+            }
+            "--parent" -> {
+                parent = flagValue(i) ?: return CliCommand.Invalid("start: --parent requires a session id")
+                i += 2
+            }
+            "--read-only" -> { readOnly = true; i += 1 }
             "--tag" -> { rest.getOrNull(i + 1)?.let { tags.add(it) }; i += 2 }
             "--task" -> {
                 val value = rest.getOrNull(i + 1)?.takeUnless { it.isBlank() || it.startsWith("--") }
@@ -257,7 +276,7 @@ private fun parseStart(rest: List<String>): CliCommand {
     val agent = positionals.getOrNull(0)
     if (agent.isNullOrBlank()) return CliCommand.Invalid("start requires an agent: kotgent start <agent> [cwd]")
     val cwd = positionals.getOrNull(1)
-    return CliCommand.Start(agent, cwd, name, tags, task)
+    return CliCommand.Start(agent, cwd, name, tags, task, promptFile, parent, readOnly)
 }
 
 /**
@@ -706,12 +725,33 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is ProjectArchive -> TaskCommands.projectArchive(command.id, command.archived)
 }
 
-private fun runStart(command: CliCommand.Start): Int = runStartResolving(
-    command,
-    currentWorkingDir(),
-    startWithTask = TaskCommands::startWithTask,
-    start = Commands::start,
-)
+private fun runStart(command: CliCommand.Start): Int {
+    val prompt = command.promptFile?.let { path -> readStartPrompt(path) ?: return 2 }
+    return runStartResolving(
+        command,
+        currentWorkingDir(),
+        startWithTask = { agent, cwd, cwdExplicit, taskRef, name, tags ->
+            TaskCommands.startWithTask(
+                agent, cwd, cwdExplicit, taskRef, name, tags, prompt, command.parent, command.readOnly,
+            )
+        },
+        start = { agent, cwd, name, tags ->
+            Commands.start(agent, cwd, name, tags, prompt, command.parent, command.readOnly)
+        },
+    )
+}
+
+private fun readStartPrompt(path: String): String? {
+    val bytes = readFileBytesOrNull(path, limit = MAX_SESSION_PROMPT_BYTES + 1)
+    return when {
+        bytes == null -> { eprintln("start: cannot read prompt file '$path'"); null }
+        bytes.size > MAX_SESSION_PROMPT_BYTES -> {
+            eprintln("start: prompt file '$path' is larger than $MAX_SESSION_PROMPT_BYTES bytes")
+            null
+        }
+        else -> bytes.decodeToString()
+    }
+}
 
 /**
  * Resolves cwd before sending it to a daemon launched from `/`. [startWithTask] also receives whether cwd
