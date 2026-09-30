@@ -17,6 +17,7 @@ import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalAttachEnv
 import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakeMutexStore
 import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.FakeTaskStore
 import io.kotgent.task.FakeProjectFs
@@ -78,6 +79,8 @@ class Harness(
 
     // Daemon-lifetime work survives listener restarts; terminal bridges use the server-provided scope.
     val background: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val mutexes: FakeMutexStore = FakeMutexStore(background, now = fakes.usage::currentTimeMillis)
 
     private val taskService = TaskService(
         tasks = fakes.taskStore,
@@ -169,6 +172,7 @@ class Harness(
         usageStore = fakes.usage.store,
         usageClock = fakes.usage::currentTimeMillis,
         taskService = taskService,
+        mutexStore = mutexes,
         port = port,
     )
 }

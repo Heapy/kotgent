@@ -45,6 +45,11 @@ sealed interface CallerIdentity {
 suspend fun RoutingContext.resolveCallerIdentity(
     routing: TaskRouting,
     explicitSessionId: String?,
+): CallerIdentity = resolveCallerIdentity(routing.paneLookup, explicitSessionId)
+
+suspend fun RoutingContext.resolveCallerIdentity(
+    paneLookup: suspend (PaneId) -> SessionId?,
+    explicitSessionId: String?,
 ): CallerIdentity {
     // Explicit --session is an escape hatch outside tmux and intentionally wins over a pane header.
     if (explicitSessionId != null) {
@@ -59,7 +64,7 @@ suspend fun RoutingContext.resolveCallerIdentity(
         ?: return CallerIdentity.Rejected(
             "the $TASK_PANE_HEADER header carried '$header', which is not a tmux pane id (%<n>)",
         )
-    val session = routing.paneLookup(pane)
+    val session = paneLookup(pane)
         ?: return CallerIdentity.Rejected(
             "no kotgent session is running in pane '$header' — name one with --session",
         )

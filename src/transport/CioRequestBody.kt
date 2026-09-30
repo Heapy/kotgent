@@ -4,8 +4,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.application
+import io.ktor.server.request.contentLength
+import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.RoutingContext
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -45,3 +48,22 @@ private fun ApplicationCall.closePinnedCioConnection(reason: String) {
 }
 
 private const val PINNED_CIO_CONNECTION_DEADLINE_MILLIS: Long = 1_000L
+
+/** Reads at most [maxBytes] of the request body; a refused body is answered here and yields null. */
+internal suspend fun RoutingContext.receiveBoundedText(maxBytes: Int): String? {
+    val channel = call.receiveChannel()
+    val contentLength = call.request.contentLength()
+    val read = if ((contentLength ?: 0L) > maxBytes) {
+        AuthExchangeBodyRead.TooLarge
+    } else {
+        readAuthExchangeBody(channel, expectedBytes = contentLength, maxBytes = maxBytes)
+    }
+    val [text, status] = when (read) {
+        is AuthExchangeBodyRead.Received -> return read.text
+        AuthExchangeBodyRead.Incomplete -> "incomplete request body" to HttpStatusCode.BadRequest
+        AuthExchangeBodyRead.TooLarge -> "request body too large" to HttpStatusCode.PayloadTooLarge
+        AuthExchangeBodyRead.TimedOut -> "request body timed out" to HttpStatusCode.RequestTimeout
+    }
+    call.respondToUnconsumedBodyAndClose(text, status, channel)
+    return null
+}

@@ -3,7 +3,12 @@ package io.kotgent.cli
 import io.kotgent.core.MAX_SESSION_PROMPT_BYTES
 import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
+import io.kotgent.mutex.MutexKey
+import io.kotgent.mutex.MutexToken
+import io.kotgent.mutex.WaitTicket
 import io.kotgent.task.MoveTarget
+import io.kotgent.transport.MUTEX_WAIT_DEFAULT_SECONDS
+import io.kotgent.transport.MUTEX_WAIT_MAX_SECONDS
 import io.kotgent.transport.readFileBytesOrNull
 import io.kotgent.versionLine
 import kotlinx.cinterop.ByteVar
@@ -137,6 +142,17 @@ val USAGE: String = """
       project delete <uuid>          hide a project everywhere; its file, tasks and sessions stay
       project restore <uuid>         bring a deleted project and its backlog back
 
+      Mutexes serialize work across sessions; only a kotgent session can hold or wait for one,
+      and its end releases them.
+
+      mutex acquire <key>            wait for the mutex; prints 'acquired: <token>' or
+                 [--wait S]          'pending: <ticket>' after --wait seconds (default $MUTEX_WAIT_DEFAULT_SECONDS)
+                 [--ticket T]        continue a pending wait in its place in line
+      mutex release <token>          release a holding
+      mutex run <key> -- <cmd...>    run a command while holding the mutex; it is released when the
+                                     command exits, and the command's exit status is returned
+      mutex list [--json]            held and awaited mutexes
+
       web [--print]                  open the Web UI in a browser (or print the login URL)
       token rotate                   re-mint the master token (old key stops authenticating)
       config get                     print the persisted config (public URL)
@@ -171,6 +187,7 @@ fun parseArgs(args: List<String>, readMessageStdin: () -> String = ::readStdinTe
         "config" -> parseConfig(rest)
         "task" -> parseTask(rest, readMessageStdin)
         "project" -> parseProject(rest)
+        "mutex" -> parseMutex(rest)
         else -> CliCommand.Invalid("unknown command: ${args[0]}")
     }
 }
@@ -342,6 +359,9 @@ private const val AFTER_FLAG = "--after"
 private const val TOP_FLAG = "--top"
 private const val BOTTOM_FLAG = "--bottom"
 private const val ARCHIVED_FLAG = "--archived"
+private const val TICKET_FLAG = "--ticket"
+private const val WAIT_FLAG = "--wait"
+private const val JSON_FLAG = "--json"
 
 private const val STDIN_MESSAGE = "-"
 
@@ -351,6 +371,8 @@ private const val TASK_SUBCOMMANDS =
     "add | list | show | next | claim | comment | review | done | unlink | move | dep | delete"
 
 private const val PROJECT_SUBCOMMANDS = "list | init | delete | restore"
+
+private const val MUTEX_SUBCOMMANDS = "acquire | release | run | list"
 
 private const val SESSION_SUBCOMMANDS = "rename <id> <name>"
 
@@ -685,6 +707,98 @@ private fun parseProjectInit(rest: List<String>): CliCommand {
     return ProjectInit(scan.positionals.getOrNull(0), scan.values[NAME_FLAG])
 }
 
+private fun parseMutex(rest: List<String>): CliCommand {
+    val sub = rest.firstOrNull()
+        ?: return CliCommand.Invalid("mutex requires a subcommand: kotgent mutex $MUTEX_SUBCOMMANDS")
+    val args = rest.drop(1)
+    return when (sub) {
+        "acquire" -> parseMutexAcquire(args)
+        "release" -> parseMutexRelease(args)
+        "run" -> parseMutexRun(args)
+        "list" -> parseMutexList(args)
+        else -> CliCommand.Invalid("mutex: unknown subcommand '$sub' (use: kotgent mutex $MUTEX_SUBCOMMANDS)")
+    }
+}
+
+private fun parseMutexAcquire(rest: List<String>): CliCommand {
+    val command = "mutex acquire"
+    val usage = "kotgent mutex acquire <key> [--ticket T] [--wait SECONDS] [--json] [--session S]"
+    val scan = when (
+        val s = scanFlags(command, rest, valueFlags(TICKET_FLAG, WAIT_FLAG, SESSION_FLAG), setOf(JSON_FLAG))
+    ) {
+        is Scan.Bad -> return CliCommand.Invalid(s.message)
+        is Scan.Ok -> s
+    }
+    val key = scan.positionals.getOrNull(0) ?: return CliCommand.Invalid("$command requires a key: $usage")
+    scan.positionals.getOrNull(1)?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
+    malformedMutexKey(command, key)?.let { return it }
+    val ticket = scan.values[TICKET_FLAG]
+    if (ticket != null && WaitTicket.parseOrNull(ticket) == null) {
+        return CliCommand.Invalid("$command: '$ticket' is not a wait ticket — pass the one a pending result printed")
+    }
+    val rawWait = scan.values[WAIT_FLAG]
+    val wait = if (rawWait == null) {
+        MUTEX_WAIT_DEFAULT_SECONDS
+    } else {
+        rawWait.toIntOrNull()?.takeIf { it in 0..MUTEX_WAIT_MAX_SECONDS }
+            ?: return CliCommand.Invalid("$command: --wait takes whole seconds from 0 to $MUTEX_WAIT_MAX_SECONDS")
+    }
+    return MutexAcquire(key, ticket, wait, JSON_FLAG in scan.switches, scan.values[SESSION_FLAG])
+}
+
+private fun parseMutexRelease(rest: List<String>): CliCommand {
+    val command = "mutex release"
+    val scan = when (val s = scanFlags(command, rest, valueFlags(SESSION_FLAG), setOf(JSON_FLAG))) {
+        is Scan.Bad -> return CliCommand.Invalid(s.message)
+        is Scan.Ok -> s
+    }
+    val token = scan.positionals.getOrNull(0)
+        ?: return CliCommand.Invalid("$command requires the token acquire printed: kotgent mutex release <token>")
+    scan.positionals.getOrNull(1)?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
+    if (MutexToken.parseOrNull(token) == null) return CliCommand.Invalid("$command: '$token' is not a mutex token")
+    return MutexRelease(token, JSON_FLAG in scan.switches, scan.values[SESSION_FLAG])
+}
+
+/** Everything after `--` belongs to the command, so its own flags never reach this parser. */
+private fun parseMutexRun(rest: List<String>): CliCommand {
+    val command = "mutex run"
+    val usage = "kotgent mutex run <key> [--session S] -- <command> [args...]"
+    val separator = rest.indexOf(END_OF_FLAGS)
+    if (separator < 0) return CliCommand.Invalid("$command requires '--' before the command: $usage")
+    val program = rest.drop(separator + 1)
+    if (program.isEmpty() || program[0].isBlank()) {
+        return CliCommand.Invalid("$command requires a command after '--': $usage")
+    }
+    val scan = when (val s = scanFlags(command, rest.take(separator), valueFlags(SESSION_FLAG))) {
+        is Scan.Bad -> return CliCommand.Invalid(s.message)
+        is Scan.Ok -> s
+    }
+    val key = scan.positionals.getOrNull(0) ?: return CliCommand.Invalid("$command requires a key: $usage")
+    scan.positionals.getOrNull(1)?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
+    malformedMutexKey(command, key)?.let { return it }
+    return MutexRun(key, program, scan.values[SESSION_FLAG])
+}
+
+private fun parseMutexList(rest: List<String>): CliCommand {
+    val command = "mutex list"
+    val scan = when (val s = scanFlags(command, rest, switchFlags = setOf(JSON_FLAG))) {
+        is Scan.Bad -> return CliCommand.Invalid(s.message)
+        is Scan.Ok -> s
+    }
+    scan.positionals.firstOrNull()?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
+    return MutexList(JSON_FLAG in scan.switches)
+}
+
+private fun malformedMutexKey(command: String, key: String): CliCommand? =
+    if (MutexKey.parseOrNull(key) != null) {
+        null
+    } else {
+        CliCommand.Invalid(
+            "$command: '$key' is not a mutex key — 1-${MutexKey.MAX_LENGTH} characters: a letter or digit, " +
+                "then letters, digits, '.', '_' or '-'",
+        )
+    }
+
 private fun valueFlags(vararg names: String): Map<String, String> = names.associateWith { it }
 
 private fun messageSpellings(): Map<String, String> = mapOf("-m" to MESSAGE_FLAG, MESSAGE_FLAG to MESSAGE_FLAG)
@@ -723,6 +837,10 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is ProjectList -> TaskCommands.projectList(command.archived)
     is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
     is ProjectArchive -> TaskCommands.projectArchive(command.id, command.archived)
+    is MutexAcquire -> MutexCommands.acquire(command)
+    is MutexRelease -> MutexCommands.release(command)
+    is MutexRun -> MutexCommands.run(command)
+    is MutexList -> MutexCommands.list(command)
 }
 
 private fun runStart(command: CliCommand.Start): Int {

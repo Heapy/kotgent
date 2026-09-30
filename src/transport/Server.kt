@@ -11,6 +11,7 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.push.PushStore
 import io.kotgent.store.EventStore
+import io.kotgent.store.MutexStore
 import io.kotgent.store.NotificationStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.TaskStore
@@ -76,6 +77,7 @@ class KotgentServer(
     private val onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
     private val notificationStore: NotificationStore? = null,
     private val usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    private val mutexStore: MutexStore? = null,
 ) {
     private var terminalRegistry: TerminalRegistry? = null
 
@@ -133,7 +135,10 @@ class KotgentServer(
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
                                 notificationRoutes(eventStore, notificationStore, json)
-                                eventsWs(eventStore, preferencesStore, taskStore, json, usageStore = usageStore, usageClock = usageClock)
+                                eventsWs(
+                                    eventStore, preferencesStore, taskStore, json,
+                                    usageStore = usageStore, usageClock = usageClock, mutexStore = mutexStore,
+                                )
                                 terminalWs(registry, eventStore, json)
                                 val backlog = taskStore
                                 val coordinator = taskService
@@ -146,6 +151,11 @@ class KotgentServer(
                                             paneLookup = sessionManager.paneLookup,
                                             json = json,
                                         ),
+                                    )
+                                }
+                                mutexStore?.let { mutexes ->
+                                    mutexRoutes(
+                                        MutexRouting(mutexes, eventStore, sessionManager.paneLookup, json, usageClock),
                                     )
                                 }
                                 val subscriptions = pushStore
@@ -227,6 +237,7 @@ class KotgentServer(
             onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
             notificationStore: NotificationStore? = null,
             usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+            mutexStore: MutexStore? = null,
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -246,6 +257,7 @@ class KotgentServer(
             onCodexTurnCompleted = onCodexTurnCompleted,
             notificationStore = notificationStore,
             usageClock = usageClock,
+            mutexStore = mutexStore,
             host = host,
             port = port,
         )

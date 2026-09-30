@@ -6,6 +6,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
 import io.kotgent.core.UsageWindowState
 import io.kotgent.store.EventStore
+import io.kotgent.store.MutexStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
@@ -39,6 +40,7 @@ fun Route.eventsWs(
     json: Json = TRANSPORT_JSON,
     usageStore: UsageStore? = null,
     usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    mutexStore: MutexStore? = null,
 ) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
@@ -47,7 +49,7 @@ fun Route.eventsWs(
                 if (sessionParam != null) {
                     streamOneSession(store, json, sessionParam)
                 } else {
-                    streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock)
+                    streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock, mutexStore)
                 }
             }
             try {
@@ -69,6 +71,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
     json: Json,
     usageStore: UsageStore?,
     usageClock: () -> Long,
+    mutexStore: MutexStore?,
 ) {
     val ws = this
     coroutineScope {
@@ -114,6 +117,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
 
         if (taskStore != null) launchTaskStream(ws, taskStore, json)
         if (usageStore != null) launchUsageStream(ws, usageStore, json, usageClock)
+        if (mutexStore != null) launchMutexStream(ws, mutexStore, json, usageClock)
 
         store.sessionUpdates
             .onSubscription {
@@ -156,6 +160,28 @@ private fun CoroutineScope.launchUsageStream(
     launch {
         usage.updates.onSubscription { wake.trySend(Unit) }.collect {
             val _ = wake.trySend(Unit)
+        }
+    }
+}
+
+/** Every frame carries the whole listing, so a conflated flow loses nothing a client needs. */
+private fun CoroutineScope.launchMutexStream(
+    ws: DefaultWebSocketServerSession,
+    mutexes: MutexStore,
+    json: Json,
+    now: () -> Long,
+) {
+    launch {
+        var snapshotSent = false
+        mutexes.listing.collect { listing ->
+            val dto = listing.toDto(now())
+            val frame = if (snapshotSent) {
+                MutexUpdateDto(dto.rev, dto.mutexes, dto.serverNow)
+            } else {
+                MutexesSnapshotDto(dto.rev, dto.mutexes, dto.serverNow)
+            }
+            ws.sendEventsFrame(json, frame)
+            snapshotSent = true
         }
     }
 }
@@ -304,6 +330,14 @@ fun UsageWindowState.toDto(): UsageWindowDto = UsageWindowDto(
     changedAt = changedAt,
     receivedAt = receivedAt,
 )
+
+@Serializable
+@SerialName("mutexes_snapshot")
+data class MutexesSnapshotDto(val rev: Long, val mutexes: List<MutexDto>, val serverNow: Long) : EventsFrame()
+
+@Serializable
+@SerialName("mutex_update")
+data class MutexUpdateDto(val rev: Long, val mutexes: List<MutexDto>, val serverNow: Long) : EventsFrame()
 
 @Serializable
 @SerialName("sessions_snapshot")

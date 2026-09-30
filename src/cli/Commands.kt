@@ -276,6 +276,7 @@ object Commands {
                             usageStore = storage.usageStore.value,
                             notificationStore = storage.notificationStore.value,
                             onCodexTurnCompleted = sessions.codexUsageCapture.value::onTurnCompleted,
+                            mutexStore = sessions.mutexes.value,
                             port = port,
                         )
                     },

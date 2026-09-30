@@ -6,6 +6,7 @@ import io.kotgent.transport.API_PREFIX
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.AcquireMutexRequest
 import io.kotgent.transport.ActivityEntryDto
 import io.kotgent.transport.BacklogEntryDto
 import io.kotgent.transport.CommentRequest
@@ -15,11 +16,15 @@ import io.kotgent.transport.DepsRequest
 import io.kotgent.transport.ImportSessionRequest
 import io.kotgent.transport.LinkRequest
 import io.kotgent.transport.MoveTaskRequest
+import io.kotgent.transport.MutexAcquireResponse
+import io.kotgent.transport.MutexListingDto
+import io.kotgent.transport.MutexReleaseResponse
 import io.kotgent.transport.NextTaskRequest
 import io.kotgent.transport.NextTaskResponse
 import io.kotgent.transport.PatchSessionRequest
 import io.kotgent.transport.PatchTaskRequest
 import io.kotgent.transport.ProjectDto
+import io.kotgent.transport.ReleaseMutexRequest
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
@@ -33,6 +38,7 @@ import io.kotgent.transport.readTokenOrNull
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -309,6 +315,32 @@ class ApiClient(
         taskPost("/projects/${id.encodeURLPathPart()}/restore", "{}"),
     )
 
+    /** One long-poll of up to [waitSeconds]; the request outlives the server's wait by [LONG_POLL_MARGIN_SECONDS]. */
+    suspend fun acquireMutex(key: String, ticket: String?, waitSeconds: Int, sessionId: String?): MutexAcquireResponse {
+        val query = "?wait=$waitSeconds" + (ticket?.let { "&ticket=${it.encodeURLParameter()}" } ?: "")
+        val body = json.encodeToString(AcquireMutexRequest.serializer(), AcquireMutexRequest(sessionId))
+        val resp = client.post(url("/mutexes/${key.encodeURLPathPart()}/acquire$query")) {
+            bearer()
+            paneHeader()
+            contentType(ContentType.Application.Json)
+            setBody(body)
+            timeout {
+                requestTimeoutMillis = longPollTimeoutMillis(waitSeconds)
+                socketTimeoutMillis = longPollTimeoutMillis(waitSeconds)
+            }
+        }
+        ensureSuccess(resp)
+        return json.decodeFromString(MutexAcquireResponse.serializer(), resp.bodyAsText())
+    }
+
+    suspend fun releaseMutex(token: String, sessionId: String?): MutexReleaseResponse {
+        val body = json.encodeToString(ReleaseMutexRequest.serializer(), ReleaseMutexRequest(token, sessionId))
+        return json.decodeFromString(MutexReleaseResponse.serializer(), taskPost("/mutexes/release", body))
+    }
+
+    suspend fun listMutexes(): MutexListingDto =
+        json.decodeFromString(MutexListingDto.serializer(), taskGet("/mutexes"))
+
     override fun close(): Unit = client.close()
 
     private fun url(path: String): String = "$baseUrl${daemonPath(path)}"
@@ -374,6 +406,10 @@ fun defaultHttpClient(): HttpClient = HttpClient(CIO) {
         socketTimeoutMillis = REQUEST_TIMEOUT_MS
     }
 }
+
+fun longPollTimeoutMillis(waitSeconds: Int): Long = (waitSeconds + LONG_POLL_MARGIN_SECONDS) * 1_000L
+
+const val LONG_POLL_MARGIN_SECONDS: Long = 15
 
 private fun MoveTarget.toRequest(): MoveTaskRequest = when (this) {
     is MoveTarget.Top -> MoveTaskRequest(top = true)
