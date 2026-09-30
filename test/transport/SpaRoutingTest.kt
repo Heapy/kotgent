@@ -55,8 +55,9 @@ class SpaRoutingTest {
     private val token = "spa-routing-token"
 
     @Test
-    fun theGrammarAcceptsExactlyTheThreeHistoryApiRoutes() {
+    fun theGrammarAcceptsExactlyTheFourHistoryApiRoutes() {
         assertTrue(isSpaRoute("tasks"), "the board")
+        assertTrue(isSpaRoute("mutexes"), "the mutex list")
         assertTrue(isSpaRoute("tasks/local:42"), "one task's detail view")
         assertTrue(isSpaRoute("s/2f1c9b7e-0000-4000-8000-000000000001"), "one session's terminal")
         assertTrue(isSpaRoute("tasks/anything"), "the {ref} segment is opaque to the grammar")
@@ -69,6 +70,8 @@ class SpaRoutingTest {
         assertFalse(isSpaRoute("tasks/id/missing.js"), "a mistyped asset under /tasks/{ref} still 404s")
         assertFalse(isSpaRoute("tasksy"), "a longer first segment is a different word, not a prefix")
         assertFalse(isSpaRoute("sessions"), "`s` is one segment, not one letter of another")
+        assertFalse(isSpaRoute("mutexes/key"), "the mutex list has no per-key route")
+        assertFalse(isSpaRoute("mutex"), "a shorter first segment is a different word")
         assertFalse(isSpaRoute("lib/nope.js"), "an ordinary asset path")
         assertFalse(isSpaRoute("nope"), "an unknown single segment")
     }
@@ -96,7 +99,7 @@ class SpaRoutingTest {
         val shell = root.bodyAsText()
         assertTrue(shell.contains("kotgent-webui"), "the root serves the built shell")
 
-        for (path in listOf("/tasks", "/tasks/local:42", "/s/2f1c9b7e-0000-4000-8000-000000000001")) {
+        for (path in listOf("/tasks", "/tasks/local:42", "/s/2f1c9b7e-0000-4000-8000-000000000001", "/mutexes")) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "$path is a History-API route and serves the shell")
             val body = resp.bodyAsText()
@@ -117,6 +120,7 @@ class SpaRoutingTest {
             "$API_PREFIX/tasks/local:42",
             "$API_PREFIX/whoami",
             "$API_PREFIX/projects",
+            "$API_PREFIX/mutexes",
         )) {
             val resp = ctx.get(path) { header(HttpHeaders.Authorization, "Bearer $token") }
             assertFalse(
@@ -132,7 +136,7 @@ class SpaRoutingTest {
 
     @Test
     fun everythingOutsideTheGrammarStillGetsACleanNotFound() = withServer { ctx ->
-        for (path in listOf("/s/id/extra", "/tasks/id/missing.js", "/lib/nope.js", "/nope", "/tasks/")) {
+        for (path in listOf("/s/id/extra", "/tasks/id/missing.js", "/lib/nope.js", "/nope", "/tasks/", "/mutexes/")) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.NotFound, resp.status, "$path is not a route and names no file")
             assertEquals("not found", resp.bodyAsText().trim(), "$path answered from the static catch-all")

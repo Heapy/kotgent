@@ -13,8 +13,12 @@ export const SCREEN_TASK = "task";
 
 export const SCREEN_SESSIONS = "sessions";
 
+export const SCREEN_MUTEXES = "mutexes";
+
+export const MUTEXES_PATH = "/mutexes";
+
 export interface Route {
-  screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_SESSIONS;
+  screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_SESSIONS | typeof SCREEN_MUTEXES;
   id: string | null;
 }
 
@@ -45,6 +49,9 @@ export function parseRoute(pathname: unknown, search?: string | null): Route {
   if (segments.length === 1 && segments[0] === SCREEN_TASKS) {
     return { screen: SCREEN_TASKS, id: null };
   }
+  if (segments.length === 1 && segments[0] === SCREEN_MUTEXES) {
+    return { screen: SCREEN_MUTEXES, id: null };
+  }
   if (segments.length === 2 && segments[0] === SCREEN_TASKS) {
     return { screen: SCREEN_TASK, id: decodeSegment(segments[1]!) };
   }
@@ -58,6 +65,7 @@ export function routePath(route: Route | null | undefined) {
   const screen = route ? route.screen : null;
   const id = route && route.id ? String(route.id) : null;
   if (screen === SCREEN_TASKS) return "/tasks";
+  if (screen === SCREEN_MUTEXES) return MUTEXES_PATH;
   if (screen === SCREEN_TASK) return id ? taskPath(id) : "/tasks";
   if (screen === SCREEN_SESSIONS && id) return sessionPath(id);
   return "/";

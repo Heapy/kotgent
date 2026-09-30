@@ -750,6 +750,69 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
   );
 }
 
+export interface ForceReleaseMutexDialogProps {
+  mutexKey: string;
+  holderSessionId: string;
+  holder: string;
+  onRelease: (key: string, holderSessionId: string) => Promise<unknown>;
+  onClose: () => void;
+}
+
+export function ForceReleaseMutexDialog({
+  mutexKey, holderSessionId, holder, onRelease, onClose,
+}: ForceReleaseMutexDialogProps) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => { if (cancelRef.current) cancelRef.current.focus(); }, []);
+
+  const submit = async (event: TargetedEvent<HTMLFormElement, SubmitEvent>) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRelease(mutexKey, holderSessionId);
+    } catch (e) {
+      setError("Could not release the mutex: " + errorMessage(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog id="force-release-dialog" labelledBy="force-release-title" lightDismiss={!busy} onClose={onClose}>
+      <form id="force-release-form" onSubmit={submit}>
+        <div class="dialog-head">
+          <div>
+            <h2 id="force-release-title">Force release mutex</h2>
+            <p>Takes the mutex away from the session that holds it.</p>
+          </div>
+          <button id="force-release-close" class="icon-button" type="button" aria-label="Close"
+            onClick={onClose}>×</button>
+        </div>
+        <p class="dialog-subject">
+          <strong id="force-release-key">{mutexKey}</strong>
+          <span id="force-release-holder">held by {holder}</span>
+        </p>
+        <ul class="dialog-facts">
+          <li>The holding session keeps running, and a command it started under this mutex is not stopped.</li>
+          <li>The first session waiting for it gets the mutex next.</li>
+        </ul>
+        {error && (
+          <p id="force-release-error" class="form-error" role="alert">{error}</p>
+        )}
+        <div class="dialog-actions">
+          <button id="force-release-cancel" class="button button-quiet" type="button"
+            ref={cancelRef} onClick={onClose}>{busy ? "Close" : "Cancel"}</button>
+          <button id="force-release-submit" class="button button-danger" type="submit"
+            disabled={busy}>{busy ? "Releasing…" : "Force release"}</button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
 export interface RestoreProjectDialogProps {
   onRestore: (projectId: string) => Promise<unknown>;
   onClose: () => void;

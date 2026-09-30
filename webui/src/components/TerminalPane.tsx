@@ -12,6 +12,7 @@ import type { Task } from "../lib/tasks.ts";
 import { navigate, taskPath } from "../lib/router.ts";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
 import { KeyBar } from "./KeyBar.tsx";
+import { MutexPills } from "./MutexesScreen.tsx";
 import type { KeyBarProps } from "./KeyBar.tsx";
 import type { TerminalUnicodeModeValue } from "../lib/unicode.ts";
 
@@ -679,6 +680,7 @@ export function TerminalPane({
             {badge ? badge.label : ""}
           </span>
           <HeaderTaskBadge session={session} tasks={tasks} />
+          <MutexPills sessionId={session ? session.id : null} />
         </div>
         <button
           id="palette-button"

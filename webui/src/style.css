@@ -2683,3 +2683,162 @@ button.task-card-title:hover,
 }
 
 .done-list .session-row { opacity: 0.75; }
+
+.mutexes-screen {
+  background: var(--panel);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+.mutexes-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 8px 14px;
+}
+.mutexes-identity {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.mutexes-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.mutexes-summary {
+  color: var(--muted);
+  font-size: 11px;
+}
+.mutexes-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+.mutex-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mutex-row {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.mutex-row.held-long {
+  background: color-mix(in srgb, #d9a441 10%, var(--bg));
+  border-color: color-mix(in srgb, #d9a441 60%, transparent);
+}
+.mutex-row-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px 12px;
+}
+.mutex-key {
+  color: var(--text);
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mutex-holder,
+.mutex-since,
+.mutex-waited { color: var(--muted); }
+.mutex-duration {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.mutex-long-flag {
+  color: #d9a441;
+  font-weight: 600;
+}
+.mutex-force-release { margin-left: auto; }
+.mutex-session {
+  color: var(--text);
+  text-decoration-color: var(--border);
+}
+.mutex-session:hover { color: var(--accent); }
+.mutex-waiters {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  gap: 4px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
+.mutex-waiter {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.mutex-position {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.mutex-waiter[data-granted] .mutex-waited { color: var(--accent); }
+#force-release-holder {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mutex-pills {
+  display: inline-flex;
+  flex: 0 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.mutex-pill {
+  background: var(--row-hover);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  flex: 0 1 auto;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  max-width: 140px;
+  overflow: hidden;
+  padding: 0 6px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mutex-pill[data-kind="waiting"] { color: var(--muted); }
+.mutex-pill:hover { border-color: var(--accent); }
+.mutex-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .mutexes-screen {
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+  }
+  .mutexes-head { padding: 6px 10px; }
+  .mutexes-body { padding: 10px; }
+  .mutex-force-release { margin-left: 0; }
+  .mutex-pill { max-width: 96px; }
+}

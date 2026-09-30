@@ -14,7 +14,7 @@ import {
 export type CommandActions = Record<
   "interrupt" | "resume" | "attach" | "detach" | "stop" | "done" | "rename" | "copyTmux"
   | "uploadFiles" | "linkSessionTask" | "openSessionTask" | "newSession" | "importSession"
-  | "freeTerminal" | "openSessions" | "openBoard" | "newTask" | "newProject" | "deleteProject"
+  | "freeTerminal" | "openSessions" | "openBoard" | "openMutexes" | "newTask" | "newProject" | "deleteProject"
   | "restoreProject" | "toggleShowDone" | "help" | "phone" | "preferences", () => unknown
 > & { selectSession: (id: string) => unknown };
 
@@ -254,6 +254,14 @@ function generalCommands(onBoard: boolean, projectId: string | null, actions: Co
       hint: "⌘K o",
       disabled: null,
       run: () => (onBoard ? actions.openSessions() : actions.openBoard()),
+    },
+    {
+      id: "general.mutexes", group: "general", chord: null,
+      title: "Open mutexes",
+      subtitle: "shows which session holds or waits for each mutex",
+      hint: null,
+      disabled: null,
+      run: () => actions.openMutexes(),
     },
     {
       id: "general.new-task", group: "general", chord: "w",

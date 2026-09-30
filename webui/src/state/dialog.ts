@@ -15,6 +15,7 @@ export type DialogDescriptor =
   }
   | { kind: "upload" | "rename" | "link-task"; session: Session }
   | { kind: "delete-project"; project: Project }
+  | { kind: "force-release-mutex"; key: string; holderSessionId: string; holder: string }
   | { kind: "prefs" | "restore-project" | "help" | "phone" };
 
 const dialogState = signal<DialogDescriptor | null>(null);

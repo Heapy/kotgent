@@ -64,6 +64,8 @@ import {
   tmuxAttachCommand,
 } from "./lib/sessions.ts";
 import {
+  MUTEXES_PATH,
+  SCREEN_MUTEXES,
   SCREEN_SESSIONS,
   SCREEN_TASK,
   SCREEN_TASKS,
@@ -122,6 +124,7 @@ import {
 } from "./state/dialog.ts";
 import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
 import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
+import { mergeMutexes, mutexes as mutexesSignal, replaceMutexes } from "./state/mutexes.ts";
 import { pruneWorkspaces } from "./state/layout.ts";
 import {
   PREFS_SUPERSEDED,
@@ -135,11 +138,13 @@ import {
 import { Board } from "./components/Board.tsx";
 import { TaskDetail } from "./components/TaskDetail.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
+import { MutexesScreen, sessionLabel } from "./components/MutexesScreen.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TerminalPane } from "./components/TerminalPane.tsx";
 import { Workspace } from "./components/Workspace.tsx";
 import {
   DeleteProjectDialog,
+  ForceReleaseMutexDialog,
   HelpDialog,
   LinkTaskDialog,
   NewSessionDialog,
@@ -150,7 +155,7 @@ import {
   UploadFilesDialog,
 } from "./components/dialogs.tsx";
 
-import type { ApiResponse } from "./lib/api.ts";
+import type { ApiError, ApiResponse } from "./lib/api.ts";
 import type { EventsFrame } from "./lib/events.ts";
 import type { Preferences } from "./lib/prefs.ts";
 import type { ReattachEvent, ReattachState } from "./lib/reattach.ts";
@@ -257,7 +262,7 @@ function deliverRead(id: string, poster: ReadPoster) {
   });
 }
 
-// activeId survives board navigation; only the visible session screen may trigger mark-read.
+// activeId survives board and mutex-list navigation; only the visible session screen may trigger mark-read.
 let sessionViewOnScreen = true;
 
 // Imperative triggers can retry a failed POST even when unread and seq do not change.
@@ -358,7 +363,9 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
-  sessionViewOnScreen = !onBoard;
+  const onMutexes = route.screen === SCREEN_MUTEXES;
+  const sessionView = !onBoard && !onMutexes;
+  sessionViewOnScreen = sessionView;
 
   const openPalette = useCallback((mode: PaletteMode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
@@ -667,12 +674,12 @@ function App() {
     setProjectId(entry.project);
   }, [openTaskRef, tasks, projects]);
 
-  // Returning from the board must retry mark-read even if the session emitted no new frame.
+  // Returning to the session view must retry mark-read even if the session emitted no new frame.
   useEffect(() => {
-    if (onBoard) return;
+    if (!sessionView) return;
     const s = activeSessionSignal.value;
     if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
-  }, [onBoard]);
+  }, [sessionView]);
 
   const applySessionsSnapshot = useCallback((rows: readonly Session[]) => {
     // Reconnect snapshots are authoritative, including deletions, and are also the only attention
@@ -780,6 +787,8 @@ function App() {
     else if (msg.type === "task_removed") dropTask(msg.ref);
     else if (msg.type === "usage_snapshot") replaceUsage(msg.windows, msg.serverNow);
     else if (msg.type === "usage_update") mergeUsageWindow(msg.window, msg.serverNow);
+    else if (msg.type === "mutexes_snapshot") replaceMutexes(msg);
+    else if (msg.type === "mutex_update") mergeMutexes(msg);
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
@@ -1142,6 +1151,10 @@ function App() {
   );
 
   const openBoard = useCallback(() => navigate(routePath({ screen: SCREEN_TASKS, id: null })), []);
+  const openMutexes = useCallback(() => {
+    setDrawerOpen(false);
+    navigate(MUTEXES_PATH);
+  }, []);
   // Preserve selection and attachment when leaving the board; avoid showSession's side effects.
   const openSessions = useCallback(() => {
     const id = activeSessionId.value;
@@ -1245,6 +1258,46 @@ function App() {
     if (selectedProject) openDialog({ kind: "delete-project", project: selectedProject });
   }, [selectedProject]);
   const openRestoreProject = useCallback(() => openDialog({ kind: "restore-project" }), []);
+  const openForceRelease = useCallback((key: string, holderSessionId: string) => {
+    openDialog({
+      kind: "force-release-mutex",
+      key: key,
+      holderSessionId: holderSessionId,
+      holder: sessionLabel(holderSessionId),
+    });
+  }, []);
+
+  // The route releases whoever holds the key, so re-check the confirmed holder before sending. The listing
+  // then moves by its own mutex_update frame, so the answer needs no follow-up read.
+  const forceReleaseMutex = useCallback((key: string, holderSessionId: string) => {
+    const submittedDialog = dialogSignal.value;
+    const holder = mutexesSignal.value?.mutexes.find((entry) => entry.key === key)?.holder ?? null;
+    if (!holder) {
+      closeDialogFrom(submittedDialog);
+      say(key + " was no longer held.");
+      return Promise.resolve();
+    }
+    if (holder.sessionId !== holderSessionId) {
+      return Promise.reject(new Error(key + " is now held by " + sessionLabel(holder.sessionId) +
+        ". Close this dialog and check the list again."));
+    }
+    return runMutation("force-release-mutex", async () => {
+      try {
+        await apiRequest("/mutexes/" + encodeURIComponent(key) + "/force-release", { method: "POST" });
+      } catch (e) {
+        if ((e as ApiError | null)?.status === 404) {
+          closeDialogFrom(submittedDialog);
+          say(key + " was no longer held.");
+          return;
+        }
+        if (dialogSignal.value === submittedDialog) throw e;
+        say("Could not release " + key + ": " + errorMessage(e), true);
+        return;
+      }
+      closeDialogFrom(submittedDialog);
+      say("Released " + key + ".");
+    });
+  }, []);
 
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
@@ -1285,6 +1338,7 @@ function App() {
       preferences: openPrefs,
       openBoard: openBoard,
       openSessions: openSessions,
+      openMutexes: openMutexes,
       newTask: newTask,
       newProject: newProject,
       deleteProject: openDeleteProject,
@@ -1327,7 +1381,7 @@ function App() {
                 onClick={closeDrawer}></button>)}
       {""}
       <Sidebar
-        screen={onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}
+        screen={onBoard ? SCREEN_TASKS : onMutexes ? SCREEN_MUTEXES : SCREEN_SESSIONS}
         sessions={sessions}
         tasks={tasks}
         projects={projects}
@@ -1383,6 +1437,17 @@ function App() {
                          onStartSession={startSessionForTask} onAnnounce={say} onClose={openBoard} />)}
         <p id="board-status" class={"status-line board-status" + (status.error ? " error" : "")}
            role="status" aria-live="polite">{status.text}</p>
+      </>) : onMutexes ? (<>
+        <MutexesScreen
+          drawerOpen={drawerOpen}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleDrawer={toggleDrawer}
+          onToggleSidebar={toggleSidebar}
+          onOpenPalette={openPalette}
+          onForceRelease={openForceRelease}
+        />
+        <p id="mutexes-status" class={"status-line board-status" + (status.error ? " error" : "")}
+           role="status" aria-live="polite">{status.text}</p>
       </>) : (
         <TerminalPane
           session={activeSession}
@@ -1431,6 +1496,10 @@ function App() {
                                   ? tasks.filter((task) => task.project === dialog.project.id).length
                                   : null}
                                 onDelete={removeProject} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "force-release-mutex" && (
+        <ForceReleaseMutexDialog mutexKey={dialog.key} holderSessionId={dialog.holderSessionId}
+                                 holder={dialog.holder}
+                                 onRelease={forceReleaseMutex} onClose={closeDialog} />)}
       {dialog && dialog.kind === "restore-project" && (
         <RestoreProjectDialog onRestore={bringBackProject} onClose={closeDialog} />)}
       {dialog && dialog.kind === "help" && (<HelpDialog onClose={closeDialog} />)}

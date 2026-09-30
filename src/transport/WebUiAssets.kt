@@ -9,7 +9,7 @@ fun isSpaRoute(rel: String): Boolean {
     val segments = rel.split('/')
     if (segments.any { it.isEmpty() }) return false
     return when (segments.size) {
-        1 -> segments[0] == SPA_TASKS_SEGMENT
+        1 -> segments[0] == SPA_TASKS_SEGMENT || segments[0] == SPA_MUTEXES_SEGMENT
         2 -> segments[0] == SPA_TASKS_SEGMENT || segments[0] == SPA_SESSION_SEGMENT
         else -> false
     }
@@ -18,3 +18,5 @@ fun isSpaRoute(rel: String): Boolean {
 private const val SPA_TASKS_SEGMENT: String = "tasks"
 
 private const val SPA_SESSION_SEGMENT: String = "s"
+
+private const val SPA_MUTEXES_SEGMENT: String = "mutexes"
