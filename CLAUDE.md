@@ -163,6 +163,21 @@ the common workflow and links to those guides; implementation invariants belong 
   resolved probe; among pending mutations only the control actions `affectsAttachment` names do. A
   candidate whose row is not alive is retired: stop cancels before the POST, and the pane dies before the
   answer, so the close lands after the cancel.
+- `TerminalPane` owns one `#terminal-host` element, one xterm and one upstream attach for the attached
+  session; xterm keeps `scrollback: 0` because history lives in tmux. A workspace `TerminalSlot` claims the
+  host by moving that element; with no slot mounted it is parked hidden and keeps its socket and buffer.
+  A parked host never fits and never sends a resize frame; showing it fits and reports exactly once, and a
+  fit does not report again through xterm's `onResize`. The workspace never opens, closes or reattaches a
+  terminal socket: those decisions stay with `lib/reattach.ts` and `attachedId`.
+- Session workspaces (tabs of columns) are device-local. `webui/src/state/layout.ts` is their sole owner
+  under one `localStorage` key; `webui/src/lib/workspace.ts` holds the rules, and every operation returns
+  its input unchanged when it does nothing. A type is unique within a tab, and choosing a held type swaps
+  the two columns. Layouts are pruned only after a full `sessions_snapshot` and capped at 200 by
+  `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`plan`,
+  `files`, `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
+- `TaskDetail` takes `onClose`: the board passes its way back to `/tasks`, a workspace column passes null
+  and renders embedded. The board's floating-overlay CSS is scoped to `#app:has(.board)`, so it never
+  applies to the column.
 - Use `webui/src/lib/refresh.ts` for unversioned sources such as projects. Reads are serial and a
   response overtaken by a later request is discarded. Each read owns its readiness token. A port that
   throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops

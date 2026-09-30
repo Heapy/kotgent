@@ -308,6 +308,10 @@ checkout. The fixture serves Vite's output in `resources/webui/`; run `npm run b
 `./kotlin build`, which links the fixture binary before `./kotlin test`. Playwright supplies its own Node
 driver.
 
+`WorkspaceTest` records the terminal socket's resize frames to prove the workspace's one-xterm slot: a tab
+switch keeps the same socket and xterm element, a parked terminal reports nothing through a viewport
+change, and showing it reports exactly once. Its negative windows wait past the 120 ms refit debounce.
+
 Browser tests that need a module-level probe use `routeWebUiProbe` in `webuitest/test/HarnessFixture.kt`.
 It builds an entry from `webuitest/probes/` with Vite at test time and serves the bundle through Playwright
 routing. Probe code never enters `resources/webui/` or the shipped build.
@@ -408,6 +412,14 @@ Real-device release checklist:
 - The name field with a real mobile keyboard on iOS and Android. It must offer neither autocorrect nor
   automatic capitalisation, so a name is stored exactly as typed.
 - An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
+- The session workspace on a phone: with several tabs, a sideways swipe scrolls the tab strip without
+  scrolling the page or the terminal, and a tap still selects a tab. Switch a two-column tab to its task
+  column and back with the column switcher, then tap the terminal: the software keyboard must open, the
+  key bar must return, and the last terminal row must stay visible above both. Rotate while the terminal
+  is parked in another tab; showing it again must fit the new width without a reconnect.
+- The workspace divider on a tablet: a finger drag and a trackpad drag both resize the columns without
+  scrolling the page or selecting text, and neither column can be dragged narrower than the width that
+  would hide it.
 
 ### Static assets and source checks
 

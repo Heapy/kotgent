@@ -565,6 +565,14 @@ non-exclusive link as `kotgent task claim`, so a `todo` starts and another sessi
 same task. The command palette opens the board with `⌘K o` and its create form with `⌘K w`. Those bare
 paths are deep-linkable and installable, which is why the client-facing API lives under `/api/v1`.
 
+Each session has a **workspace** of tabs under its header, and each tab holds side-by-side columns: the
+terminal and the session's linked task, whose editor is the same one the board opens. `+` adds a tab, a
+column's `⊞` adds the next column type the tab does not hold yet, choosing a type the tab already holds
+swaps the two columns, and the divider between columns drags or moves with the arrow keys. A tab without
+the terminal keeps it attached in the background, so switching back shows the same screen without
+reconnecting. A phone shows one column at a time with a switcher, and a desktop drops columns that would be
+narrower than about 320 px until there is room again. Layouts are remembered per browser, not per daemon.
+
 One action changes daemon state at a time, and the palette says so rather than queueing. While a start,
 an import, a lifecycle action, a rename, a preferences save, a task link, or a project delete or restore
 is in flight, the palette's session commands are disabled and name the flow holding the lock; a form submitted
