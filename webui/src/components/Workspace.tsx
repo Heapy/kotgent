@@ -140,7 +140,7 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sessionId, tab.id]);
 
