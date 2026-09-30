@@ -5,6 +5,8 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchOptions
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.adapter.claude.ClaudeHookConfig
+import io.kotgent.adapter.junie.JunieAdapter
+import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.cli.DUPLICATE_IMPORT_ID_IN_BODY
 import io.kotgent.cli.DaemonPush
 import io.kotgent.cli.startDaemonServer
@@ -12,6 +14,7 @@ import io.kotgent.cli.withStartupCompensation
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.MAX_SESSION_NAME_LENGTH
+import io.kotgent.core.MAX_SESSION_PROMPT_BYTES
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -22,6 +25,7 @@ import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.PromptFiles
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorSessionLocator
@@ -998,6 +1002,104 @@ class TransportTest {
         assertEquals("refactor auth", ctx.getSessions().single { it.id == dto.id }.name, "and reads back the same")
     }
 
+    private class RecordingPromptFiles : PromptFiles {
+        val written = mutableMapOf<SessionId, String>()
+
+        override fun pathFor(sessionId: SessionId): String = "/prompts/${sessionId.value}.md"
+
+        override fun write(sessionId: SessionId, prompt: String) {
+            written[sessionId] = prompt
+        }
+    }
+
+    @Test
+    fun startingAChildWithAPromptReadOnlyRecordsAllThreeOnTheRow() {
+        val prompts = RecordingPromptFiles()
+        withServer(promptFiles = prompts) { ctx ->
+            val parent = TRANSPORT_JSON.decodeFromString(
+                SessionDto.serializer(),
+                ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp"}""").bodyAsText(),
+            )
+
+            val resp = ctx.postBody(
+                "/sessions",
+                """{"agent":"claude","cwd":"/tmp","prompt":"review it","parentSessionId":"${parent.id}","readOnly":true}""",
+            )
+
+            assertEquals(HttpStatusCode.Created, resp.status, "answered ${resp.bodyAsText()}")
+            val child = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+            assertEquals(parent.id, child.parentSessionId)
+            assertTrue(child.readOnly)
+            assertEquals("/prompts/${child.id}.md", child.promptPath)
+            assertEquals(mapOf(SessionId(child.id) to "review it"), prompts.written)
+            val listed = ctx.getSessions().single { it.id == child.id }
+            assertEquals(parent.id, listed.parentSessionId, "the list carries the parent too")
+            assertNull(ctx.getSessions().single { it.id == parent.id }.parentSessionId)
+        }
+    }
+
+    @Test
+    fun startingUnderAnUnknownParentIs400AndStartsNothing() = withServer { ctx ->
+        for (parent in listOf("nosuch01", " ")) {
+            val resp = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","parentSessionId":"$parent"}""")
+
+            assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+            assertTrue(resp.bodyAsText().contains("parent"), "the refusal names the parent: ${resp.bodyAsText()}")
+        }
+        assertEquals(emptyList(), ctx.getSessions(), "no row was written")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched")
+    }
+
+    @Test
+    fun startingWithAnOversizedOrBlankPromptIs400AndStartsNothing() {
+        val prompts = RecordingPromptFiles()
+        withServer(promptFiles = prompts) { ctx ->
+            val oversized = "p".repeat(MAX_SESSION_PROMPT_BYTES + 1)
+            val tooBig = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","prompt":"$oversized"}""")
+            assertEquals(HttpStatusCode.BadRequest, tooBig.status, "answered ${tooBig.bodyAsText()}")
+            assertTrue(
+                tooBig.bodyAsText().contains(MAX_SESSION_PROMPT_BYTES.toString()),
+                "the refusal names the bound: ${tooBig.bodyAsText()}",
+            )
+
+            val blank = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","prompt":"  \n"}""")
+            assertEquals(HttpStatusCode.BadRequest, blank.status, "answered ${blank.bodyAsText()}")
+
+            val atTheBound = "p".repeat(MAX_SESSION_PROMPT_BYTES)
+            val fits = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","prompt":"$atTheBound"}""")
+            assertEquals(HttpStatusCode.Created, fits.status, "a prompt at the bound is accepted")
+
+            assertEquals(1, ctx.getSessions().size, "only the prompt that fits started a session")
+            assertEquals(1, prompts.written.size, "and only its prompt was written")
+        }
+    }
+
+    @Test
+    fun startingAnAgentWithoutLaunchOptionSupportIs400AndStartsNothing() {
+        val prompts = RecordingPromptFiles()
+        withServer(
+            factory = agentFactoryOf(
+                mapOf(
+                    "shell" to { cwd: String -> ShellAdapter(cwd, "/bin/zsh") },
+                    "junie" to { cwd: String -> JunieAdapter(cwd, "/tmp/junie-hooks.json", emptyFlow(), "/opt/junie") },
+                ),
+            ),
+            promptFiles = prompts,
+        ) { ctx ->
+            for (agent in listOf("shell", "junie")) {
+                for (options in listOf(""""readOnly":true""", """"prompt":"hi"""")) {
+                    val resp = ctx.postBody("/sessions", """{"agent":"$agent","cwd":"/tmp",$options}""")
+
+                    assertEquals(HttpStatusCode.BadRequest, resp.status, "$agent $options answered ${resp.bodyAsText()}")
+                    assertTrue(resp.bodyAsText().contains(agent), "the refusal names the agent: ${resp.bodyAsText()}")
+                }
+            }
+            assertEquals(emptyList(), ctx.getSessions(), "no row was written")
+            assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "nothing was launched")
+            assertTrue(prompts.written.isEmpty(), "and no prompt was left behind")
+        }
+    }
+
     @Test
     fun startingASessionFromAReducedScreenInsertsItMarked() = withServer { ctx ->
         val marked = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","adhd":true}""")
@@ -1849,6 +1951,7 @@ class TransportTest {
         locator: VendorSessionLocator = VendorSessionLocator { _, _ -> null },
         productionFactory: Boolean = false,
         pushAssembler: (suspend (EventStore, CoroutineScope) -> DaemonPush?)? = null,
+        promptFiles: PromptFiles? = null,
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40.seconds) {
@@ -1867,6 +1970,7 @@ class TransportTest {
                 sessionLocator = locator,
                 supportedAgentKinds = setOf("claude", "codex"),
                 now = { 1L },
+                promptFiles = promptFiles,
             )
             val ptyFactory = WsFakePtyFactory()
             val bridgeFactory: (String, CoroutineScope) -> TerminalBridge = { id, scope ->

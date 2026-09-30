@@ -1,5 +1,7 @@
 package io.kotgent.transport
 
+import io.kotgent.adapter.UnsupportedLaunchOptionException
+import io.kotgent.core.MAX_SESSION_PROMPT_BYTES
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -80,6 +82,22 @@ fun Route.controlRoutes(
             return@post
         }
         val startName = req.name?.let { validatedName(it, "cannot start session") ?: return@post }
+        val promptProblem = req.prompt?.let(::sessionPromptProblem)
+        if (promptProblem != null) {
+            call.respondText("cannot start session: $promptProblem", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        val parentId = req.parentSessionId?.let { raw ->
+            val parent = sessionId(raw)?.takeIf { store.getSession(it) != null }
+            if (parent == null) {
+                call.respondText(
+                    "cannot start session: no such parent session '$raw'",
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+            parent
+        }
         val requestedTaskRef = req.taskRef?.takeIf { it.isNotBlank() }
         // Refuse every link error before launch so one bad body cannot leave an unlinked live agent.
         var linkTo: TaskRef? = null
@@ -109,8 +127,14 @@ fun Route.controlRoutes(
             }
         }
         val meta = try {
-            sessionManager.start(req.agent, req.cwd, startName, req.tags, req.adhd)
+            sessionManager.start(
+                req.agent, req.cwd, startName, req.tags, req.adhd,
+                prompt = req.prompt, parentSessionId = parentId, readOnly = req.readOnly,
+            )
         } catch (e: UnsupportedAgentException) {
+            call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: UnsupportedLaunchOptionException) {
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         } catch (e: AgentBinaryNotFoundException) {
@@ -341,6 +365,15 @@ private suspend fun RoutingContext.validatedName(raw: String, action: String): S
     return name
 }
 
+private fun sessionPromptProblem(prompt: String): String? {
+    val bytes = prompt.encodeToByteArray().size
+    return when {
+        prompt.isBlank() -> "prompt must not be blank"
+        bytes > MAX_SESSION_PROMPT_BYTES -> "prompt must be at most $MAX_SESSION_PROMPT_BYTES bytes, was $bytes"
+        else -> null
+    }
+}
+
 private fun sessionId(raw: String?): SessionId? =
     raw?.let { runCatching { SessionId(it) }.getOrNull() }
 
@@ -356,6 +389,9 @@ data class StartSessionRequest(
     val tags: List<String> = emptyList(),
     val taskRef: String? = null,
     val adhd: Boolean = false,
+    val prompt: String? = null,
+    val parentSessionId: String? = null,
+    val readOnly: Boolean = false,
 )
 
 @Serializable
@@ -401,6 +437,9 @@ data class SessionDto(
     val taskRef: String? = null,
     val projectId: String? = null,
     val adhd: Boolean = false,
+    val parentSessionId: String? = null,
+    val readOnly: Boolean = false,
+    val promptPath: String? = null,
 )
 
 fun SessionMeta.toDto(): SessionDto = SessionDto(
@@ -428,4 +467,7 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     taskRef = taskRef?.value,
     projectId = projectId?.value,
     adhd = adhd,
+    parentSessionId = parentSessionId?.value,
+    readOnly = readOnly,
+    promptPath = promptPath,
 )
