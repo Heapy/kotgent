@@ -215,6 +215,31 @@ class BoardTest {
         }
 
     @Test
+    fun theBoardTaskDetailStaysAClosableOverlayBesideTheColumns() =
+        onTheBoard("theBoardTaskDetailStaysAClosableOverlayBesideTheColumns") { harness, page ->
+            val columnsBefore = page.locator(".board-columns").boundingBox()
+            page.card("local:3").locator(".task-card-title").click()
+            val detail = page.locator(".task-detail")
+            assertThat(detail).isVisible()
+
+            assertEquals(
+                "absolute",
+                detail.evaluate("el => getComputedStyle(el).position"),
+                "the board's detail floats over the columns; the workspace column is the embedded one",
+            )
+            assertEquals(
+                columnsBefore.width,
+                page.locator(".board-columns").boundingBox().width,
+                0.5,
+                "opening the detail does not squeeze the board",
+            )
+
+            page.locator("#task-detail-close").click()
+            assertThat(detail).hasCount(0)
+            assertThat(page).hasURL(harness.baseUrl + "/tasks")
+        }
+
+    @Test
     fun aHeldDesktopDragScrollsToAHiddenNeighbourAndDropsAfterIt() =
         onTheBoard("aHeldDesktopDragScrollsToAHiddenNeighbourAndDropsAfterIt") { _, page ->
             page.setViewportSize(DESKTOP_WIDTH, DRAG_VIEWPORT_HEIGHT)
