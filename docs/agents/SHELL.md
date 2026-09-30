@@ -19,6 +19,9 @@ Closing a terminal or browser detaches that viewer and leaves the shell running.
 **Resume starts a new login shell in the same working directory.** It does not restore jobs, environment
 changes, or an interactive conversation from the previous process.
 
+Shell sessions do not support `--prompt-file` or `--read-only`; `kotgent start` refuses them. `--parent`
+works as for every agent.
+
 ## Status and limitations
 
 Shell sessions have no provider hooks, model, quota meter, or agent attention notifications. Kotgent

@@ -80,6 +80,15 @@ the common workflow and links to those guides; implementation invariants belong 
 - Folder marks share `ui_preferences.revision`, which is also `PreferencesDialog`'s remount key, so never
   put folder-mark controls inside that dialog: each click would reset it. A mark from another device
   resets an open dialog too; accepted, because one operator does not edit grouping while marking elsewhere.
+- `sessions.parent_session_id`, `read_only` and `prompt_path` are launch facts written only by the INSERT
+  that creates the row. `upsert` keeps the stored values, so no full-row writer, the Reconciler included,
+  can change or clear them. They are not event-log state.
+- A session's prompt lives in a private 0600 file `~/.kotgent/prompts/<sessionId>.md`, written after the
+  adapter accepts the launch options and never rewritten. `resume` and `relaunchAfterUpdate` rebuild
+  `LaunchOptions` from the row: read-only applies to every incarnation, the prompt only to a `New` launch.
+  An adapter rejects an option it does not support, and start answers 400.
+- Claude read-only is `--permission-mode plan`: advisory, not a sandbox. Only Codex `--sandbox read-only`
+  is enforced, and it also blocks network.
 - `MAX_SESSION_NAME_LENGTH` and `normalizeSessionName` bound and normalize start, import and rename
   alike. Trim only there. Creation folds blank to `null` (use the tmux name); rename clears to `""`.
 - New session verbs go under the `session` namespace (`kotgent session rename`), symmetric with `task`
@@ -95,6 +104,8 @@ the common workflow and links to those guides; implementation invariants belong 
   after the close so a link made during it is released too. A non-last holder keeps its link, so `undone`
   restores a blocking holder. `task done` from CLI or board stays unconditional and is the escape hatch
   for a task whose remaining holder is never coming back.
+- A session with a parent is never a task holder: `closeLinkedTask` ignores children, and marking a child
+  done archives it without closing the task.
 
 ## Usage and notifications
 
@@ -247,6 +258,14 @@ the common workflow and links to those guides; implementation invariants belong 
   can still mark there; that is accepted.
   The Done section is never reduced: `doneGroups` and `flatDoneSessions` key on `doneSignature` and
   deliberately exclude `doneSessions`, and `#show-done-toggle` hides when its list is empty.
+- A child session nests under its parent only while that parent is drawn in the same list; the rules live
+  in `webui/src/lib/tree.ts`. Folder grouping and folder marks see a child only through its topmost known
+  ancestor's `cwd` (`treeCwd`), never its own worktree. In ADHD mode a session is listed on its own flag,
+  through a listed live parent, or because it is selected. A listed child of a hidden parent is drawn at
+  the top level naming that parent; one whose parent is archived or gone says "orchestrator finished".
+  The attention section takes only top-level rows, so a nested child's attention shows as its collapsed
+  parent's aggregated badge. Done keeps the tree among archived rows. Which trees are expanded is
+  device-local, collapsed by default, and owned by `webui/src/state/tree.ts`.
 - `SessionRow` selects only on keys aimed at the row itself. Enter on an inner button or link bubbles to
   it, and cancelling that event would select the row instead of activating the control.
 - The routine first-snapshot session count is not announced while the board is on screen: it shares one

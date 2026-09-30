@@ -19,6 +19,19 @@ For versions that support `claude --session-id`, Kotgent allocates the conversat
 Older versions report the id through the `SessionStart` hook. Resume passes the saved conversation id
 to `claude --resume`; it depends on Claude's transcript still being available.
 
+## Start with a prompt or read-only
+
+```shell
+kotgent start claude /path/to/project --prompt-file task.md --read-only
+```
+
+`--prompt-file` copies the file into `~/.kotgent/prompts/<kotgent-session-id>.md`, readable only by you,
+and starts Claude with an instruction to read and follow it. Only the first launch receives it; a resume
+continues the conversation. `--read-only` starts Claude in plan permission mode on every launch and
+resume. Plan mode is advisory, not a sandbox: it asks Claude not to change anything, and you can still
+leave it from the terminal. Both are fixed when the session starts. `--parent <kotgent-session-id>`
+draws the session under that one in the sidebar.
+
 ## Import an existing conversation
 
 Find the provider session id in the `claude --resume` picker or in the transcript filename:

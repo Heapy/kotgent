@@ -400,6 +400,7 @@ kotgent <command> [args]
   install | uninstall           (un)install the per-user launchd or systemd service
   start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to the current dir)
              [--name N] [--tag T] [--task R]
+             [--prompt-file F] [--parent ID] [--read-only]
   import <agent> <session-id>   register a session started outside kotgent, then resume it
              [--cwd D] [--name N] [--tag T] [--no-start]
   list | ls                     list sessions and their states
@@ -446,7 +447,11 @@ kotgent <command> [args]
   fails with an error pointing at `kotgent install`. Both service definitions set the soft open-file
   limit to 1024 for viewers, attached sessions and hook bursts.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the requested agent or login shell in it, and
-  records the session.
+  records the session. `--prompt-file F` gives a new Claude or Codex conversation its first instruction
+  (at most 256 KiB); `--read-only` launches it read-only on every start and resume; `--parent ID` records
+  the session as a child of another one, for example a worker of an orchestrating agent. Prompt and
+  read-only are fixed at start and fail for agents that do not support them; see the
+  [agent guides](#agents).
 - **`import`** brings a conversation you started outside kotgent under its control, with its history
   intact. The import first verifies the provider's on-disk record and registers a `resumable` entry,
   then resumes it in `tmux`; `--no-start` leaves it registered for later. The project directory is
@@ -614,6 +619,14 @@ Turning the mode on with nothing pinned says so and offers the way back. A sessi
 folder shows a dimmed pin that names the folder; clicking it pins the session on its own, so it stays
 listed after the folder is unpinned.
 The Done list ignores the mode entirely.
+
+A session started with `--parent` is drawn indented under its parent behind a **▸ N workers** toggle,
+collapsed by default; whether a tree is expanded is this browser's own setting. Workers stay in their
+parent's folder whatever their own working directory. While collapsed, the toggle counts workers that
+need attention; they are not repeated in the "needs attention" section. In ADHD mode a worker is listed
+when it is pinned, selected or under a listed parent; a listed worker whose parent is hidden is drawn on
+its own and names the parent. A worker whose parent is done says "orchestrator finished". A child session
+never holds its task open: marking it done archives it without closing the task.
 
 The per-browser notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
 `false → true` attention transition or an early weekly quota reset sends a payload-less push. The service

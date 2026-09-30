@@ -31,6 +31,20 @@ a conversation started do not restart. If Kotgent's hooks were left untrusted on
 review** screen, a quit after an update installed elsewhere can restart Codex once; quit again.
 The sidebar shows the CLI version each Codex session was launched with.
 
+## Start with a prompt or read-only
+
+```shell
+kotgent start codex /path/to/project --prompt-file task.md --read-only
+```
+
+`--prompt-file` copies the file into `~/.kotgent/prompts/<kotgent-session-id>.md`, readable only by you,
+and starts Codex with an instruction to read and follow it. Only a new conversation receives it; a resume
+continues the conversation, and an update relaunch before the conversation started repeats it.
+`--read-only` launches Codex with `--sandbox read-only` on every start, resume and update relaunch. Codex
+enforces that sandbox, and it also blocks network access, so commands the agent runs cannot reach the
+Kotgent daemon either. Both are fixed when the session starts. `--parent <kotgent-session-id>` draws the
+session under that one in the sidebar.
+
 ## Import an existing conversation
 
 Find the provider session id in the `codex resume` picker or in the trailing UUID of a rollout filename:

@@ -27,6 +27,9 @@ update.
 When you switch chats inside Junie with `/new` or `/history`, the Kotgent session follows the switch, and
 resume opens the chat you used last. Verified with Junie 26.9.22 and 26.10.5.
 
+Junie sessions do not support `--prompt-file` or `--read-only`; `kotgent start` refuses them. `--parent`
+works as for every agent.
+
 ## Import an existing conversation
 
 Find the provider session id in Junie's `/history` or as a directory under `~/.junie/sessions`, for
