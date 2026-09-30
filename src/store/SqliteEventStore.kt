@@ -99,6 +99,15 @@ class SqliteEventStore private constructor(
         if (!driver.hasColumn("sessions", "adhd")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN adhd INTEGER NOT NULL DEFAULT 0", 0)
         }
+        if (!driver.hasColumn("sessions", "parent_session_id")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", 0)
+        }
+        if (!driver.hasColumn("sessions", "read_only")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0", 0)
+        }
+        if (!driver.hasColumn("sessions", "prompt_path")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN prompt_path TEXT", 0)
+        }
         revCounter = sessions.maxRev().executeAsOne()
 
         driver.execute(null, CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS, 0)
@@ -134,6 +143,9 @@ class SqliteEventStore private constructor(
             task_ref = meta.taskRef?.value,
             project_id = meta.projectId?.value,
             adhd = meta.adhd.toSqliteFlag(),
+            parent_session_id = meta.parentSessionId?.value,
+            read_only = meta.readOnly.toSqliteFlag(),
+            prompt_path = meta.promptPath,
         )
         emitFromRow(meta.id)
     }
@@ -486,6 +498,9 @@ class SqliteEventStore private constructor(
         taskRef = task_ref?.let(TaskRef::parseOrNull),
         projectId = project_id?.let(ProjectId::parseOrNull),
         adhd = adhd != 0L,
+        parentSessionId = parent_session_id?.let(::SessionId),
+        readOnly = read_only != 0L,
+        promptPath = prompt_path,
     )
 
     companion object {

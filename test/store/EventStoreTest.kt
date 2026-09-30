@@ -652,6 +652,72 @@ class EventStoreTest {
     }
 
     @Test
+    fun launchFactsAreWrittenOnceAndSurviveEveryLaterFullRowUpsert() = runBlocking {
+        withTimeout(20.seconds) {
+            val stores = listOf<EventStore>(SqliteEventStore.inMemory(now = { 1L }), FakeEventStore(now = { 1L }))
+            for (store in stores) {
+                val parent = SessionId("lf-parent")
+                val child = SessionId("lf-child")
+                store.upsertSession(meta(parent))
+                store.upsertSession(
+                    meta(child).copy(parentSessionId = parent, readOnly = true, promptPath = "/p/lf-child.md"),
+                )
+                val written = store.getSession(child)!!
+                assertEquals(parent, written.parentSessionId, "${store::class.simpleName}: parent round-trips")
+                assertTrue(written.readOnly, "${store::class.simpleName}: read-only round-trips")
+                assertEquals("/p/lf-child.md", written.promptPath, "${store::class.simpleName}: prompt path round-trips")
+
+                store.upsertSession(meta(child).copy(state = SessionState.resumable))
+
+                store.getSession(child)!!.let { m ->
+                    assertEquals(parent, m.parentSessionId, "${store::class.simpleName}: a row without a parent keeps it")
+                    assertTrue(m.readOnly, "${store::class.simpleName}: a default flag does not clear read-only")
+                    assertEquals("/p/lf-child.md", m.promptPath, "${store::class.simpleName}: the prompt path stays")
+                    assertEquals(SessionState.resumable, m.state, "${store::class.simpleName}: the rest still applies")
+                }
+
+                store.upsertSession(
+                    written.copy(parentSessionId = SessionId("other"), readOnly = false, promptPath = "/elsewhere"),
+                )
+                store.getSession(child)!!.let { m ->
+                    assertEquals(parent, m.parentSessionId, "${store::class.simpleName}: a different parent is ignored")
+                    assertTrue(m.readOnly, "${store::class.simpleName}: read-only cannot be lifted by upsert")
+                    assertEquals("/p/lf-child.md", m.promptPath, "${store::class.simpleName}: nor the prompt moved")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun theInitMigrationAddsLaunchFactsToAnExistingDatabaseWithRows() = runBlocking {
+        withTimeout(20.seconds) {
+            val driver = inMemoryDriver(preArchivedSchema)
+            SqliteEventStore.using(driver, now = { 1L }).upsertSession(meta(SessionId("old01")))
+            driver.execute(null, "ALTER TABLE sessions DROP COLUMN parent_session_id", 0)
+            driver.execute(null, "ALTER TABLE sessions DROP COLUMN read_only", 0)
+            driver.execute(null, "ALTER TABLE sessions DROP COLUMN prompt_path", 0)
+
+            val store = SqliteEventStore.using(driver, now = { 2L })
+            store.getSession(SessionId("old01"))!!.let { m ->
+                assertNull(m.parentSessionId, "an existing row has no parent")
+                assertFalse(m.readOnly, "an existing row is not read-only")
+                assertNull(m.promptPath, "an existing row has no prompt")
+            }
+            val sid = SessionId("new01")
+            store.upsertSession(
+                meta(sid).copy(parentSessionId = SessionId("old01"), readOnly = true, promptPath = "/p/new01.md"),
+            )
+
+            val reopened = SqliteEventStore.using(driver, now = { 3L })
+            reopened.getSession(sid)!!.let { m ->
+                assertEquals(SessionId("old01"), m.parentSessionId)
+                assertTrue(m.readOnly)
+                assertEquals("/p/new01.md", m.promptPath)
+            }
+        }
+    }
+
+    @Test
     fun markReadAdvancesTheCursorAndLeavesEverythingElseAlone() = runBlocking {
         withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 500L })

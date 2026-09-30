@@ -51,8 +51,9 @@ class StaleCursorException(
 interface EventStore {
 
     /**
-     * Preserves createdAt and the operator-owned name, max-merges readCursor, and preserves targeted
-     * task/project values on null input.
+     * Preserves createdAt, the operator-owned name and the launch facts written at creation (parent,
+     * read-only, prompt path), max-merges readCursor, and preserves targeted task/project values on null
+     * input.
      */
     suspend fun upsertSession(
         meta: SessionMeta,

@@ -168,8 +168,8 @@ class FakeEventStore(
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = guarded("upsertSession", meta.id.value) {
         val prior = sessionMetadata[meta.id]
-        // Whole-row writers must not regress read progress or erase the name, the mark and the links
-        // owned by targeted setters.
+        // Whole-row writers must not regress read progress, erase the name, the mark and the links
+        // owned by targeted setters, or change the launch facts written at creation.
         val merged = if (prior != null) {
             meta.copy(
                 name = prior.name,
@@ -178,6 +178,9 @@ class FakeEventStore(
                 taskRef = meta.taskRef ?: prior.taskRef,
                 projectId = meta.projectId ?: prior.projectId,
                 adhd = prior.adhd,
+                parentSessionId = prior.parentSessionId,
+                readOnly = prior.readOnly,
+                promptPath = prior.promptPath,
             )
         } else {
             meta

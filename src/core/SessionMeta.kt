@@ -34,6 +34,10 @@ data class SessionMeta(
     val projectId: ProjectId? = null,
     /** Operator-owned: the session is kept visible in ADHD mode. Upsert must not clear it. */
     val adhd: Boolean = false,
+    /** Written once at creation, like [readOnly] and [promptPath]; upsert never changes them. */
+    val parentSessionId: SessionId? = null,
+    val readOnly: Boolean = false,
+    val promptPath: String? = null,
 )
 
 /**
@@ -41,6 +45,8 @@ data class SessionMeta(
  * code-point bound would be silently overridden by the stricter browser cap.
  */
 const val MAX_SESSION_NAME_LENGTH: Int = 200
+
+const val MAX_SESSION_PROMPT_BYTES: Int = 256 * 1024
 
 /** Applied at every write boundary so a name reads back the same whichever client set it. */
 fun normalizeSessionName(name: String): String = name.trim()
