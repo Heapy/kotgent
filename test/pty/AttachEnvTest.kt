@@ -64,9 +64,12 @@ class AttachEnvTest {
     fun theAttachCommandCarriesIsolationAndForcesUtf8Output() {
         val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")
         assertEquals(
-            listOf("/opt/homebrew/bin/tmux", "-f", "/dev/null", "-u", "-L", "kotgent", "attach", "-t", "kt-abc123"),
+            listOf(
+                "/opt/homebrew/bin/tmux", "-f", "/dev/null", "-u", "-T", "RGB", "-L", "kotgent",
+                "attach", "-t", "kt-abc123",
+            ),
             argv,
-            "the upstream is `tmux -f /dev/null -u -L <socket> attach -t <session>`",
+            "the upstream is `tmux -f /dev/null -u -T RGB -L <socket> attach -t <session>`",
         )
         val attach = argv.indexOf("attach")
         val f = argv.indexOf("-f")
@@ -74,6 +77,9 @@ class AttachEnvTest {
         assertEquals("/dev/null", argv[f + 1], "-f is immediately followed by its value")
         assertTrue(f + 1 < attach, "-f /dev/null is global, before the subcommand")
         assertTrue(argv.indexOf("-u") < attach, "-u is a global flag, before the subcommand")
+        val t = argv.indexOf("-T")
+        assertEquals("RGB", argv[t + 1], "-T declares the browser terminal's 24-bit colour")
+        assertTrue(t in 0..<attach, "-T is a global flag, before the subcommand")
     }
 
     @Test

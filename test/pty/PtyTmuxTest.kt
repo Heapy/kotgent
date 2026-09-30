@@ -110,6 +110,13 @@ class PtyTmuxTest {
                 withTimeout(5.seconds) { a.output.receive() }
                 withTimeout(5.seconds) { b.output.receive() }
                 expect(bridge.subscriberCount() == 2) { "expected 2 subscribers, got ${bridge.subscriberCount()}" }
+                val features = capture(
+                    "${q(tmux.tmuxPath)} -f /dev/null -L $TEST_SOCKET list-clients " +
+                        "-t ${tmux.sessionName(id)} -F '#{client_termfeatures}'",
+                )
+                expect("RGB" in features.split(",")) {
+                    "the upstream attach must keep 24-bit colour, got <$features>"
+                }
 
                 a.write("hello-fanout\n".encodeToByteArray())
                 val fromA = receiveUntil(a, "hello-fanout")

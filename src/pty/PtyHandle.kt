@@ -41,9 +41,11 @@ val ATTACH_FALLBACK_PATH: String = DEFAULT_EXECUTABLE_PATH
 /**
  * `-u` independently forces UTF-8 even if the requested locale is unavailable. Isolation and socket
  * flags are global and must precede attach; isolation matters only if this call starts the server.
+ * `-T RGB` declares xterm.js's 24-bit colour: the attach environment carries no `COLORTERM` and
+ * `xterm-256color` has no RGB capability, so tmux would otherwise reduce apps' colours to 256.
  */
 fun attachUpstreamCommand(tmuxPath: String, socket: String, session: String): List<String> =
-    listOf(tmuxPath) + TMUX_CONFIG_ISOLATION + listOf("-u", "-L", socket, "attach", "-t", session)
+    listOf(tmuxPath) + TMUX_CONFIG_ISOLATION + listOf("-u", "-T", "RGB", "-L", socket, "attach", "-t", session)
 
 /**
  * Empty TERM makes tmux attach exit immediately. LANG is always forced through
