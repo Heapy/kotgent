@@ -17,6 +17,7 @@ linkerOpts.linux = -lutil -ldl
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <spawn.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -151,4 +152,87 @@ static int kotgent_file_times(const char *path, int64_t *modified, int64_t *birt
     *birth = 0;
 #endif
     return 0;
+}
+
+// Spawns through PATH with the caller's stdio, cwd and environment and no other descriptors.
+static int kotgent_spawn_inheriting(int *child, char *const argv[], int *actions_cleanup, int *attr_cleanup) {
+    extern char **environ;
+    *actions_cleanup = 0;
+    *attr_cleanup = 0;
+    posix_spawn_file_actions_t actions;
+    int rc = posix_spawn_file_actions_init(&actions);
+    if (rc) return rc;
+    short flags = 0;
+#ifdef __APPLE__
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+    for (int fd = 0; !rc && fd <= 2; fd++) rc = posix_spawn_file_actions_addinherit_np(&actions, fd);
+#else
+    typedef int (*closefrom_fn)(posix_spawn_file_actions_t *, int);
+    closefrom_fn closefrom_action = (closefrom_fn)dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addclosefrom_np");
+    rc = closefrom_action ? closefrom_action(&actions, 3) : ENOSYS;
+#endif
+    if (rc) {
+        *actions_cleanup = posix_spawn_file_actions_destroy(&actions);
+        return rc;
+    }
+    posix_spawnattr_t attr;
+    rc = posix_spawnattr_init(&attr);
+    if (!rc) {
+        rc = posix_spawnattr_setflags(&attr, flags);
+        if (!rc) rc = posix_spawnp(child, argv[0], &actions, &attr, argv, environ);
+        *attr_cleanup = posix_spawnattr_destroy(&attr);
+    }
+    *actions_cleanup = posix_spawn_file_actions_destroy(&actions);
+    return rc;
+}
+
+// Forwarding happens inside the handler with kill(2) alone, so it stays async-signal-safe whatever the Kotlin
+// runtime is doing. The signal is recorded before the target is read, so one that lands before the child
+// exists is replayed by kotgent_forward_to instead of being lost.
+static volatile sig_atomic_t kotgent_forward_target_pid = 0;
+static volatile sig_atomic_t kotgent_forward_last_signal = 0;
+static const int kotgent_forwarded_signals[3] = { SIGINT, SIGTERM, SIGHUP };
+static struct sigaction kotgent_forward_saved[3];
+static int kotgent_forward_installed[3];
+
+static void kotgent_forward_handler(int signo) {
+    kotgent_forward_last_signal = signo;
+    int pid = kotgent_forward_target_pid;
+    if (pid > 0) kill((pid_t)pid, signo);
+}
+
+// A signal the caller ignores stays ignored, so the child inherits that disposition (nohup keeps working).
+static int kotgent_forward_install(void) {
+    kotgent_forward_target_pid = 0;
+    kotgent_forward_last_signal = 0;
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = kotgent_forward_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    for (int i = 0; i < 3; i++) {
+        kotgent_forward_installed[i] = 0;
+        struct sigaction previous;
+        if (sigaction(kotgent_forwarded_signals[i], (struct sigaction *)0, &previous) != 0) return -1;
+        if (previous.sa_handler == SIG_IGN) continue;
+        if (sigaction(kotgent_forwarded_signals[i], &action, &kotgent_forward_saved[i]) != 0) return -1;
+        kotgent_forward_installed[i] = 1;
+    }
+    return 0;
+}
+
+static void kotgent_forward_to(int pid) {
+    kotgent_forward_target_pid = pid;
+    int pending = kotgent_forward_last_signal;
+    if (pending) kill((pid_t)pid, pending);
+}
+
+static void kotgent_forward_restore(void) {
+    for (int i = 0; i < 3; i++) {
+        if (kotgent_forward_installed[i]) {
+            sigaction(kotgent_forwarded_signals[i], &kotgent_forward_saved[i], (struct sigaction *)0);
+        }
+        kotgent_forward_installed[i] = 0;
+    }
+    kotgent_forward_target_pid = 0;
 }
