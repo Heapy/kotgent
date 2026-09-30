@@ -46,13 +46,20 @@ class Tmux(
     private fun tmux(vararg args: String): ProcessResult =
         ProcessRunner.run(tmuxCommand(tmuxPath, socket, args.toList()))
 
+    /**
+     * A server whose last session just closed answers `no current target` until it exits, which is when
+     * the session-closed hook runs; a missing socket file is reported as a connect error, not as
+     * `no server running`.
+     */
     private fun ProcessResult.isAbsence(): Boolean {
         val e = stderr
         return !isSuccess && (
             "no server running" in e ||
                 "can't find session" in e ||
                 "can't find pane" in e ||
-                "session not found" in e
+                "session not found" in e ||
+                "no current target" in e ||
+                ("error connecting to" in e && "(No such file or directory)" in e)
             )
     }
 

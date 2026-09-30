@@ -350,6 +350,43 @@ class TmuxTest {
     }
 
     @Test
+    fun aLiveServerWithNoSessionsIsAbsenceNotAnError() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(20.seconds) {
+            assertTrue(
+                rawOnTestSocket("start-server", ";", "set-option", "-s", "exit-empty", "off").isSuccess,
+                "could not start a sessionless server",
+            )
+            val probe = rawOnTestSocket("list-panes", "-a")
+            assertTrue(
+                "no current target" in probe.stderr,
+                "the fixture must reproduce the last-session-closed answer, got <${probe.stderr.trim()}>",
+            )
+
+            assertEquals(emptyList(), tmux.listPanes(), "the session-closed hook's pane listing sees no panes")
+            assertEquals("", tmux.capturePane("gone"), "a joiner's seed is empty, not a failed WebSocket")
+            assertFalse(tmux.killSession("gone"), "nothing was there to kill")
+        }
+    }
+
+    @Test
+    fun aMissingSocketFileIsAbsenceNotAnError() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(20.seconds) {
+            val absent = Tmux(socket = "kotgent-test-never-started", tmuxPath = tmux.tmuxPath)
+            val probe = ProcessRunner.run(tmuxCommand(absent.tmuxPath, absent.socket, listOf("list-panes", "-a")))
+            assertTrue(
+                "error connecting to" in probe.stderr && "(No such file or directory)" in probe.stderr,
+                "the fixture must reproduce a missing socket file, got <${probe.stderr.trim()}>",
+            )
+
+            assertEquals(emptyList(), absent.listPanes())
+            assertEquals("", absent.capturePane("gone"))
+            assertFalse(absent.killSession("gone"))
+        }
+    }
+
+    @Test
     fun theUserConfigLeaksWithoutIsolationAndIsSuppressedByIt() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(30.seconds) {
