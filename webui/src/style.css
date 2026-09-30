@@ -467,6 +467,51 @@ textarea:focus-visible {
   text-overflow: ellipsis;
 }
 
+.session-parent {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-branch { margin-bottom: 2px; }
+.tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  margin: 0 var(--list-inset) 0 calc(var(--list-inset) + 14px);
+  padding: 2px 6px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.tree-toggle:hover { color: var(--text); background: var(--row-hover); }
+.tree-toggle:hover .group-chevron { color: var(--text); }
+.tree-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tree-attn {
+  background: var(--attn-bg);
+  color: var(--attn);
+}
+.tree-children {
+  border-left: 1px solid var(--border);
+  margin-left: calc(var(--list-inset) + 14px);
+  padding-left: 3px;
+}
+.tree-children > .session-row,
+.tree-children > .tree-branch > .tree-toggle {
+  margin-left: 0;
+}
+
 .project-list {
   list-style: none;
   margin: 0;

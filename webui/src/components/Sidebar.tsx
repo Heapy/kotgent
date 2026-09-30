@@ -1,9 +1,9 @@
 import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { UsageStrip } from "./UsageStrip.tsx";
-import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.ts";
+import { groupEntries, groupSessions, orderGroupsByRecentChange, treeCwd } from "../lib/paths.ts";
 import type { SessionGroup as SessionGroupData } from "../lib/paths.ts";
-import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.ts";
+import { adhdCoverOf, isPathAdhd, isSessionInAdhd, listedInAdhd } from "../lib/adhd.ts";
 import type { Preferences } from "../lib/prefs.ts";
 import {
   groupingEnabled,
@@ -27,10 +27,14 @@ import {
   byRecentChange,
   displayName,
   isNeedsAttention,
+  sessionIndex,
   sessionSubline,
   stateBadge,
   taskBadge,
 } from "../lib/sessions.ts";
+import { attentionRows, detachedParentLabel, sessionForest, workersLabel } from "../lib/tree.ts";
+import type { SessionNode } from "../lib/tree.ts";
+import { expandedTrees, toggleTree } from "../state/tree.ts";
 import {
   SCREEN_SESSIONS,
   SCREEN_TASKS,
@@ -104,7 +108,25 @@ interface SessionRowProps extends TaskBadgeProps {
   onSelect: (id: string) => void;
   onRestore?: ((id: string) => void) | undefined;
   onMark?: MarkSession | undefined;
-  prefs?: Preferences;
+  prefs?: Preferences | undefined;
+  index?: ReadonlyMap<string, Session> | undefined;
+  parentLabel?: string | null | undefined;
+}
+
+interface TreeProps {
+  tasks: readonly Task[];
+  activeId: string | null;
+  index: ReadonlyMap<string, Session>;
+  expanded: ReadonlySet<string>;
+  onSelect: (id: string) => void;
+  onRestore?: ((id: string) => void) | undefined;
+  onMark?: MarkSession | undefined;
+  prefs?: Preferences | undefined;
+}
+
+interface SessionTreeNodeProps extends TreeProps {
+  node: SessionNode;
+  nested?: boolean;
 }
 
 interface ChevronProps {
@@ -112,9 +134,11 @@ interface ChevronProps {
 }
 
 interface SessionGroupProps {
-  group: SessionGroupData<Session>;
+  group: SessionGroupData<SessionNode>;
   tasks: readonly Task[];
   activeId: string | null;
+  index: ReadonlyMap<string, Session>;
+  expanded: ReadonlySet<string>;
   collapsedGroups: Set<string>;
   onSelect: (id: string) => void;
   onToggle: (path: string) => void;
@@ -314,9 +338,9 @@ function TaskBadge({ session, tasks }: TaskBadgeProps) {
   );
 }
 
-// A session under a marked folder head is listed without its own mark. Its pin says so, instead of offering
-// to add something that is already in, and a click gives it a mark that outlives the folder's.
-function adhdPinState(session: Session, prefs: Preferences) {
+// A session under a marked folder head or a pinned parent is listed without its own mark. Its pin says so,
+// instead of offering to add something that is already in, and a click gives it a mark that outlives that one.
+function adhdPinState(session: Session, prefs: Preferences, index: ReadonlyMap<string, Session> | undefined) {
   const name = displayName(session);
   if (session.adhd === true) {
     return {
@@ -326,21 +350,24 @@ function adhdPinState(session: Session, prefs: Preferences) {
       title: "In ADHD mode — click to remove",
     };
   }
-  const folder = adhdFolderOf(session.cwd, prefs);
-  if (folder !== null) {
+  const cover = adhdCoverOf(session, prefs, index);
+  if (cover !== null) {
+    const through = cover.parent ? displayName(cover.parent) : cover.folder;
     return {
       cls: " covered",
       on: true,
-      label: "Pin " + name + " on its own; it is already in ADHD mode through " + folder,
-      title: "In ADHD mode through " + folder + " — click to pin it on its own",
+      label: "Pin " + name + " on its own; it is already in ADHD mode through " + through,
+      title: "In ADHD mode through " + through + " — click to pin it on its own",
     };
   }
   return { cls: "", on: false, label: "Add " + name + " to ADHD mode", title: "Add to ADHD mode" };
 }
 
-function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs }: SessionRowProps) {
+function SessionRow({
+  session, tasks, active, onSelect, onRestore, onMark, prefs, index, parentLabel,
+}: SessionRowProps) {
   const badge = stateBadge(session.state);
-  const pin = onMark && prefs ? adhdPinState(session, prefs) : null;
+  const pin = onMark && prefs ? adhdPinState(session, prefs, index) : null;
   const select = () => onSelect(session.id);
   const onKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLLIElement>) => {
     // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
@@ -366,6 +393,7 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
       <div class="session-main">
         <div class="session-name">{displayName(session)}</div>
         <div class="session-sub">{sessionSubline(session)}</div>
+        {parentLabel && (<div class="session-parent">{parentLabel}</div>)}
         <TaskBadge session={session} tasks={tasks} />
       </div>
       {session.unread > 0 &&
@@ -399,13 +427,51 @@ function Chevron({ collapsed }: ChevronProps) {
   return (<span class="group-chevron" aria-hidden="true">{collapsed ? "▸" : "▾"}</span>);
 }
 
-function groupNeedsAttention(group: SessionGroupData<Session>): boolean {
-  return group.sessions.some((s) => isNeedsAttention(s.state)) ||
+function groupNeedsAttention(group: SessionGroupData<SessionNode>): boolean {
+  return group.sessions.some((node) => isNeedsAttention(node.session.state) || node.attention > 0) ||
     group.children.some(groupNeedsAttention);
 }
 
+function attentionLabel(count: number) {
+  return workersLabel(count) + (count === 1 ? " needs attention" : " need attention");
+}
+
+function SessionTreeNode({ node, nested = false, ...tree }: SessionTreeNodeProps) {
+  const { session, children } = node;
+  const open = tree.expanded.has(session.id);
+  const workers = workersLabel(children.length);
+  const hiddenAttention = !open && node.attention > 0;
+  return (
+    <>
+      <SessionRow session={session} tasks={tree.tasks} active={session.id === tree.activeId}
+                  onSelect={tree.onSelect} onRestore={tree.onRestore} onMark={tree.onMark} prefs={tree.prefs}
+                  index={tree.index} parentLabel={nested ? null : detachedParentLabel(session, tree.index)} />
+      {children.length > 0 && (
+        <li class={"tree-branch" + (open ? " open" : "")} data-parent-id={session.id}>
+          <button
+            type="button"
+            class="tree-toggle"
+            aria-expanded={open ? "true" : "false"}
+            aria-label={(open ? "Hide " : "Show ") + workers + " of " + displayName(session) +
+              (hiddenAttention ? ", " + attentionLabel(node.attention) : "")}
+            onClick={() => toggleTree(session.id)}
+          >
+            <Chevron collapsed={!open} />
+            <span class="tree-count">{workers}</span>
+            {hiddenAttention &&
+              (<span class="pill tree-attn" title={attentionLabel(node.attention)}>{node.attention}</span>)}
+          </button>
+          {open && (
+            <ul class="session-list tree-children">
+              {children.map((child) => (
+                <SessionTreeNode key={child.session.id} node={child} nested={true} {...tree} />))}
+            </ul>)}
+        </li>)}
+    </>);
+}
+
 function SessionGroup({
-  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
+  group, tasks, activeId, index, expanded, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
   onMarkFolder, prefs, done = false,
 }: SessionGroupProps) {
   const folderMarked = isPathAdhd(group.path, prefs.adhdPaths);
@@ -456,15 +522,17 @@ function SessionGroup({
         <ul class="session-list group-contents">
           {groupEntries(group).map((entry) => (entry.session
             ? (
-              <SessionRow key={entry.session.id} session={entry.session} tasks={tasks}
-                             active={entry.session.id === activeId} onSelect={onSelect}
-                             onRestore={onRestore} onMark={onMark} prefs={prefs} />)
+              <SessionTreeNode key={entry.session.session.id} node={entry.session} tasks={tasks}
+                               activeId={activeId} index={index} expanded={expanded} onSelect={onSelect}
+                               onRestore={onRestore} onMark={onMark} prefs={prefs} />)
             : (
               <SessionGroup
                 key={entry.group.path}
                 group={entry.group}
                 tasks={tasks}
                 activeId={activeId}
+                index={index}
+                expanded={expanded}
                 collapsedGroups={collapsedGroups}
                 onSelect={onSelect}
                 onToggle={onToggle}
@@ -639,50 +707,52 @@ export function Sidebar({
   // Until the daemon answers, `adhdPaths` and the grouping are placeholders, so a reduction would drop
   // folder-covered rows.
   const awaitingPins = adhdMode && !onTasks && !prefsReady;
+  const index = useMemo(() => sessionIndex(sessions), [sessions]);
+  const expanded = expandedTrees.value;
   const live = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
   // Everything below renders the reduced list; only the empty states read `live`, so a reduced-to-empty
   // sidebar says why instead of claiming there are no sessions.
   const visible = useMemo(() => {
     if (!adhdMode || onTasks) return live;
-    // The selected session keeps its row, or unmarking it strands the terminal with no row to return to.
-    return live.filter((s) => s.id === activeId || (prefsReady && isSessionInAdhd(s, prefs)));
-  }, [activeId, adhdMode, live, onTasks, prefsReady, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel]);
+    return listedInAdhd(live, index, prefs, activeId, prefsReady);
+  }, [activeId, adhdMode, index, live, onTasks, prefsReady, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel]);
   const nothingPinned = useMemo(
-    () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs)),
-    [live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel],
+    () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs, index)),
+    [index, live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel],
   );
   // Every live frame replaces the sessions array, so the archive derivations below key on this
-  // signature instead: it moves only when an archived row does. The id length keeps it unambiguous.
+  // signature instead: it moves only when an archived row, or the folder its tree is drawn in, does.
+  // Lengths keep it unambiguous.
   const [doneSessions, doneSignature] = useMemo<[Session[], string]>(() => {
     const done: Session[] = [];
     let signature = "";
     for (const session of sessions) {
       if (!session.archived) continue;
       done.push(session);
-      signature += `${session.id.length}:${session.id}:${session.updatedAt}:${session.rev};`;
+      const cwd = treeCwd(session, index);
+      signature += `${session.id.length}:${session.id}:${session.updatedAt}:${session.rev}:${cwd.length}:${cwd};`;
     }
     return [done, signature];
-  }, [sessions]);
-  const attention = useMemo(
-    () => (adhdMode ? [] : visible.filter((s) => isNeedsAttention(s.state))),
-    [adhdMode, visible],
-  );
+  }, [index, sessions]);
+  const liveNodes = useMemo(() => (onTasks ? [] : sessionForest(visible, index)), [index, onTasks, visible]);
+  const attention = useMemo(() => (adhdMode ? [] : attentionRows(liveNodes)), [adhdMode, liveNodes]);
   const grouped = groupingEnabled(prefs);
   const liveGroups = useMemo(
     () => grouped && !onTasks
-      ? groupSessions(visible, prefs.basePath, prefs.groupingLevel)
+      ? groupSessions(liveNodes, prefs.basePath, prefs.groupingLevel)
       : [],
-    [grouped, onTasks, prefs.basePath, prefs.groupingLevel, visible],
+    [grouped, liveNodes, onTasks, prefs.basePath, prefs.groupingLevel],
   );
   const doneGroups = useMemo(
     () => grouped && showDone && !onTasks
-      ? orderGroupsByRecentChange(groupSessions(doneSessions, prefs.basePath, prefs.groupingLevel))
+      ? orderGroupsByRecentChange(
+        groupSessions(sessionForest(byRecentChange(doneSessions), index), prefs.basePath, prefs.groupingLevel))
       : [],
     [doneSignature, grouped, onTasks, prefs.basePath, prefs.groupingLevel, showDone],
   );
   // Live rows keep the daemon's order; the flat archive answers "what did I just finish" instead.
   const flatDoneSessions = useMemo(
-    () => !grouped && showDone && !onTasks ? byRecentChange(doneSessions) : [],
+    () => !grouped && showDone && !onTasks ? sessionForest(byRecentChange(doneSessions), index) : [],
     [doneSignature, grouped, onTasks, showDone],
   );
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
@@ -803,7 +873,8 @@ export function Sidebar({
               {attention.map((s) => (
                 <SessionRow key={s.id} session={s} tasks={tasks}
                                active={s.id === activeId} onSelect={onSelect}
-                               onMark={markSession} prefs={prefs} />
+                               onMark={markSession} prefs={prefs} index={index}
+                               parentLabel={detachedParentLabel(s, index)} />
               ))}
             </ul>
           )}
@@ -834,6 +905,8 @@ export function Sidebar({
                   group={g}
                   tasks={tasks}
                   activeId={activeId}
+                  index={index}
+                  expanded={expanded}
                   collapsedGroups={collapsedGroups}
                   onSelect={onSelect}
                   onToggle={toggleGroup}
@@ -843,10 +916,10 @@ export function Sidebar({
                   prefs={prefs}
                 />
               ))
-            : visible.map((s) => (
-                <SessionRow key={s.id} session={s} tasks={tasks}
-                               active={s.id === activeId} onSelect={onSelect}
-                               onMark={markSession} prefs={prefs} />
+            : liveNodes.map((node) => (
+                <SessionTreeNode key={node.session.id} node={node} tasks={tasks} activeId={activeId}
+                                 index={index} expanded={expanded} onSelect={onSelect}
+                                 onMark={markSession} prefs={prefs} />
               ))}
         </ul>
 
@@ -898,6 +971,8 @@ export function Sidebar({
                     group={g}
                     tasks={tasks}
                     activeId={activeId}
+                    index={index}
+                    expanded={expanded}
                     collapsedGroups={collapsedGroups}
                     onSelect={onSelect}
                     onToggle={toggleGroup}
@@ -906,12 +981,14 @@ export function Sidebar({
                     done={true}
                   />
                 ))
-              : flatDoneSessions.map((s) => (
-                  <SessionRow
-                    key={s.id}
-                    session={s}
+              : flatDoneSessions.map((node) => (
+                  <SessionTreeNode
+                    key={node.session.id}
+                    node={node}
                     tasks={tasks}
-                    active={s.id === activeId}
+                    activeId={activeId}
+                    index={index}
+                    expanded={expanded}
                     onSelect={onSelect}
                     onRestore={onRestore}
                   />
