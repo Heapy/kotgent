@@ -18,6 +18,7 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalAttachEnv
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakeMutexStore
+import io.kotgent.store.MutexStore
 import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.FakeTaskStore
 import io.kotgent.task.FakeProjectFs
@@ -58,6 +59,8 @@ class HarnessContext(
     val fakes: HarnessFakes,
     val port: Int,
     val taskService: TaskService,
+    val mutexes: MutexStore,
+    val background: CoroutineScope,
     private val onRestart: suspend () -> Unit,
 ) {
     suspend fun restart() {
@@ -128,7 +131,7 @@ class Harness(
         val started = withContext(Dispatchers.Default) { buildServer(port = 0).start() }
         server = started
         boundPort = started.port()
-        return HarnessContext(fakes, boundPort, taskService) { restart() }
+        return HarnessContext(fakes, boundPort, taskService, mutexes, background) { restart() }
     }
 
     suspend fun issueTicket(): String = tickets.issue(tokens.current()).value

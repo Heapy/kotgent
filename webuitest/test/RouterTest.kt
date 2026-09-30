@@ -124,6 +124,27 @@ class RouterTest {
         }
     }
 
+    @Test
+    fun theMutexListHasItsOwnAddressAndThePaletteOpensIt() = routerTest("mutexes-path") { base, page ->
+        roundTrip(page, "$base/mutexes") {
+            assertMutexList(page)
+            assertThat(page.locator("#mutexes-empty")).isVisible()
+            assertThat(page).hasURL("$base/mutexes")
+        }
+
+        page.navigate("$base/s/$DEEP_SESSION")
+        assertSessionView(page)
+        page.openPalette()
+        page.runFirstMatch("mutexes", "Open mutexes")
+        assertThat(page).hasURL("$base/mutexes")
+        assertMutexList(page)
+
+        page.goBack(Page.GoBackOptions().setWaitUntil(WaitUntilState.COMMIT))
+        assertThat(page).hasURL("$base/s/$DEEP_SESSION")
+        assertSessionView(page)
+        assertThat(page.locator(TERMINAL_TASK)).hasAttribute("href", TASK_HREF)
+    }
+
 
     private fun routerTest(name: String, block: (String, Page) -> Unit) {
         Harness(DEEP_LINK_SCENARIO).use { harness ->
@@ -147,6 +168,12 @@ class RouterTest {
 
     private fun assertSessionView(page: Page) {
         assertThat(page.locator("#terminal-pane")).isVisible()
+        assertThat(page.locator("main.board")).hasCount(0)
+    }
+
+    private fun assertMutexList(page: Page) {
+        assertThat(page.locator("main.mutexes-screen")).isVisible()
+        assertThat(page.locator("#terminal-pane")).hasCount(0)
         assertThat(page.locator("main.board")).hasCount(0)
     }
 

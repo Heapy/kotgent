@@ -3,6 +3,7 @@ package io.kotgent.webuicheck
 import io.kotgent.webuicheck.scenarios.attentionScenario
 import io.kotgent.webuicheck.scenarios.boardScenarios
 import io.kotgent.webuicheck.scenarios.emptyScenario
+import io.kotgent.webuicheck.scenarios.mutexesScenario
 import io.kotgent.webuicheck.scenarios.restartScenario
 import io.kotgent.webuicheck.scenarios.sessionTreeScenario
 import io.kotgent.webuicheck.scenarios.sessionsMixedScenario
@@ -31,6 +32,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         terminalX10Scenario(),
         usageScenario(),
         workspaceScenario(),
+        mutexesScenario(),
     ) + boardScenarios()
     val registry = LinkedHashMap<String, Scenario>(all.size)
     for (scenario in all) {

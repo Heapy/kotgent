@@ -330,6 +330,13 @@ Install Playwright's advancing clock before navigation, and let all initial snap
 it; freezing it before navigation also freezes the effects being tested. Script, ingress, socket and browser
 coverage is compositional, not evidence of a live long-running provider turn through the assembled feature.
 
+The `mutexes` scenario runs the real mutex coordinator over in-memory holdings on the usage fixture's clock.
+`mutex-acquire <session> <key>` takes a free key; `mutex-wait <session> <key>` queues and keeps a long-poll
+open, as `kotgent mutex run` does, so a release hands the key over; `mutex-release <key>` and
+`mutex-end <session>` release. `MutexesTest` covers force release through the in-app dialog, a holder that
+changes while the operator confirms, terminal-head pills, a cold deep link, a reconnect snapshot, and the
+15-minute highlight by daemon age and then by monotonic time with the page's wall clock hours off.
+
 For early resets, real SQLite tests cover source admission, atomic history, generations, receipt-time
 migration and reopen. Clock-correction tests must include producer-to-receipt delay and unchanged cached
 renders; making capture and receipt clocks equal hides a stuck watermark. A slow-subscriber socket test
