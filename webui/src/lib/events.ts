@@ -5,6 +5,7 @@ import type { Session, SessionUpdate } from "./sessions.ts";
 import type { Task } from "./tasks.ts";
 import type { UsageWindow } from "./usage.ts";
 import type { ServerPreferences } from "./prefs.ts";
+import type { MutexListing } from "./mutexes.ts";
 
 export type EventsFrame =
   | { type: "sessions_snapshot"; sessions: Session[] }
@@ -15,6 +16,7 @@ export type EventsFrame =
   | { type: "task_removed"; ref: string }
   | { type: "usage_snapshot"; windows: UsageWindow[]; serverNow: number }
   | { type: "usage_update"; window: UsageWindow; serverNow: number }
+  | ({ type: "mutexes_snapshot" | "mutex_update" } & MutexListing)
   | ({ type: "preferences_update" } & ServerPreferences);
 
 export interface EventsConnectionOptions extends RefreshTimers {
@@ -34,7 +36,9 @@ export function createEventsConnection({
     schedule, cancel, onFailure,
     run({ isCurrent, complete, fail }) {
       const socket = createSocket(url());
-      const awaiting = new Set<unknown>(["sessions_snapshot", "tasks_snapshot", "usage_snapshot"]);
+      const awaiting = new Set<unknown>([
+        "sessions_snapshot", "tasks_snapshot", "usage_snapshot", "mutexes_snapshot",
+      ]);
       let recovered = false;
       socket.onopen = () => {
         if (!isCurrent()) return;

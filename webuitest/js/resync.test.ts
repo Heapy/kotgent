@@ -192,7 +192,7 @@ function eventsHarness(onFrame: EventsConnectionOptions["onFrame"] = () => {}) {
   });
   const frame = (socket: FakeSocket, type: string) => socket.onmessage!({ data: JSON.stringify({ type }) });
   const snapshot = (socket: FakeSocket) => {
-    for (const type of ["usage_snapshot", "sessions_snapshot", "tasks_snapshot"]) frame(socket, type);
+    for (const type of ["usage_snapshot", "sessions_snapshot", "tasks_snapshot", "mutexes_snapshot"]) frame(socket, type);
   };
   return { ...connection, time, sockets, frame, snapshot, recovered: () => recovered };
 }
@@ -207,7 +207,7 @@ test("socket open and partial snapshots do not complete a refresh; all applied s
   h.frame(socket, "usage_snapshot");
   h.frame(socket, "sessions_snapshot");
   h.time.tick(10_000);
-  assert.equal(socket.closed, 1, "missing task snapshot times out even though the socket opened");
+  assert.equal(socket.closed, 1, "missing task and mutex snapshots time out even though the socket opened");
   h.time.tick(2000);
   const next = h.sockets[1]!;
   next.onopen!();
@@ -215,7 +215,9 @@ test("socket open and partial snapshots do not complete a refresh; all applied s
   assert.equal(h.recovered(), 1);
   h.time.tick(10_000);
   assert.equal(next.closed, 0);
-  assert.deepEqual(applied, ["usage_snapshot", "sessions_snapshot", "usage_snapshot", "sessions_snapshot", "tasks_snapshot"]);
+  assert.deepEqual(applied, [
+    "usage_snapshot", "sessions_snapshot", "usage_snapshot", "sessions_snapshot", "tasks_snapshot", "mutexes_snapshot",
+  ]);
   h.dispose();
 });
 
