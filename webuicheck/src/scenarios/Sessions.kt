@@ -24,6 +24,8 @@ internal fun harnessSession(
     lastSeq: Long = 0,
     readCursor: Long = 0,
     updatedAt: Long = createdAt,
+    parentSessionId: String? = null,
+    archived: Boolean = false,
 ): SessionMeta = SessionMeta(
     id = SessionId(id),
     name = name,
@@ -39,6 +41,8 @@ internal fun harnessSession(
     readCursor = Seq(readCursor),
     createdAt = createdAt,
     updatedAt = updatedAt,
+    archived = archived,
+    parentSessionId = parentSessionId?.let(::SessionId),
 )
 
 internal suspend fun seedSessionRow(fakes: HarnessFakes, meta: SessionMeta) {

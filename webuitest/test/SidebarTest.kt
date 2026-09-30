@@ -1169,7 +1169,177 @@ class SidebarTest {
             assertThat(name).hasText("kt-s-alpha")
         }
     }
+
+    @Test
+    fun workersFoldCollapsedUnderTheirOrchestratorAndStayOpenAcrossAReload() {
+        signedIn(SESSION_TREE_SCENARIO, "sidebar-tree-collapse") { _, _, page ->
+            val toggle = treeToggle(page, "t-orch")
+            assertThat(toggle).hasAttribute("aria-expanded", "false")
+            assertThat(toggle.locator(".tree-count")).hasText("2 workers")
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertSidebarTree(
+                page,
+                """
+                t-orch
+                (2 workers)
+                t-orphan
+                t-solo
+                """.trimIndent(),
+                "a tree starts collapsed, its workers behind the toggle under their orchestrator",
+            )
+
+            toggle.click()
+
+            assertThat(toggle).hasAttribute("aria-expanded", "true")
+            assertThat(page.locator("#session-list .session-row")).hasCount(5)
+            assertSidebarTree(
+                page,
+                """
+                t-orch
+                (2 workers)
+                  t-one
+                  t-two
+                t-orphan
+                t-solo
+                """.trimIndent(),
+                "an expanded orchestrator draws its workers indented under it, whatever their own cwd",
+            )
+            page.waitForFunction("() => localStorage.getItem('kotgent.expandedTrees.v1') === '[\"t-orch\"]'")
+
+            page.reload()
+
+            assertThat(treeToggle(page, "t-orch")).hasAttribute("aria-expanded", "true")
+            assertThat(page.locator("#session-list .session-row[data-id='t-one']")).hasCount(1)
+
+            treeToggle(page, "t-orch").click()
+
+            assertThat(treeToggle(page, "t-orch")).hasAttribute("aria-expanded", "false")
+            assertThat(page.locator("#session-list .session-row[data-id='t-one']")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun aCollapsedOrchestratorCarriesItsWorkersAttentionOutsideTheAttentionSection() {
+        signedIn(SESSION_TREE_SCENARIO, "sidebar-tree-badge") { harness, _, page ->
+            val toggle = treeToggle(page, "t-orch")
+            assertThat(toggle.locator(".tree-attn")).hasText("1")
+            assertThat(toggle).hasAttribute("aria-label", "Show 2 workers of orchestrator, 1 worker needs attention")
+            assertThat(page.locator("#attention-list .session-row")).hasCount(1)
+            assertThat(page.locator("#attention-list .session-row[data-id='t-orphan']")).hasCount(1)
+
+            harness.send("emit t-one needs_answer")
+
+            assertThat(toggle.locator(".tree-attn")).hasText("2")
+            assertThat(page.locator("#attention-num")).hasText("1")
+
+            toggle.click()
+
+            assertThat(toggle.locator(".tree-attn")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row[data-id='t-two'] .badge")).hasText("needs approval")
+            assertThat(page.locator("#attention-list .session-row[data-id='t-two']")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun anOrphanSaysItsOrchestratorFinishedAndTheDoneListKeepsTheTree() {
+        signedIn(SESSION_TREE_SCENARIO, "sidebar-tree-orphan") { harness, _, page ->
+            assertThat(parentLabel(page, "t-orphan")).hasText("orchestrator finished")
+            assertThat(parentLabel(page, "t-solo")).hasCount(0)
+
+            harness.send("done t-one ${SEED_EPOCH_MILLIS + 100}")
+            page.locator("#show-done-toggle").click()
+
+            assertThat(page.locator("#done-list .session-row[data-id='t-one'] .session-parent"))
+                .hasText("under orchestrator")
+
+            harness.send("done t-orch ${SEED_EPOCH_MILLIS + 200}")
+
+            assertThat(parentLabel(page, "t-two")).hasText("orchestrator finished")
+            assertThat(page.locator("#attention-list .session-row[data-id='t-two']")).hasCount(1)
+            val doneToggle = page.locator("#done-list .tree-branch[data-parent-id='t-orch'] > .tree-toggle")
+            assertThat(doneToggle.locator(".tree-count")).hasText("1 worker")
+            doneToggle.click()
+            assertThat(page.locator("#done-list .session-row[data-id='t-one']")).hasCount(1)
+            assertSidebarTree(
+                page,
+                """
+                t-orch
+                (1 worker)
+                  t-one
+                t-finished
+                """.trimIndent(),
+                "the archive nests a finished worker under its finished orchestrator",
+                listSelector = "#done-list",
+            )
+            assertThat(page.locator("#done-list .session-row[data-id='t-one'] .session-parent")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun folderGroupingDrawsWorkersAndOrphansInTheirOrchestratorsFolder() {
+        signedIn(SESSION_TREE_SCENARIO, "sidebar-tree-grouping") { _, _, page ->
+            treeToggle(page, "t-orch").click()
+            configureGrouping(page, basePath = "/", level = 1)
+
+            assertThat(page.locator("#session-list .group-title[title='/repo']")).hasCount(1)
+            assertThat(page.locator("#session-list .group-title[title='/wt']")).hasCount(0)
+            assertSidebarTree(
+                page,
+                """
+                repo [/repo] (3)
+                  t-orch
+                  (2 workers)
+                    t-one
+                    t-two
+                  t-orphan
+                  t-solo
+                """.trimIndent(),
+                "no worker is drawn in its worktree's folder: it follows its orchestrator, finished or not",
+            )
+        }
+    }
+
+    @Test
+    fun adhdModeListsAPinnedWorkerUnderItsHiddenOrchestratorsNameAndAPinnedOrchestratorsWholeTree() {
+        signedIn(SESSION_TREE_SCENARIO, "sidebar-tree-adhd") { _, _, page ->
+            treeToggle(page, "t-orch").click()
+            clickRowPin(page, "t-two")
+            assertThat(rowMark(page, "t-two")).hasAttribute("aria-pressed", "true")
+            val adhd = page.locator("#adhd-toggle")
+
+            adhd.click()
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+            assertThat(parentLabel(page, "t-two")).hasText("under orchestrator")
+            assertThat(page.locator("#session-list .tree-branch")).hasCount(0)
+
+            adhd.click()
+            clickRowPin(page, "t-orch")
+            assertThat(rowMark(page, "t-orch")).hasAttribute("aria-pressed", "true")
+            assertThat(rowMark(page, "t-one")).hasClass(COVERED)
+            adhd.click()
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertSidebarTree(
+                page,
+                """
+                t-orch
+                (2 workers)
+                  t-one
+                  t-two
+                """.trimIndent(),
+                "a pinned orchestrator carries its whole tree, and a worker drawn under it names no parent",
+            )
+            assertThat(parentLabel(page, "t-two")).hasCount(0)
+        }
+    }
 }
+
+private fun treeToggle(page: Page, parentId: String): Locator =
+    page.locator("#session-list .tree-branch[data-parent-id='$parentId'] > .tree-toggle")
+
+private fun parentLabel(page: Page, id: String): Locator =
+    page.locator("#session-list .session-row[data-id='$id'] .session-parent")
 
 private val CLIPBOARD_RECORDER: String = """
     (() => {
@@ -1520,6 +1690,11 @@ private val SIDEBAR_TREE_SCRIPT: String = """
             if (contents) out.push(...walk(contents, depth + 1));
           } else if (li.classList.contains("session-row")) {
             out.push(pad + (li.getAttribute("data-id") || "(no data-id)"));
+          } else if (li.classList.contains("tree-branch")) {
+            const count = li.querySelector(":scope > .tree-toggle .tree-count");
+            out.push(pad + "(" + (count ? count.textContent.trim() : "no tree count") + ")");
+            const children = li.querySelector(":scope > ul.tree-children");
+            if (children) out.push(...walk(children, depth + 1));
           }
         }
         return out;

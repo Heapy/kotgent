@@ -4,6 +4,7 @@ import io.kotgent.webuicheck.scenarios.attentionScenario
 import io.kotgent.webuicheck.scenarios.boardScenarios
 import io.kotgent.webuicheck.scenarios.emptyScenario
 import io.kotgent.webuicheck.scenarios.restartScenario
+import io.kotgent.webuicheck.scenarios.sessionTreeScenario
 import io.kotgent.webuicheck.scenarios.sessionsMixedScenario
 import io.kotgent.webuicheck.scenarios.sessionsScenario
 import io.kotgent.webuicheck.scenarios.terminalScenario
@@ -23,6 +24,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         emptyScenario(),
         sessionsScenario(),
         sessionsMixedScenario(),
+        sessionTreeScenario(),
         attentionScenario(),
         restartScenario(),
         terminalScenario(),
