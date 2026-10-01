@@ -770,6 +770,15 @@ class BoardStyleTest {
                 assertThat(cwd).hasText(directory)
                 assertThat(cwd).hasAttribute("title", directory)
                 assertClose(height, head.rect().height, "showing a working directory keeps the header height")
+                val details = page.locator("#session-details")
+                assertThat(details.locator("#terminal-session-id")).hasText(id)
+                assertThat(details.locator("#terminal-tmux-session")).hasText("kt-$id")
+                details.locator("summary").click()
+                val provider = if (id == "s-alpha") "11111111-1111-4111-8111-111111111111"
+                    else "session-260730-015553-1j1h"
+                assertThat(details.locator("dt:has-text('Provider ID') + dd")).hasText(provider)
+                val version = details.locator("dt:has-text('CLI version') + dd")
+                if (id == "s-alpha") assertThat(version).hasText("2.1.218") else assertThat(version).hasCount(0)
             }
 
             page.goBack(Page.GoBackOptions().setWaitUntil(WaitUntilState.COMMIT))
@@ -803,6 +812,18 @@ class BoardStyleTest {
             assertEquals("normal", cwd.style("white-space"))
             assertClose(cwd.number("el => el.clientWidth"), cwd.number("el => el.scrollWidth"),
                 "the complete working directory wraps inside session details")
+            page.setViewportSize(320, 480)
+            val details = page.locator("#session-details")
+            details.locator("summary").click()
+            details.locator("button:has-text('Rename')").scrollIntoViewIfNeeded()
+            val panel = details.rect()
+            val rename = details.locator("button:has-text('Rename')").rect()
+            assertTrue(panel.left >= 0 && panel.right <= 320 && panel.bottom <= 480,
+                "expanded details remain inside a short phone viewport: $panel")
+            assertTrue(rename.top >= panel.top && rename.bottom <= panel.bottom,
+                "actions remain reachable by scrolling the details: $rename in $panel")
+            assertClose(details.number("el => el.clientWidth"), details.number("el => el.scrollWidth"),
+                "long metadata does not add horizontal scrolling")
             page.keyboard().press("Escape")
             assertThat(page.locator("#session-details")).isHidden()
             assertThat(page.locator("#session-details-toggle")).isFocused()

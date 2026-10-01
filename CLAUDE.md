@@ -262,8 +262,10 @@ the common workflow and links to those guides; implementation invariants belong 
   the command registry for session actions. ⌘K still opens the command palette directly.
   Configure columns owns all column type/add/close controls, leaving panels without header rows.
   The phone panel switcher appears only when some columns are hidden. Session details hold cwd,
-  agent/model, task and mutex links in a key-value list, plus Open task and Rename; attention and mutex
-  indicators remain visible in the header. Sidebar status dots keep state labels in accessible text and
+  agent/model, task and mutex links in a key-value list, plus Open task and Rename. Session identity,
+  the actual tmux name and creation/activity timestamps remain visible; optional provider/CLI/launch
+  metadata lives in Technical details. Label `updatedAt` as last activity: renaming does not change it.
+  Attention and mutex indicators remain visible in the header. Sidebar status dots keep state labels in accessible text and
   hover tooltips. Folder icons use the existing grouping preference; they do not introduce a second tree.
 - `useVisiblePane` caps the entire terminal-pane flex stack to `visualViewport`, including workspace
   panels and the key bar. Capping only the nested xterm host leaves the footer below the keyboard.

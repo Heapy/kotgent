@@ -1,4 +1,4 @@
-import type { JSX } from "preact";
+import { Fragment, type JSX } from "preact";
 import type { Command } from "../lib/commands.ts";
 import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -15,6 +15,18 @@ import { SessionStatus } from "./SessionStatus.tsx";
 interface SessionMenuProps {
   session: Session;
   commands: readonly Command[];
+}
+
+const sessionTime = new Intl.DateTimeFormat(undefined, {
+  year: "numeric", month: "short", day: "numeric",
+  hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+});
+
+function SessionTime({ id, timestamp }: { id: string; timestamp: number }) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(timestamp) || Number.isNaN(date.getTime())) return <>—</>;
+  const iso = date.toISOString();
+  return <time id={id} dateTime={iso} title={iso}>{sessionTime.format(date)}</time>;
 }
 
 /** Use the same availability checks and handlers as the command palette. */
@@ -37,6 +49,17 @@ export function SessionDetails({ session, tasks, commands }: SessionMenuProps & 
   const badge = stateBadge(session.state);
   const task = taskBadge(session, tasks);
   const hasMutexes = sessionMutexPills(mutexes.value, session.id).length > 0;
+  const technicalDetails: [string, string | null][] = [
+    ["Provider ID", session.providerSessionId],
+    ["CLI version", session.cliVersion],
+    ["CLI path", session.cliPath],
+    ["Tmux pane", session.paneId],
+    ["Project ID", session.projectId],
+    ["Parent ID", session.parentSessionId],
+    ["Mode", session.readOnly ? "Read-only" : null],
+    ["Tags", session.tags.join(", ")],
+    ["Prompt file", session.promptPath],
+  ];
   const openTask: JSX.MouseEventHandler<HTMLAnchorElement> = (event) => {
     if (!task || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -56,6 +79,21 @@ export function SessionDetails({ session, tasks, commands }: SessionMenuProps & 
           onClick={(event) => { openTask(event); if (event.defaultPrevented) close(); }}>{task.label}</a> : "Not linked"}</dd>
         {hasMutexes && <><dt>Mutex</dt><dd><MutexPills sessionId={session.id} /></dd></>}
       </dl>
+      <dl class="session-details-values session-details-identity">
+        <dt>Session ID</dt><dd><code id="terminal-session-id">{session.id}</code></dd>
+        <dt>Tmux</dt><dd><code id="terminal-tmux-session">{session.tmuxSession || "—"}</code></dd>
+        <dt>Created</dt><dd><SessionTime id="terminal-created-at" timestamp={session.createdAt} /></dd>
+        <dt title="Last session activity; renaming does not change this timestamp">Last activity</dt>
+        <dd><SessionTime id="terminal-updated-at" timestamp={session.updatedAt} /></dd>
+      </dl>
+      {technicalDetails.some(([, value]) => value) && <details class="session-details-technical">
+        <summary>Technical details</summary>
+        <dl class="session-details-values">
+          {technicalDetails.map(([label, value]) => value && <Fragment key={label}>
+            <dt>{label}</dt><dd><code>{value}</code></dd>
+          </Fragment>)}
+        </dl>
+      </details>}
       <div class="session-details-actions">
         <CommandButton command={commands.find(c => c.id === "session.open-task")} label="Open task"
           className="button" close={close} />
