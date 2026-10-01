@@ -3,6 +3,11 @@
 A plan belongs to a backlog task. Its content and review history live in the daemon's SQLite database.
 The author puts a JSON document; the operator reviews it in the task's Plan view or a session workspace.
 
+The Kotgent plugin provides `kotgent:make-plan` to author a plan and incorporate browser review until
+approval, and `kotgent:exec-plan` to execute or resume it. Execution uses worker sessions in separate
+worktrees, independent review, and one merge at a time. It ends with integrated verification and a
+handoff to human task review. The commands below also support using these capabilities directly.
+
 ```sh
 kotgent plan put local:42 < plan.json
 kotgent plan show local:42

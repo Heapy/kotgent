@@ -298,7 +298,9 @@ configuration, session status, usage meters, and known limitations.
 | Login shell | `kotgent start shell` | [Shell](docs/agents/SHELL.md) |
 
 Sessions of any type serialize shared work, such as builds, with [mutexes](docs/agents/MUTEX.md).
-[Structured plans](docs/agents/PLAN.md) attach reviewable plans, questions and edit history to backlog tasks.
+[Structured plans](docs/agents/PLAN.md) attach browser review, questions and edit history to backlog tasks,
+then coordinate workers and verified findings through execution. The Kotgent plugin's `make-plan` and
+`exec-plan` skills guide authoring, review, worker worktrees and final human review.
 
 ## Build & test
 

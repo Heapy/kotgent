@@ -337,6 +337,25 @@ open, as `kotgent mutex run` does, so a release hands the key over; `mutex-relea
 changes while the operator confirms, terminal-head pills, a cold deep link, a reconnect snapshot, and the
 15-minute highlight by daemon age and then by monotonic time with the page's wall clock hours off.
 
+The `plan-review` scenario exercises authored plans and durable review rounds. `PlanReviewTest` covers
+viewed marks, questions, inline edits, stale drafts, approval, safe Markdown, narrow columns and reconnect
+recovery. The `plan-findings` and `plan-findings-auto` scenarios add execution reviews;
+`FindingDecisionTest` covers complete supervised batches, fixed review modes, a real 409 after an
+amendment, and opening/reusing/retiring a Claude investigator without closing the parent task. The
+`plan-finding-amend` harness command changes and reverifies a finding while a decision draft is open.
+These launches use fake sessions and prompt storage; no provider is started.
+
+`SqlitePlanStoreTest` reopens a legacy database during review and after execution feedback, checking
+the full durable document and event history. `PlanExecutionTest` proves cursor replay, worker loss at
+startup and during assignment, investigator cleanup retries, orphaned launches, and disconnected launch
+completion. `SessionManagerTest` and adapter tests cover retaining read-only options on resume and
+update relaunch. Mutex tests cover holder death and forwarded termination signals; SIGKILL of the
+runner itself cannot run cleanup and leaves the documented session-end/force-release recovery path.
+
+Plugin skills live in the separate Kortex repository. Validate their frontmatter and use isolated Git
+fixtures for resume, serial merge and rebase behavior. A simulated CLI/provider transcript checks the
+instructions against their command contracts; it does not replace the manual live-orchestration check.
+
 For early resets, real SQLite tests cover source admission, atomic history, generations, receipt-time
 migration and reopen. Clock-correction tests must include producer-to-receipt delay and unchanged cached
 renders; making capture and receipt clocks equal hides a stuck watermark. A slow-subscriber socket test
@@ -680,3 +699,27 @@ Structured plan review checks on a real phone or tablet:
   save or cancel without losing text to viewport resizing. Check the approval dialog's focus and buttons.
 - In a Terminal · Plan tab, switch columns and return to the terminal. Its socket, buffer and keyboard
   behavior should survive. A narrow Plan column uses the contents dropdown without sideways page scroll.
+
+Live structured-plan orchestration is a manual check, using a disposable project and an explicitly
+started daemon and providers. Automation must not start them. Record the versions, task reference,
+commit IDs, results and any remaining blockers when performing this check:
+
+- Run `kotgent:make-plan`, submit an edit and question from desktop and phone, and approve the revised
+  round. Let a review wait return pending and retry it; restart the daemon during an open round and
+  confirm that the same round and discussion remain available.
+- Run `kotgent:exec-plan` with two independent tasks and a dependent task. Confirm separate worker
+  worktrees, parent/child grouping, concurrency/dependency limits, and serialized Kotlin builds through
+  `kotgent mutex run kotlin-build -- ./kotlin …`.
+- Review a supervised finding on a phone, open its Claude investigator, and return to the same finding.
+  Resume the investigator and confirm plan permission mode remains selected. Amend and reverify the
+  finding, decide it, then send the whole batch; confirm the investigator is archived and the task stays
+  open. Switch execution mode during review and check it takes effect only in the next iteration.
+- Restart during worker feedback and resume from a retained cursor, then from a replayed cursor. Confirm
+  no duplicate fixes, reviews or merges. End a worker and recover its preserved work from blocked state;
+  interrupt the orchestrator and resume without replacing live workers or discarding dirty worktrees.
+- Exercise a worker rebase conflict and a merge completed before its status write. Check that the exact
+  reviewed commits are integrated once with fast-forward merges, and only clean, integrated worktrees
+  are removed after their children are stopped and archived.
+- Check the final integrated review, independent Codex opinion and critical review, including a final
+  base rebase that needs a fix and fresh checks. Verify accepted deferred findings become backlog tasks,
+  the plan completes, and the original task moves to human review with evidence rather than closing.
