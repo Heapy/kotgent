@@ -85,6 +85,8 @@ sealed interface CliCommand {
 
     data class Attach(val id: String) : CliCommand
 
+    data class SessionDone(val id: String) : CliCommand
+
     data class SessionRename(val id: String, val name: String) : CliCommand
 
     data object Install : CliCommand
@@ -120,6 +122,7 @@ val USAGE: String = """
       resume <id>                    resume a stopped/crashed/resumable session (never a lost one)
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
+      session done <id>            stop and archive a session; a child never closes its parent task
       session rename <id> <name>     rename a session (an empty name restores the automatic label)
 
       The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that
@@ -223,6 +226,11 @@ private fun parseWeb(rest: List<String>): CliCommand {
 
 private fun parseSession(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "rename" -> parseSessionRename(rest.drop(1))
+    "done" -> when (val scan = scanFlags("session done", rest.drop(1))) {
+        is Scan.Bad -> CliCommand.Invalid(scan.message)
+        is Scan.Ok -> if (scan.positionals.size == 1 && scan.positionals.single().isNotBlank()) CliCommand.SessionDone(scan.positionals.single())
+            else CliCommand.Invalid("session done requires exactly one session id")
+    }
     null -> CliCommand.Invalid("session requires a subcommand: kotgent session $SESSION_SUBCOMMANDS")
     else -> CliCommand.Invalid("session: unknown subcommand '$sub' (use: kotgent session $SESSION_SUBCOMMANDS)")
 }
@@ -397,7 +405,7 @@ private const val PROJECT_SUBCOMMANDS = "list | init | delete | restore"
 
 private const val MUTEX_SUBCOMMANDS = "acquire | release | run | list"
 
-private const val SESSION_SUBCOMMANDS = "rename <id> <name>"
+private const val SESSION_SUBCOMMANDS = "rename <id> <name> | done <id>"
 
 internal sealed interface Scan {
     data class Ok(
@@ -893,6 +901,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Resume -> Commands.resume(command.id)
     is CliCommand.Interrupt -> Commands.interrupt(command.id)
     is CliCommand.Attach -> Commands.attach(command.id)
+    is CliCommand.SessionDone -> Commands.sessionDone(command.id)
     is CliCommand.SessionRename -> Commands.renameSession(command.id, command.name)
     is CliCommand.Install -> Commands.install()
     is CliCommand.Uninstall -> Commands.uninstall()

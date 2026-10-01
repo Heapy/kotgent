@@ -141,6 +141,8 @@ class ApiClient(
         return json.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
     }
 
+    suspend fun sessionDone(id: String): SessionDto? = control(id, "done")
+
     suspend fun stop(id: String): SessionDto? = control(id, "stop")
 
     /** Throws [ApiException] with status 409 while the provider id is still pending. */
@@ -162,7 +164,7 @@ class ApiClient(
     }
 
     private suspend fun control(id: String, action: String): SessionDto? {
-        val resp = client.post(url("/sessions/$id/$action")) { bearer() }
+        val resp = client.post(url("/sessions/${id.encodeURLPathPart()}/$action")) { bearer() }
         ensureSuccess(resp)
         val text = resp.bodyAsText()
         // The daemon returns the updated SessionDto for a live session, or a plain "ok" otherwise.

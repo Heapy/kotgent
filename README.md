@@ -411,6 +411,7 @@ kotgent <command> [args]
   resume <id>                   resume a stopped/crashed/resumable session (never a lost one)
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
+  session done <id>            stop and archive a session
   session rename <id> <name>    rename a session (an empty name restores the automatic label)
 
   The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that

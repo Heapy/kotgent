@@ -70,6 +70,14 @@ class CliTest {
     }
 
     @Test
+    fun sessionDoneRequiresOneExplicitIdAndRejectsIgnoredFlags() {
+        assertEquals(CliCommand.SessionDone("child01"), parseArgs(listOf("session", "done", "child01")))
+        for (args in listOf(listOf("session", "done"), listOf("session", "done", "child01", "root01"), listOf("session", "done", "child01", "--force"))) {
+            assertTrue(parseArgs(args) is CliCommand.Invalid)
+        }
+    }
+
+    @Test
     fun controlVerbsWithoutAnIdAreInvalid() {
         assertTrue(parseArgs(listOf("stop")) is CliCommand.Invalid)
         assertTrue(parseArgs(listOf("attach")) is CliCommand.Invalid)
@@ -457,6 +465,16 @@ class CliTest {
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
         assertEquals("$API_PREFIX/sessions/abc123/stop", req.path)
+        assertEquals("Bearer secret", req.auth)
+    }
+
+    @Test
+    fun sessionDoneUsesTheExistingAuthenticatedArchiveOperation() = withStub { stub, api ->
+        val updated = api.sessionDone("child01")
+        assertTrue(updated != null)
+        val req = stub.requests.receive()
+        assertEquals("POST", req.method)
+        assertEquals("$API_PREFIX/sessions/child01/done", req.path)
         assertEquals("Bearer secret", req.auth)
     }
 

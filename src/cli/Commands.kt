@@ -83,6 +83,8 @@ object Commands {
         )
     }
 
+    fun sessionDone(id: String): Int = withApi { api -> report("archived", id, api.sessionDone(id)) }
+
     fun stop(id: String): Int = withApi { api -> report("stopped", id, api.stop(id)) }
     fun resume(id: String): Int = withApi { api -> report("resumed", id, api.resume(id)) }
     fun interrupt(id: String): Int = withApi { api -> report("interrupted", id, api.interrupt(id)) }

@@ -134,6 +134,10 @@ A rebase request instead uses `feedback --rebase-onto BRANCH`. Feedback and its 
 persist in one transaction. The worker handles it, reports each finding's outcome in a note, finishes
 again, and resumes waiting. Only verified, decided findings permit merging.
 
+After recording a merged task as done, run `kotgent session done WORKER_ID` to stop and archive its
+child session. Child completion never closes the backlog task. On a top-level session the same command
+retains the existing last-holder task-closing behavior; use it only for the intended session.
+
 The orchestrator records `plan task REF TASK status awaiting_decision|merging|done`; these commands
 record workflow state and do not run Git. After every task is done, `plan complete REF` marks the plan
 done. Task closure and final human review remain separate actions. Authored updates during execution
