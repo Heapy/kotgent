@@ -5,9 +5,11 @@ import { pendingMutation } from "../lib/mutation.ts";
 import { isPlanViewed, nextUnviewed, planBlocks } from "../lib/plans.ts";
 import type { DisplayPlanBlock, PlanDocument, PlanThread } from "../lib/plans.ts";
 import { changePlan, planEntry, refreshPlan, retainPlan } from "../state/plans.ts";
+import { navigate, sessionPath } from "../lib/router.ts";
+import { FindingReview } from "./FindingCard.tsx";
 import { Markdown } from "./Markdown.tsx";
 
-type Change = (path: string, method: string, body?: unknown) => Promise<boolean>;
+type Change = import("../lib/plans.ts").PlanChange;
 
 export function PlanPanel({ taskRef, onClose = null }: { taskRef: string; onClose?: (() => void) | null }) {
   const entry = planEntry(taskRef);
@@ -62,9 +64,8 @@ export function PlanPanel({ taskRef, onClose = null }: { taskRef: string; onClos
     if (event.key === "n") { event.preventDefault(); jump(nextUnviewed(document, selected?.id ?? null)); }
   };
   const approve = async (n: number) => {
-    if (await change("/review/approve", "POST", { round: n })) {
-      if (alive.current) setConfirmRound(null);
-    }
+    await change("/review/approve", "POST", { round: n });
+    if (alive.current) setConfirmRound(null);
   };
   return <section ref={root} class={"plan-panel" + (onClose ? " plan-overlay" : "")}
                   aria-labelledby={titleId} tabIndex={0} onKeyDown={shortcut}>
@@ -87,6 +88,14 @@ export function PlanPanel({ taskRef, onClose = null }: { taskRef: string; onClos
                 onClick={() => void change("/review/submit", "POST", { round: round!.n })}>Submit review</button>
         <button class="button button-primary button-small plan-approve" type="button" disabled={!open || busy}
                 onClick={() => unresolved ? setConfirmRound(round!.n) : void approve(round!.n)}>Approve</button>
+      </div>
+      <div class="plan-settings">
+        <label>Execution mode <select aria-label="Execution mode" value={document.plan.mode} disabled={busy || document.plan.status === "done"}
+          onChange={event => void change("/settings", "PATCH", { mode: event.currentTarget.value })}>
+          <option value="supervised">Supervised</option><option value="autonomous">Autonomous</option>
+        </select></label>
+        <span class="field-hint">Mode changes apply to the next task review. Up to {document.plan.concurrency} tasks at once.</span>
+        {document.plan.featureBranch && <code>{document.plan.featureBranch}</code>}
       </div>
       <div class="plan-body">
         <nav class="plan-toc" aria-label="Plan contents">
@@ -156,10 +165,15 @@ function PlanBlockView({ block, document, change, busy, onActive, onViewed }: {
       </div>
     </form> : <Markdown text={block.body} />}
     {block.task && <div class="plan-task-meta">
-      <span>{block.task.status.replaceAll("_", " ")} · {block.task.agent}</span>
+      <span class="plan-task-status">{block.task.status.replaceAll("_", " ")} · {block.task.agent}</span>
+      {block.task.worker && <p>Worker <a href={sessionPath(block.task.worker.sessionId)} onClick={event => {
+        if (event.button || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+        event.preventDefault(); navigate(sessionPath(block.task!.worker!.sessionId));
+      }}>{block.task.worker.sessionId}</a> · <code>{block.task.worker.branch}</code></p>}
       {block.task.dependsOn.length > 0 && <p>Depends on {block.task.dependsOn.join(", ")}</p>}
       {block.task.files.length > 0 && <ul>{block.task.files.map(file => <li>{file.action}: <code>{file.path}</code></li>)}</ul>}
     </div>}
+    {block.task && <FindingReview document={document} task={block.task} change={change} busy={busy} />}
     {asking && <MessageForm label="Question" action="Ask question" busy={busy} send={async body => {
       const ok = await change("/threads", "POST", { blockId: block.id, kind: "question", body });
       if (ok && alive.current) setAsking(false);

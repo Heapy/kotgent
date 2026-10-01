@@ -19,6 +19,7 @@ export interface PlanThread {
 }
 export interface PlanDocument {
   plan: Plan;
+  execution: PlanExecution;
   review: {
     viewMarks: { blockId: string; viewedAtRev: number }[];
     threads: PlanThread[];
@@ -56,4 +57,45 @@ export function nextUnviewed(document: PlanDocument, after: string | null): stri
     if (!isPlanViewed(document, block)) return block.id;
   }
   return null;
+}
+
+export type FindingLevel = "low" | "medium" | "high";
+export type FindingDecisionKind = "fix_now" | "fix_later" | "wont_fix";
+export interface FindingDecision { kind: FindingDecisionKind; optionIndex: number | null; note: string | null; decidedBy: PlanActor | null }
+export interface Finding {
+  id: string; rev: number; taskId: string; iteration: number; location: string | null;
+  condition: string; impact: string; danger: FindingLevel; likelihood: FindingLevel;
+  options: { fix: string; outcome: string; cost: FindingLevel; fit: FindingLevel }[]; recommended: number;
+  author: PlanActor | null; verifiedBy: PlanActor | null;
+  verifier: { danger: FindingLevel; likelihood: FindingLevel; options: { cost: FindingLevel; fit: FindingLevel }[];
+    verdict: "confirmed" | "rejected"; reason: string } | null;
+  decision: FindingDecision | null; investigatorSessionId: string | null;
+  notes: { author: PlanActor; body: string; at: number }[];
+  revisions: { condition: string; impact: string; author: PlanActor; at: number }[];
+}
+export interface TaskReview { taskId: string; iteration: number; mode: Plan["mode"]; nextMode: Plan["mode"] }
+export interface PlanExecution {
+  orchestratorSessionId: string | null; reviews: TaskReview[]; findings: Finding[];
+  nextEventId: number; events: { id: number; kind: string; taskId: string | null; workerSessionId: string | null;
+    findingIds: string[]; rebaseOnto: string | null; at: number }[];
+}
+export type PlanChange = (path: string, method: string, body?: unknown) => Promise<boolean>;
+export function taskReview(document: PlanDocument, taskId: string): TaskReview | undefined {
+  return document.execution.reviews.findLast(review => review.taskId === taskId);
+}
+const score = { low: 1, medium: 2, high: 3 };
+export function currentFindings(document: PlanDocument, taskId: string): Finding[] {
+  const review = taskReview(document, taskId);
+  return document.execution.findings.filter(f => f.taskId === taskId && f.iteration === review?.iteration)
+    .sort((a, b) => score[b.danger] * score[b.likelihood] - score[a.danger] * score[a.likelihood] || a.id.localeCompare(b.id));
+}
+export function canDecideFindings(document: PlanDocument, task: PlanTask): boolean {
+  return taskReview(document, task.id)?.mode === "supervised" && ["in_review", "awaiting_decision"].includes(task.status);
+}
+export function canSendFindings(document: PlanDocument, task: PlanTask): boolean {
+  const findings = currentFindings(document, task.id);
+  return canDecideFindings(document, task) && findings.length > 0 && findings.every(f => f.verifier && f.decision);
+}
+export function findingDecisionPayload(rev: number, kind: FindingDecisionKind, optionIndex: number, note: string) {
+  return { rev, decision: { kind, optionIndex: kind === "fix_now" ? optionIndex : null, note: note.trim() || null } };
 }

@@ -2910,3 +2910,30 @@ button.task-card-title:hover,
 @media (max-width: 720px) {
   .plan-overlay { inset: 0; width: 100%; border-radius: 0; z-index: 6; }
 }
+
+.plan-settings { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; font-size: .85rem; }
+.plan-settings label { display: inline-flex; align-items: center; gap: 8px; }
+.finding-review { margin-top: 20px; }
+.finding-review > header, .finding-card > header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.finding-review h4, .finding-card h5 { margin: 0; font-size: .95rem; overflow-wrap: anywhere; }
+.finding-mode { text-transform: capitalize; font-size: .8rem; color: var(--muted); }
+.finding-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 12px 0; overflow-wrap: anywhere; scroll-margin: 14px; }
+.finding-assessment { margin-top: 12px; }
+.finding-assessment .markdown > :first-child { margin-top: 4px; }
+.finding-scores { font-size: .8rem; color: var(--muted); }
+.finding-verifier { background: var(--bg); border-left: 3px solid var(--border); padding: 10px; }
+.finding-options { padding: 0; list-style: none; }
+.finding-options > li { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 10px; }
+.finding-options > li.recommended { border-color: var(--accent); }
+.finding-options p { margin: 6px 0; }
+.finding-card details { margin: 10px 0; }
+.finding-card summary { cursor: pointer; }
+.finding-decision fieldset { border: 0; padding: 0; margin: 12px 0 0; display: grid; gap: 10px; min-width: 0; }
+.finding-decision legend { padding: 0 0 8px; font-weight: 600; }
+.finding-decision label { display: flex; flex-direction: column; gap: 6px; }
+.finding-choices { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.finding-choices label { flex-direction: row; align-items: center; }
+.finding-decision textarea { box-sizing: border-box; width: 100%; resize: vertical; min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg); color: inherit; font: inherit; }
+.finding-decision button { justify-self: start; }
+.finding-conflict { border-left: 3px solid var(--accent); padding: 10px; display: grid; gap: 8px; }
+.finding-send { margin: 8px 0; }

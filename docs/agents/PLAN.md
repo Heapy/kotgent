@@ -138,3 +138,16 @@ The orchestrator records `plan task REF TASK status awaiting_decision|merging|do
 record workflow state and do not run Git. After every task is done, `plan complete REF` marks the plan
 done. Task closure and final human review remain separate actions. Authored updates during execution
 must preserve started tasks and their dependencies; new tasks may be appended.
+
+### Browser decisions
+
+The Plan panel shows execution mode, task status, and a link to each worker. Each task review lists its
+current findings in descending reviewer danger × likelihood order, with separate reviewer and verifier
+scores. Recommended options are highlighted; each option shows its expected outcome, cost and fit.
+Earlier review iterations and amendment history remain readable.
+
+In supervised reviews, choose **Fix now** and an option, **Fix later**, or **Won’t fix**, add an optional
+note, then save each decision. **Send to worker** becomes available only after every current finding is
+verified and decided. The whole batch is sent together. If a finding changes while you are deciding,
+your note is kept; read the latest assessment and explicitly accept its revision before saving again.
+Autonomous reviews show the worker's recorded decisions and notes without operator decision controls.

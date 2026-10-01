@@ -12,6 +12,8 @@ import io.kotgent.webuicheck.scenarios.terminalScenario
 import io.kotgent.webuicheck.scenarios.terminalX10Scenario
 import io.kotgent.webuicheck.scenarios.usageScenario
 import io.kotgent.webuicheck.scenarios.workspaceScenario
+import io.kotgent.plan.ExecutionMode
+import io.kotgent.webuicheck.scenarios.planFindingsScenario
 import io.kotgent.webuicheck.scenarios.planReviewScenario
 
 
@@ -34,6 +36,8 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         usageScenario(),
         workspaceScenario(),
         planReviewScenario(),
+        planFindingsScenario(),
+        planFindingsScenario(ExecutionMode.autonomous),
         mutexesScenario(),
     ) + boardScenarios()
     val registry = LinkedHashMap<String, Scenario>(all.size)

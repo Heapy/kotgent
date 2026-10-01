@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isPlanViewed, mergePlanDocument, nextUnviewed } from "../../webui/src/lib/plans.ts";
-import type { PlanDocument } from "../../webui/src/lib/plans.ts";
+import { canSendFindings, canDecideFindings, currentFindings, findingDecisionPayload, isPlanViewed, mergePlanDocument, nextUnviewed } from "../../webui/src/lib/plans.ts";
+import type { Finding, PlanDocument } from "../../webui/src/lib/plans.ts";
 import { activeTabOf, defaultWorkspace, openPlanTab, selectTab } from "../../webui/src/lib/workspace.ts";
 import { parseRoute, planPath, routePath, SCREEN_PLAN } from "../../webui/src/lib/router.ts";
 import { mergePlan, planEntry, retainPlan, planChanged, recoverPlans, refreshPlan } from "../../webui/src/state/plans.ts";
@@ -10,6 +10,7 @@ function doc(ref = "local:1", rev = 1): PlanDocument {
   return {
     plan: { taskRef: ref, title: "Test", rev, status: "draft", mode: "supervised", concurrency: 3, featureBranch: null,
       sections: [{ id: "s_a", kind: "overview", body: "First", rev: 1 }, { id: "s_b", kind: "solution", body: "Second", rev: 1 }], decisions: [], tasks: [] },
+    execution: { orchestratorSessionId: null, reviews: [], findings: [], events: [], nextEventId: 1 },
     review: { viewMarks: [], threads: [], edits: [], rounds: [] },
   };
 }
@@ -80,4 +81,41 @@ test("open viewers reread hints and recovery; stale reads cannot overwrite mutat
     await removed;
     assert.equal(planEntry(ref).document, null);
   } finally { stop(); globalThis.fetch = original; }
+});
+
+
+test("finding decisions use the displayed revision and only fix-now carries an option", () => {
+  assert.deepEqual(findingDecisionPayload(7, "fix_now", 1, " Reason "),
+    { rev: 7, decision: { kind: "fix_now", optionIndex: 1, note: "Reason" } });
+  assert.deepEqual(findingDecisionPayload(8, "wont_fix", 1, ""),
+    { rev: 8, decision: { kind: "wont_fix", optionIndex: null, note: null } });
+});
+
+test("only a fully verified and decided current supervised batch can be sent", () => {
+  const document = doc();
+  const task = { id: "t_1", rev: 1, ordinal: 1, title: "Work", files: [], steps: [], dependsOn: [], agent: "any", status: "in_review", worker: null };
+  document.plan.tasks = [task];
+  document.execution.reviews.push({ taskId: "t_1", iteration: 2, mode: "supervised", nextMode: "autonomous" });
+  document.plan.mode = "autonomous";
+  assert.equal(canDecideFindings(document, task), true, "mode is frozen for the current review");
+  assert.equal(canSendFindings(document, task), false);
+  const finding: Finding = { id: "f_1", rev: 1, taskId: "t_1", iteration: 2, location: null, condition: "C", impact: "I",
+    danger: "low", likelihood: "high", options: [{ fix: "F", outcome: "O", cost: "low", fit: "high" }], recommended: 0,
+    author: null, verifiedBy: null, verifier: null, decision: null, investigatorSessionId: null, notes: [], revisions: [] };
+  document.execution.findings = [finding, { ...finding, id: "f_old", iteration: 1 }, { ...finding, id: "f_high", danger: "high" }];
+  assert.deepEqual(currentFindings(document, task.id).map(f => f.id), ["f_high", "f_1"]);
+  for (const f of document.execution.findings.filter(f => f.iteration === 2)) {
+    f.decision = { kind: "fix_later", optionIndex: null, note: null, decidedBy: { type: "operator" } };
+  }
+  assert.equal(canSendFindings(document, task), false, "unverified decisions never enable send");
+  for (const f of document.execution.findings.filter(f => f.iteration === 2)) {
+    f.verifier = { danger: "low", likelihood: "high", options: [{ cost: "low", fit: "high" }], verdict: "confirmed", reason: "Proof" };
+  }
+  assert.equal(canSendFindings(document, task), true, "previous iterations do not block this batch");
+  task.status = "running";
+  assert.equal(canSendFindings(document, task), false);
+  task.status = "in_review";
+  document.execution.reviews[0]!.mode = "autonomous";
+  assert.equal(canDecideFindings(document, task), false);
+  assert.equal(canSendFindings(document, task), false);
 });
