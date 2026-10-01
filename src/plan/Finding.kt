@@ -58,6 +58,11 @@ data class FindingRevision(
 @Serializable
 data class Finding(
     val id: String? = null,
+    val rev: Long = 1,
+    val iteration: Long = 1,
+    val author: PlanActor? = null,
+    val verifiedBy: PlanActor? = null,
+    val notes: List<ThreadMessage> = emptyList(),
     val taskId: String = "",
     val location: String? = null,
     val condition: String = "",
@@ -73,6 +78,9 @@ data class Finding(
 )
 
 fun validateFinding(finding: Finding): List<FieldError> = buildList {
+    if (finding.rev < 1) add(FieldError("rev", "must be positive"))
+    if (finding.iteration < 1) add(FieldError("iteration", "must be positive"))
+    finding.notes.forEach { addAll(validateThreadMessage(it)) }
     if (finding.id != null && !isPlanId(finding.id, "f_")) add(FieldError("id", "must be a finding id starting with f_"))
     if (!isPlanId(finding.taskId, "t_")) add(FieldError("taskId", "must be a task id starting with t_"))
     findingDetails("", finding.location, finding.condition, finding.impact, finding.danger, finding.likelihood, finding.options, finding.recommended)

@@ -47,7 +47,7 @@ import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openReadChannel
 import io.ktor.network.sockets.openWriteChannel
-import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.readLine
 import io.ktor.utils.io.writeFully
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO as ServerCIO
@@ -93,6 +93,12 @@ class PlanRoutesTest {
             HttpMethod.Post to "$BASE/threads/th_x/messages", HttpMethod.Post to "$BASE/threads/th_x/resolve",
             HttpMethod.Post to "$BASE/review/wait", HttpMethod.Post to "$BASE/review/submit",
             HttpMethod.Post to "$BASE/review/approve",
+            HttpMethod.Patch to "$BASE/settings", HttpMethod.Post to "$BASE/claim", HttpMethod.Post to "$BASE/complete",
+            HttpMethod.Post to "$BASE/tasks/t_x/start", HttpMethod.Post to "$BASE/tasks/t_x/finish", HttpMethod.Post to "$BASE/tasks/t_x/block",
+            HttpMethod.Post to "$BASE/tasks/t_x/status", HttpMethod.Post to "$BASE/tasks/t_x/worker", HttpMethod.Post to "$BASE/tasks/t_x/feedback",
+            HttpMethod.Post to "$BASE/tasks/t_x/wait", HttpMethod.Post to "$BASE/wait", HttpMethod.Post to "$BASE/steps/st_x/done",
+            HttpMethod.Post to "$BASE/findings", HttpMethod.Post to "$BASE/findings/send", HttpMethod.Post to "$BASE/findings/f_x/verify",
+            HttpMethod.Post to "$BASE/findings/f_x/amend", HttpMethod.Post to "$BASE/findings/f_x/note", HttpMethod.Post to "$BASE/findings/f_x/decide",
         )) assertEquals(HttpStatusCode.Unauthorized, f.request(request.first, request.second, "{}", token = false).status)
     }
 
@@ -137,13 +143,60 @@ class PlanRoutesTest {
         assertEquals(HttpStatusCode.Conflict, f.request(HttpMethod.Post, "$BASE/review/submit", """{"round":1}""").status)
     }
 
+    @Test
+    fun executionTransitionsFindingsAndFeedbackEnforceTheirCallerRolesOverHttp() = withServer { f ->
+        val initial = f.put()
+        val task = initial.plan.tasks.single()
+        val taskPath = "$BASE/tasks/${task.id}"
+        val _ = f.request(HttpMethod.Post, "$BASE/review/wait?wait=0", session = true)
+        val _ = f.document(f.request(HttpMethod.Post, "$BASE/review/approve", """{"round":1}"""))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/claim").status)
+        val _ = f.document(f.request(HttpMethod.Post, "$BASE/claim", session = true))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/claim", pane = BOB_PANE).status)
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$taskPath/start", pane = BOB_PANE).status)
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/start", session = true))
+        val worker = """{"sessionId":"bob","branch":"work/one","worktree":"/fixture"}"""
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$taskPath/worker", worker, pane = BOB_PANE).status)
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/worker", worker, session = true))
+        val stepPath = "$BASE/steps/${task.steps.single().id}/done"
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, stepPath, session = true).status)
+        val _ = f.document(f.request(HttpMethod.Post, stepPath, pane = BOB_PANE))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$taskPath/finish", session = true).status)
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/finish", pane = BOB_PANE))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/findings", "{}").status)
+        assertEquals(HttpStatusCode.BadRequest, f.request(HttpMethod.Post, "$BASE/findings", "{}", session = true).status)
+        val added = f.document(f.request(HttpMethod.Post, "$BASE/findings", """{"taskId":"${task.id}","condition":"Empty rows","impact":"Crash","danger":"high","likelihood":"medium","options":[{"fix":"Guard","outcome":"No crash","cost":"low","fit":"high"}],"recommended":0}""", session = true))
+        val finding = added.execution.findings.single()
+        val findingPath = "$BASE/findings/${finding.id}"
+        val verified = f.document(f.request(HttpMethod.Post, "$findingPath/verify", """{"rev":${finding.rev},"verifier":{"danger":"high","likelihood":"medium","options":[{"cost":"low","fit":"high"}],"verdict":"confirmed","reason":"Reproduced"}}""", session = true)).execution.findings.single()
+        val noted = f.document(f.request(HttpMethod.Post, "$findingPath/note", """{"body":"The guard is sufficient."}""", pane = BOB_PANE)).execution.findings.single()
+        val staleDecision = """{"rev":${verified.rev},"decision":{"kind":"fix_now","optionIndex":0}}"""
+        assertEquals(HttpStatusCode.Conflict, f.request(HttpMethod.Post, "$findingPath/decide", staleDecision).status)
+        val decision = """{"rev":${noted.rev},"decision":{"kind":"fix_now","optionIndex":0}}"""
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$findingPath/decide", decision, pane = BOB_PANE).status)
+        assertEquals(HttpStatusCode.Conflict, f.request(HttpMethod.Post, "$BASE/findings/send", """{"taskId":"${task.id}"}""").status)
+        val _ = f.document(f.request(HttpMethod.Post, "$findingPath/decide", decision))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/findings/send", """{"taskId":"${task.id}"}""", session = true).status)
+        val _ = f.document(f.request(HttpMethod.Post, "$BASE/findings/send", """{"taskId":"${task.id}"}"""))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$taskPath/wait?wait=0", session = true).status)
+        val feedback = f.request(HttpMethod.Post, "$taskPath/wait?wait=0", pane = BOB_PANE)
+        assertEquals(HttpStatusCode.OK, feedback.status)
+        assertTrue(feedback.bodyAsText().contains("\"event\":\"feedback\""))
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/finish", pane = BOB_PANE))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$taskPath/status", """{"status":"merging"}""", pane = BOB_PANE).status)
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/status", """{"status":"merging"}""", session = true))
+        val _ = f.document(f.request(HttpMethod.Post, "$taskPath/status", """{"status":"done"}""", session = true))
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/complete", pane = BOB_PANE).status)
+        assertEquals(PlanStatus.done, f.document(f.request(HttpMethod.Post, "$BASE/complete", session = true)).plan.status)
+    }
+
     private class Fixture(val plans: FakePlanStore, val client: HttpClient, private val port: Int, val wakes: MutableList<String>) {
         fun url(path: String) = "http://127.0.0.1:$port/api/v1$path"
-        suspend fun request(method: HttpMethod, path: String = BASE, body: String? = null, session: Boolean = false, token: Boolean = true): HttpResponse =
+        suspend fun request(method: HttpMethod, path: String = BASE, body: String? = null, session: Boolean = false, token: Boolean = true, pane: String? = null): HttpResponse =
             client.request(url(path)) {
                 this.method = method
                 if (token) header(HttpHeaders.Authorization, "Bearer $TOKEN")
-                if (session) header(TASK_PANE_HEADER, ALICE_PANE)
+                if (pane != null || session) header(TASK_PANE_HEADER, pane ?: ALICE_PANE)
                 if (body != null) { contentType(ContentType.Application.Json); setBody(body) }
             }
         suspend fun document(response: HttpResponse): PlanDocument {
@@ -164,7 +217,7 @@ class PlanRoutesTest {
                     append("$TASK_PANE_HEADER: $ALICE_PANE\r\nContent-Type: application/json\r\n")
                     append("Content-Length: ${MAX_PLAN_DOCUMENT_BYTES + 1}\r\n\r\n")
                 }.encodeToByteArray())
-                input.readUTF8Line().orEmpty()
+                input.readLine().orEmpty()
             } finally {
                 socket.close()
                 selector.close()
@@ -186,7 +239,7 @@ class PlanRoutesTest {
                 events.upsertSession(
                     SessionMeta(
                         id = SessionId(id), name = id, agent = "claude", cwd = "/fixture", tmuxSession = "kt-$id",
-                        state = state, createdAt = 1L, updatedAt = 1L,
+                        state = state, createdAt = 1L, updatedAt = 1L, parentSessionId = if (id == "bob") SessionId("alice") else null,
                     ),
                 )
             }
@@ -236,7 +289,7 @@ class PlanRoutesTest {
 
     private companion object {
         const val BASE = "/tasks/local:1/plan"
-        const val DOCUMENT = """{"taskRef":"local:1","title":"Plans","sections":[{"kind":"overview","body":"Initial"}]}"""
+        const val DOCUMENT = """{"taskRef":"local:1","title":"Plans","sections":[{"kind":"overview","body":"Initial"}],"tasks":[{"ordinal":1,"title":"Implement","steps":[{"text":"Check"}]}]}"""
         const val TOKEN = "mutex-route-test-token"
         const val ALICE_PANE = "%1"
         const val BOB_PANE = "%2"

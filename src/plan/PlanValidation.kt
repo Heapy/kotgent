@@ -45,7 +45,7 @@ fun validatePlan(plan: Plan): List<FieldError> = buildList {
         val path = "tasks[$index]"
         block(task, path, "t_")
         if (task.ordinal < 1) add(FieldError("$path.ordinal", "must be positive"))
-        required("$path.title", task.title)
+        body("$path.title", task.title, MAX_BLOCK_BODY_BYTES)
         task.worker?.let { worker ->
             required("$path.worker.sessionId", worker.sessionId)
             required("$path.worker.branch", worker.branch)

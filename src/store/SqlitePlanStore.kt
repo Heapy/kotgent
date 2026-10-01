@@ -20,7 +20,8 @@ class SqlitePlanStore(
             "CREATE TABLE IF NOT EXISTS plan_view_marks ( task_ref TEXT NOT NULL, block_id TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY (task_ref, block_id) )",
             "CREATE TABLE IF NOT EXISTS plan_threads ( task_ref TEXT NOT NULL, thread_id TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY (task_ref, thread_id) )",
             "CREATE TABLE IF NOT EXISTS plan_edits ( task_ref TEXT NOT NULL, ordinal INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY (task_ref, ordinal) )",
-            "CREATE TABLE IF NOT EXISTS plan_rounds ( task_ref TEXT NOT NULL, round INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY (task_ref, round) )"
+            "CREATE TABLE IF NOT EXISTS plan_rounds ( task_ref TEXT NOT NULL, round INTEGER NOT NULL, document TEXT NOT NULL, PRIMARY KEY (task_ref, round) )",
+            "CREATE TABLE IF NOT EXISTS plan_execution ( task_ref TEXT NOT NULL PRIMARY KEY, document TEXT NOT NULL )"
         )
     }
 }
@@ -45,6 +46,7 @@ private class SqlitePlanRows(driver: SqlDriver) : PlanRows {
                 edits = queries.selectEdits(ref).executeAsList().map { json.decodeFromString<EditRecord>(it.document) },
                 rounds = queries.selectRounds(ref).executeAsList().map { json.decodeFromString<ReviewRound>(it.document) },
             ),
+            queries.selectExecution(ref).executeAsOneOrNull()?.let { json.decodeFromString<PlanExecutionState>(it) } ?: PlanExecutionState(),
         )
     }
 
@@ -57,6 +59,7 @@ private class SqlitePlanRows(driver: SqlDriver) : PlanRows {
             val ref = plan.snapshot.plan.taskRef
             delete(ref)
             val _ = queries.putPlan(ref, json.encodeToString(plan.snapshot.plan))
+            val _ = queries.putExecution(ref, json.encodeToString(plan.execution))
             for (entry in plan.snapshot.blockChangedAtRev.entries) { val _ = queries.putBlocks(ref, entry.key, entry.value) }
             for (mark in plan.review.viewMarks) { val _ = queries.putViewMarks(ref, mark.blockId, json.encodeToString(mark)) }
             for (thread in plan.review.threads) { val _ = queries.putThreads(ref, thread.id, json.encodeToString(thread)) }
@@ -67,6 +70,7 @@ private class SqlitePlanRows(driver: SqlDriver) : PlanRows {
 
     override fun delete(ref: String) {
         db.transaction {
+            val _ = queries.deleteExecution(ref)
             val _ = queries.deletePlanBlocks(ref)
             val _ = queries.deletePlanViewMarks(ref)
             val _ = queries.deletePlanThreads(ref)

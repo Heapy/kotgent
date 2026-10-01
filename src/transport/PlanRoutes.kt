@@ -4,6 +4,7 @@ import io.kotgent.core.PaneId
 import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.PlanReview
+import io.kotgent.daemon.PlanExecution
 import io.kotgent.daemon.PlanReviewResponse
 import io.kotgent.plan.*
 import io.kotgent.store.EventStore
@@ -29,6 +30,7 @@ class PlanRouting(
     val paneLookup: suspend (PaneId) -> SessionId?,
     val json: Json = TRANSPORT_JSON,
     val review: PlanReview = PlanReview(plans),
+    val execution: PlanExecution = PlanExecution(plans, sessions),
 )
 
 @Serializable data class PlanBlockEditRequest(val rev: Long, val body: String)
@@ -41,6 +43,7 @@ class PlanRouting(
 fun Route.planRoutes(routing: PlanRouting) {
     route("/tasks/{ref}/plan") {
         val _ = install(CancelOnDisconnect)
+        planExecutionRoutes(routing)
         get {
             val ref = planRef() ?: return@get
             val _ = planActor(routing) ?: return@get
@@ -129,14 +132,14 @@ fun Route.planRoutes(routing: PlanRouting) {
     }
 }
 
-private suspend fun RoutingContext.planRef(): String? {
+internal suspend fun RoutingContext.planRef(): String? {
     val ref = call.parameters["ref"].orEmpty()
     if (TaskRef.parseOrNull(ref) != null) return ref
     call.respondText("invalid task reference", status = HttpStatusCode.BadRequest)
     return null
 }
 
-private suspend fun RoutingContext.planActor(routing: PlanRouting, sessionOnly: Boolean = false, operatorOnly: Boolean = false): PlanActor? {
+internal suspend fun RoutingContext.planActor(routing: PlanRouting, sessionOnly: Boolean = false, operatorOnly: Boolean = false): PlanActor? {
     val actor = when (val caller = resolveCallerIdentity(routing.paneLookup, call.request.queryParameters["sessionId"])) {
         CallerIdentity.Absent -> PlanActor.Operator
         is CallerIdentity.Rejected -> {
@@ -159,7 +162,7 @@ private suspend fun RoutingContext.planActor(routing: PlanRouting, sessionOnly: 
 }
 
 @OptIn(ExperimentalSerializationApi::class)
-private suspend fun <T> RoutingContext.planBody(routing: PlanRouting, serializer: KSerializer<T>, limit: Int): T? {
+internal suspend fun <T> RoutingContext.planBody(routing: PlanRouting, serializer: KSerializer<T>, limit: Int): T? {
     val body = receiveBoundedText(limit) ?: return null
     return try {
         routing.json.decodeFromString(serializer, body)
@@ -174,11 +177,12 @@ private suspend fun <T> RoutingContext.planBody(routing: PlanRouting, serializer
     }
 }
 
-private suspend fun RoutingContext.respondPlan(routing: PlanRouting, result: PlanResult) {
+internal suspend fun RoutingContext.respondPlan(routing: PlanRouting, result: PlanResult) {
     when (result) {
         is PlanResult.Accepted -> call.respondText(routing.json.encodeToString(PlanDocument.serializer(), result.document), ContentType.Application.Json)
+        is PlanResult.Forbidden -> call.respondText(routing.json.encodeToString(PlanErrorResponse.serializer(), PlanErrorResponse(errors = result.errors)), ContentType.Application.Json, HttpStatusCode.Forbidden)
         is PlanResult.Invalid -> call.respondText(routing.json.encodeToString(PlanErrorResponse.serializer(), PlanErrorResponse(errors = result.errors)), ContentType.Application.Json, HttpStatusCode.BadRequest)
-        is PlanResult.Conflict -> call.respondText(routing.json.encodeToString(PlanErrorResponse.serializer(), PlanErrorResponse(rev = result.rev, changedBlockIds = result.changedBlockIds)), ContentType.Application.Json, HttpStatusCode.Conflict)
+        is PlanResult.Conflict -> call.respondText(routing.json.encodeToString(PlanErrorResponse.serializer(), PlanErrorResponse(errors = result.errors, rev = result.rev, changedBlockIds = result.changedBlockIds)), ContentType.Application.Json, HttpStatusCode.Conflict)
         PlanResult.Missing -> call.respondText("no such plan or block", status = HttpStatusCode.NotFound)
     }
 }

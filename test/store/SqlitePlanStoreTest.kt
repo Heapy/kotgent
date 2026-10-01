@@ -167,6 +167,47 @@ class SqlitePlanStoreTest {
         onConfiguration = { it.copy(extendedConfig = it.extendedConfig.copy(basePath = directory)) },
     )
 
+    @Test
+    fun executionAndFeedbackSurviveRestartAndAuthoredPuts() = runBlocking {
+        withTempDbDir { directory ->
+            val first = openDatabase(directory)
+            val expected = try {
+                val store = SqlitePlanStore(first)
+                val initial = store.put(draft(), 0).accepted()
+                val taskId = requireNotNull(initial.plan.tasks.single().id)
+                val _ = store.openReview("local:1")
+                val _ = store.submitReview("local:1", 1, ReviewVerdict.approved)
+                val _ = store.execute("local:1", PlanAction.Claim(null), author).accepted()
+                val _ = store.execute("local:1", PlanAction.Start(taskId), author).accepted()
+                val _ = store.execute("local:1", PlanAction.Worker(taskId, PlanWorker("worker", "work/one", "/work/one")), author).accepted()
+                val _ = store.execute("local:1", PlanAction.Status(taskId, PlanTaskStatus.in_review), PlanActor.Session("worker")).accepted()
+                val added = store.execute("local:1", PlanAction.AddFinding(Finding(taskId = taskId, condition = "Empty rows", impact = "Export fails",
+                    danger = FindingLevel.high, likelihood = FindingLevel.medium,
+                    options = listOf(FindingOption("Guard", "Export works", FindingLevel.low, FindingLevel.high)), recommended = 0)), author).accepted()
+                val finding = added.execution.findings.single()
+                val verified = store.execute("local:1", PlanAction.Verify(finding.id!!, finding.rev,
+                    FindingVerifier(FindingLevel.high, FindingLevel.medium, listOf(VerifierOption(FindingLevel.low, FindingLevel.high)), VerifierVerdict.confirmed, "Confirmed")),
+                    PlanActor.Session("verifier")).accepted().execution.findings.single()
+                val _ = store.execute("local:1", PlanAction.Decide(verified.id!!, verified.rev, FindingDecision(FindingDecisionKind.fix_now, 0)), PlanActor.Operator).accepted()
+                val feedback = store.execute("local:1", PlanAction.Send(taskId), PlanActor.Operator).accepted()
+                assertIs<PlanResult.Invalid>(store.put(feedback.plan.copy(tasks = emptyList()), feedback.plan.rev))
+                // Editing authored content must never drop the independently stored execution state.
+                store.put(feedback.plan.copy(title = "Updated title"), feedback.plan.rev).accepted()
+            } finally { first.close() }
+            val second = openDatabase(directory)
+            try {
+                val store = SqlitePlanStore(second)
+                assertEquals(expected, store.get("local:1"))
+                assertEquals("feedback", expected.execution.events.last().kind)
+                assertEquals(PlanTaskStatus.running, expected.plan.tasks.single().status)
+                store.workerEnded("worker")
+                assertEquals("worker_lost", store.get("local:1")!!.execution.events.last().kind)
+                store.delete("local:1")
+                assertEquals(0L, scalar(second, "SELECT COUNT(*) FROM plan_execution"))
+            } finally { second.close() }
+        }
+    }
+
     private fun scalar(driver: SqlDriver, sql: String): Long = driver.executeQuery(
         identifier = null,
         sql = sql,

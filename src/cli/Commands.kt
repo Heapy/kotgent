@@ -255,6 +255,7 @@ object Commands {
                 startDaemonServer(
                     assemblePush = { modules.push.start(sessions.background.value, eventStore) },
                     startUsage = { push ->
+                        sessions.planWorkers.value.start(sessions.background.value)
                         if (push != null) sessions.background.value.launch {
                             for (topic in planWakes) modules.push.sender.value.send(topic)
                         }

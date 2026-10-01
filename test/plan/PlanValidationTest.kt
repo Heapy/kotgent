@@ -93,11 +93,11 @@ class PlanValidationTest {
         )))
         val oversized = exact + "a"
         assertEquals(
-            setOf("sections[0].body", "decisions[0].body", "tasks[0].steps[0].text"),
+            setOf("sections[0].body", "decisions[0].body", "tasks[0].title", "tasks[0].steps[0].text"),
             paths(plan().copy(
                 sections = listOf(Section(kind = SectionKind.overview, body = oversized)),
                 decisions = listOf(Decision(title = "Title", body = oversized)),
-                tasks = listOf(PlanTask(ordinal = 1, title = "Task", steps = listOf(Step(text = oversized)))),
+                tasks = listOf(PlanTask(ordinal = 1, title = oversized, steps = listOf(Step(text = oversized)))),
             )),
         )
     }

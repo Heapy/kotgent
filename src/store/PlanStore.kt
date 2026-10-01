@@ -9,16 +9,17 @@ import kotlinx.serialization.Serializable
 import kotlin.time.Clock
 
 @Serializable
-data class PlanDocument(val plan: Plan, val review: PlanReviewState = PlanReviewState())
+data class PlanDocument(val plan: Plan, val review: PlanReviewState = PlanReviewState(), val execution: PlanExecutionState = PlanExecutionState())
 
-data class StoredPlan(val snapshot: PlanSnapshot, val review: PlanReviewState) {
-    fun document(): PlanDocument = PlanDocument(snapshot.plan, review)
+data class StoredPlan(val snapshot: PlanSnapshot, val review: PlanReviewState, val execution: PlanExecutionState = PlanExecutionState()) {
+    fun document(): PlanDocument = PlanDocument(snapshot.plan, review, execution)
 }
 
 sealed interface PlanResult {
     data class Accepted(val document: PlanDocument, val reviewOpened: Boolean = false) : PlanResult
     data class Invalid(val errors: List<FieldError>) : PlanResult
-    data class Conflict(val rev: Long, val changedBlockIds: List<String> = emptyList()) : PlanResult
+    data class Conflict(val rev: Long, val changedBlockIds: List<String> = emptyList(), val errors: List<FieldError> = emptyList()) : PlanResult
+    data class Forbidden(val errors: List<FieldError>) : PlanResult
     data object Missing : PlanResult
 }
 
@@ -26,6 +27,9 @@ interface PlanStore {
     val revisions: StateFlow<Map<String, Long>>
     suspend fun get(ref: String): PlanDocument?
     suspend fun reviews(): List<PlanDocument>
+    suspend fun all(): List<PlanDocument>
+    suspend fun execute(ref: String, action: PlanAction, actor: PlanActor): PlanResult
+    suspend fun workerEnded(sessionId: String)
     suspend fun put(plan: Plan, baseRev: Long): PlanResult
     suspend fun edit(ref: String, id: String, rev: Long, body: String, actor: PlanActor): PlanResult
     suspend fun viewed(ref: String, id: String, rev: Long?): PlanResult
@@ -56,6 +60,37 @@ class PlanCoordinator(
         field = MutableStateFlow(rows.all().associate { it.snapshot.plan.taskRef to it.snapshot.plan.rev })
 
     override suspend fun get(ref: String): PlanDocument? = lock.withLock { rows.get(ref)?.document() }
+
+    override suspend fun all(): List<PlanDocument> = lock.withLock { rows.all().map { it.document() } }
+
+    override suspend fun execute(ref: String, action: PlanAction, actor: PlanActor): PlanResult = lock.withLock {
+        val current = rows.get(ref) ?: return@withLock PlanResult.Missing
+        applyExecution(current, action, actor)
+    }
+
+    override suspend fun workerEnded(sessionId: String): Unit = lock.withLock {
+        for (current in rows.all()) {
+            val result = applyExecution(current, PlanAction.WorkerEnded(sessionId), PlanActor.Operator)
+            check(result is PlanResult.Accepted) { "could not record lost worker: $result" }
+        }
+    }
+
+    private fun applyExecution(current: StoredPlan, action: PlanAction, actor: PlanActor): PlanResult {
+        return when (val changed = applyPlanAction(current.snapshot.plan, current.execution, action, actor, now(), newId)) {
+            is ExecutionChange.Rejected -> when (changed.failure) {
+                ExecutionFailure.invalid -> PlanResult.Invalid(changed.errors)
+                ExecutionFailure.forbidden -> PlanResult.Forbidden(changed.errors)
+                ExecutionFailure.conflict -> PlanResult.Conflict(current.snapshot.plan.rev, errors = changed.errors)
+            }
+            is ExecutionChange.Accepted -> {
+                if (changed.plan == current.snapshot.plan && changed.execution == current.execution) return PlanResult.Accepted(current.document())
+                if (current.snapshot.plan.rev == Long.MAX_VALUE) return PlanResult.Invalid(listOf(FieldError("rev", "cannot increase the maximum revision")))
+                val next = current.copy(snapshot = current.snapshot.copy(plan = changed.plan.copy(rev = current.snapshot.plan.rev + 1)), execution = changed.execution)
+                save(next)
+                PlanResult.Accepted(next.document())
+            }
+        }
+    }
 
     override suspend fun reviews(): List<PlanDocument> = lock.withLock {
         rows.all().filter { it.review.rounds.lastOrNull()?.let { round -> round.verdict == null } == true }
@@ -89,9 +124,20 @@ class PlanCoordinator(
                     review.rounds.lastOrNull()?.verdict != null) {
                     merged.snapshot.copy(plan = merged.snapshot.plan.copy(status = PlanStatus.draft))
                 } else merged.snapshot
-                val stored = StoredPlan(snapshot, review)
-                if (changed) save(stored)
-                PlanResult.Accepted(stored.document())
+                val stored = StoredPlan(snapshot, review, current?.execution ?: PlanExecutionState())
+                val invariantErrors = current?.snapshot?.plan?.tasks.orEmpty().filter { it.status != PlanTaskStatus.pending }.mapNotNull { previous ->
+                    val next = snapshot.plan.tasks.firstOrNull { it.id == previous.id }
+                    when {
+                        next == null -> FieldError("tasks", "cannot delete started task ${previous.id}")
+                        next.dependsOn != previous.dependsOn -> FieldError("tasks", "cannot change dependencies of started task ${previous.id}")
+                        else -> null
+                    }
+                }
+                if (invariantErrors.isNotEmpty()) PlanResult.Invalid(invariantErrors)
+                else {
+                    if (changed) save(stored)
+                    PlanResult.Accepted(stored.document())
+                }
             }
         }
 
@@ -122,7 +168,7 @@ class PlanCoordinator(
                     plan.status in listOf(PlanStatus.approved, PlanStatus.in_review)) {
                     merged.snapshot.copy(plan = merged.snapshot.plan.copy(status = PlanStatus.draft))
                 } else merged.snapshot
-                val stored = StoredPlan(snapshot, review)
+                val stored = StoredPlan(snapshot, review, current.execution)
                 save(stored)
                 PlanResult.Accepted(stored.document())
             }

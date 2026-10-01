@@ -270,10 +270,18 @@ internal class SessionModule(
         )
     }
 
+    val planWorkers by bean {
+        io.kotgent.daemon.PlanWorkerMonitor(storage.planStore.value, storage.eventStore.value,
+            onError = { failure -> eprintln("kotgent daemon: plan worker update failed: ${failure.message}") })
+    }
+
     val sessionEnds by bean {
         SessionEndListeners(
             onError = { failure -> eprintln("kotgent daemon: session-end listener failed: ${failure.message}") },
-        ).also { it.add(SessionEndListener(mutexes.value::sessionEnded)) }
+        ).also {
+            it.add(SessionEndListener(mutexes.value::sessionEnded))
+            it.add(SessionEndListener(planWorkers.value::sessionEnded))
+        }
     }
 
     val codexUsageCapture by bean {

@@ -1,3 +1,8 @@
+CREATE TABLE plan_execution (
+  task_ref TEXT NOT NULL PRIMARY KEY,
+  document TEXT NOT NULL
+);
+
 CREATE TABLE plans (
   task_ref TEXT NOT NULL PRIMARY KEY,
   document TEXT NOT NULL
@@ -95,3 +100,12 @@ DELETE FROM plan_edits WHERE task_ref = ?;
 deletePlanRounds:
 DELETE FROM plan_rounds WHERE task_ref = ?;
 
+
+selectExecution:
+SELECT document FROM plan_execution WHERE task_ref = ?;
+
+putExecution:
+INSERT INTO plan_execution(task_ref, document) VALUES (?, ?);
+
+deleteExecution:
+DELETE FROM plan_execution WHERE task_ref = ?;
