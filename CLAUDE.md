@@ -10,7 +10,7 @@ the common workflow and links to those guides; implementation invariants belong 
 
 ## Tooling
 
-- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.2. Use the project-local `./kotlin`
+- This is a Kotlin/Native project built with Kotlin Toolchain 0.13.0. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
 - Run `npm ci --prefix webui`, `npm run typecheck --prefix webui`, `npm run build --prefix webui`,
   `./kotlin build -p <host-target> -p jvm`, then `./kotlin test -p <host-target> -p jvm` in that order
