@@ -66,6 +66,27 @@ class SessionRevMergeTest {
                         context.loginWithTicket(harness.ticket, harness.baseUrl)
                         val page = context.newPage()
                         page.addInitScript(FRAME_RECORDER)
+                        // Observe body consumption, then the next task: apiRequest's rejection and
+                        // deliverRead's catch must drain their microtasks before we replay the frame.
+                        // A route counter (or response headers) only observes transport arrival.
+                        page.addInitScript("""
+                            (() => {
+                              window.__kotgentReadFailures = 0;
+                              const fetch = window.fetch.bind(window);
+                              window.fetch = async (...args) => {
+                                const response = await fetch(...args);
+                                if (new URL(response.url).pathname === "$READ_PATH" && response.status === 409) {
+                                  const readText = response.text.bind(response);
+                                  response.text = async () => {
+                                    const text = await readText();
+                                    setTimeout(() => { window.__kotgentReadFailures++; }, 0);
+                                    return text;
+                                  };
+                                }
+                                return response;
+                              };
+                            })();
+                        """.trimIndent())
 
                         // 409 rather than 500: a definite answer is terminal, so the two-second retry
                         // timer never arms and the second POST can only come from the redelivery.
@@ -87,7 +108,7 @@ class SessionRevMergeTest {
 
                         // An appended event raises lastSeq, so the frame it emits carries unread work.
                         harness.send("append $SESSION Read")
-                        page.waitForCondition { reads.get() >= 1 }
+                        page.waitForFunction("() => window.__kotgentReadFailures > 0")
                         val afterFirstFailure = reads.get()
 
                         val redelivered = page.evaluate(REDELIVER_LAST_UPDATE) as String

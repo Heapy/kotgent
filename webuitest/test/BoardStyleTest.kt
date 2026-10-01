@@ -791,19 +791,28 @@ class BoardStyleTest {
         onScreen(
             TASK_LINKED_SESSION_SCENARIO, "terminal-working-directory-phone", 375, PHONE_HEIGHT, mobile = true,
         ) { harness, page ->
+            // Persist the name: changing only textContent lets a live session update erase the
+            // stress case before the geometry assertion, which can hide overflow on fast runners.
+            val longName = "A-very-long-session-name-".repeat(8).trimEnd('-')
+            harness.send("rename s-linked-1 $longName")
             page.navigate(harness.baseUrl + "/s/s-linked-1")
             val head = page.locator("#terminal-head")
+            assertThat(page.locator("#terminal-title")).hasText(longName)
             assertClose(48.0, head.rect().height, "the phone header takes one compact row")
-            page.locator("#terminal-title").setText("A very long session name ".repeat(10))
-            for (selector in listOf("#drawer-toggle", "#terminal-title", "#workspace-tab-picker-toggle",
-                "#workspace-layout-toggle", "#session-actions-toggle")) {
-                val element = page.locator(selector)
-                assertThat(element).isVisible()
-                val bounds = element.rect()
-                val box = head.rect()
-                assertTrue(bounds.left >= box.left && bounds.right <= box.right &&
-                    bounds.top >= box.top && bounds.bottom <= box.bottom,
-                    "$selector stays inside the compact phone header: $bounds in $box")
+            for (width in listOf(375, 320)) {
+                page.setViewportSize(width, PHONE_HEIGHT)
+                var previousRight = 0.0
+                for (selector in listOf("#drawer-toggle", "#session-details-toggle", "#workspace-tab-picker-toggle",
+                    "#workspace-layout-toggle", "#session-actions-toggle")) {
+                    val element = page.locator(selector)
+                    assertThat(element).isVisible()
+                    val bounds = element.rect()
+                    val box = head.rect()
+                    assertTrue(bounds.left >= previousRight && bounds.right <= box.right &&
+                        bounds.top >= box.top && bounds.bottom <= box.bottom,
+                        "$selector stays inside the ${width}px phone header without overlapping: $bounds in $box")
+                    previousRight = bounds.right
+                }
             }
             page.locator("#session-details-toggle").click()
             val cwd = page.locator("#terminal-cwd")

@@ -2710,14 +2710,14 @@ button.task-card-title:hover,
   #terminal-head #sidebar-toggle { display: none; }
   .header-control, #terminal-head > .icon-button { height: 44px; min-height: 44px; min-width: 44px; padding-inline: 5px; }
   .terminal-identity {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 44px;
     max-width: none;
   }
   .session-details-toggle { min-width: 0; gap: 5px; }
   .session-details-toggle > .ui-icon { display: none; }
-  .workspace-toolbar { flex: 0 1 auto; gap: 0; max-width: 50%; }
-  .workspace-tab-picker { min-width: 44px; max-width: 120px; color: #d9caff; font-size: 11px; }
+  .workspace-toolbar { flex: 0 0 auto; gap: 0; max-width: 50%; }
+  .workspace-tab-picker { flex: 0 1 auto; min-width: 44px; max-width: 120px; color: #d9caff; font-size: 11px; }
   .workspace-tab-picker > .ui-icon:first-child { width: 15px; height: 15px; flex-basis: 15px; }
   .workspace-tab-picker > .ui-icon:last-child { width: 10px; height: 10px; flex-basis: 10px; color: #a390c1; }
   .workspace-layout-menu .column-type { font-size: 16px; }
