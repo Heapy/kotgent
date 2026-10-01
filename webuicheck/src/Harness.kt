@@ -1,5 +1,7 @@
 package io.kotgent.webuicheck
 
+import io.kotgent.core.SessionId
+
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchOptions
@@ -111,6 +113,11 @@ class Harness(
         supportedAgentKinds = setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND),
         taskStore = fakes.taskStore,
         projectFs = fakes.projectFs,
+        promptFiles = object : io.kotgent.daemon.PromptFiles {
+            private val prompts = mutableMapOf<SessionId, String>()
+            override fun pathFor(sessionId: SessionId): String = "/fixture/prompts/${sessionId.value}.md"
+            override fun write(sessionId: SessionId, prompt: String) { prompts[sessionId] = prompt }
+        },
     )
 
     // Exposed to SelfCheckTest so it exercises the same real-pty factory as the server.

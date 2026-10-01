@@ -427,3 +427,18 @@ describe("the layout owner", () => {
     assert.deepEqual([...parseWorkspaces(storage.items.get(STORAGE_KEY) ?? null).keys()], ["s-one"]);
   });
 });
+
+
+test("opening an investigator targets its finding in a reused Terminal · Plan workspace", () => {
+  layout.openFinding("investigator", "local:1", "f_first");
+  const first = layout.findingFocusFor("investigator");
+  assert.deepEqual(first, { taskRef: "local:1", findingId: "f_first" });
+  assert.deepEqual(activeTabOf(layout.workspaceOf("investigator")).columns, [{ type: "terminal" }, { type: "plan" }]);
+  assert.equal(activeTabOf(layout.workspaceOf("investigator")).focus, 1);
+  const count = layout.workspaceOf("investigator").tabs.length;
+  layout.openFinding("investigator", "local:1", "f_second");
+  assert.equal(layout.workspaceOf("investigator").tabs.length, count);
+  assert.deepEqual(layout.findingFocusFor("investigator"), { taskRef: "local:1", findingId: "f_second" });
+  layout.pruneWorkspaces(new Set());
+  assert.equal(layout.findingFocusFor("investigator"), undefined);
+});

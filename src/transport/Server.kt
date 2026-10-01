@@ -12,6 +12,9 @@ import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.push.PushStore
 import io.kotgent.store.EventStore
 import io.kotgent.store.PlanStore
+import io.kotgent.daemon.PlanExecution
+import io.kotgent.daemon.PlanInvestigators
+import io.kotgent.daemon.PLAN_INVESTIGATOR_TAG
 import io.kotgent.daemon.PlanReview
 import io.kotgent.store.MutexStore
 import io.kotgent.store.NotificationStore
@@ -109,6 +112,24 @@ class KotgentServer(
                         // Programmatic writes must leave shared tmux copy-mode first or bytes are silently eaten.
                         sessionManager.leaveCopyMode(id) && registry.getOrCreate(id.value).write(bytes)
                     }
+                    val execution = planStore?.let { plans ->
+                        val investigators = PlanInvestigators(plans, eventStore,
+                            launch = { request ->
+                                val child = sessionManager.start("claude", request.worktree, name = "Investigate ${request.findingId}",
+                                    tags = listOf(PLAN_INVESTIGATOR_TAG), prompt = request.prompt, parentSessionId = request.parent, readOnly = true)
+                                try {
+                                    val ref = io.kotgent.core.TaskRef(request.ref)
+                                    if (taskService != null) taskService.link(child.id, ref) else eventStore.setTaskRef(child.id, ref)
+                                    child
+                                } catch (failure: Throwable) {
+                                    try { sessionManager.markDone(child.id) } catch (cleanup: Throwable) { failure.addSuppressed(cleanup) }
+                                    throw failure
+                                }
+                            }, archive = sessionManager::markDone,
+                            onError = { failure -> environment.log.error("plan investigator cleanup failed", failure) })
+                        val _ = investigators.start(this)
+                        PlanExecution(plans, eventStore, investigators)
+                    }
                     install(WebSockets)
                     routing {
                         val _ = claudeHookRoutes(tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON)
@@ -159,7 +180,7 @@ class KotgentServer(
                                     )
                                 }
                                 planStore?.let { plans ->
-                                    planRoutes(PlanRouting(plans, eventStore, sessionManager.paneLookup, json, PlanReview(plans, onPlanReview)))
+                                    planRoutes(PlanRouting(plans, eventStore, sessionManager.paneLookup, json, PlanReview(plans, onPlanReview), requireNotNull(execution)))
                                 }
                                 mutexStore?.let { mutexes ->
                                     mutexRoutes(

@@ -7,6 +7,12 @@ import io.kotgent.plan.*
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePlanStore
 import io.kotgent.store.PlanResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
@@ -14,6 +20,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -83,4 +91,108 @@ class PlanExecutionTest {
         assertIs<PlanResult.Forbidden>(f.service.execute("local:1", PlanAction.Start(f.task), f.root))
         assertEquals("stranger", f.plans.get("local:1")!!.execution.orchestratorSessionId)
     }
+    private suspend fun Fixture.finding(): Finding {
+        assertIs<PlanResult.Accepted>(plans.execute("local:1", PlanAction.Status(task, PlanTaskStatus.in_review), worker))
+        val added = assertIs<PlanResult.Accepted>(plans.execute("local:1", PlanAction.AddFinding(Finding(taskId = task,
+            condition = "A delayed reply overwrites new data", impact = "Edits disappear", danger = FindingLevel.high, likelihood = FindingLevel.medium,
+            options = listOf(FindingOption("Check revision", "Keep the newest reply", FindingLevel.low, FindingLevel.high)), recommended = 0)), root)).document.execution.findings.single()
+        val verified = assertIs<PlanResult.Accepted>(plans.execute("local:1", PlanAction.Verify(added.id!!, added.rev,
+            FindingVerifier(FindingLevel.high, FindingLevel.medium, listOf(VerifierOption(FindingLevel.low, FindingLevel.high)),
+                VerifierVerdict.confirmed, "Reproduced by delayed response")), root))
+        return verified.document.execution.findings.single()
+    }
+
+    private class InvestigatorFixture(val f: Fixture) {
+        val launches = mutableListOf<InvestigatorLaunch>()
+        val archived = mutableListOf<SessionId>()
+        var failArchive = false
+        var duringLaunch: suspend () -> Unit = {}
+        fun service() = PlanInvestigators(f.plans, f.sessions, launch = { request ->
+            launches += request
+            val child = SessionMeta(id = SessionId("investigator${launches.size}"), name = "Investigator", agent = "claude",
+                cwd = request.worktree, tmuxSession = "fixture", state = SessionState.running, createdAt = 1, updatedAt = 1,
+                parentSessionId = request.parent, readOnly = true, tags = listOf(PLAN_INVESTIGATOR_TAG))
+            f.sessions.upsertSession(child)
+            duringLaunch()
+            child
+        }, archive = { id ->
+            if (failArchive) error("temporary archive failure")
+            archived += id
+            f.sessions.setArchived(id, true, 2)
+        })
+    }
+
+    @Test fun investigatorsUseCurrentEvidenceReuseLiveChildrenAndRejectUnsupportedCallers() = runBlocking {
+        val f = Fixture(); f.start(); val finding = f.finding()
+        val ports = InvestigatorFixture(f); val investigators = ports.service()
+        assertIs<PlanResult.Forbidden>(investigators.investigate("local:1", finding.id!!, finding.rev, "claude", f.root))
+        assertIs<PlanResult.Invalid>(investigators.investigate("local:1", finding.id, finding.rev, "codex", PlanActor.Operator))
+        val started = assertIs<PlanResult.Accepted>(investigators.investigate("local:1", finding.id, finding.rev, "claude", PlanActor.Operator))
+        val linked = started.document.execution.findings.single()
+        assertEquals("investigator1", linked.investigatorSessionId)
+        assertIs<PlanResult.Accepted>(investigators.investigate("local:1", finding.id, linked.rev, "claude", PlanActor.Operator))
+        assertEquals(1, ports.launches.size)
+        assertEquals(SessionId("root"), ports.launches.single().parent)
+        assertEquals("/work/worker", ports.launches.single().worktree)
+        val prompt = ports.launches.single().prompt
+        assertTrue(prompt.contains("Reproduced by delayed response"))
+        assertTrue(prompt.contains("read-only child investigator"))
+        assertTrue(prompt.contains("plan finding local:1 amend ${finding.id}"))
+        assertTrue(prompt.contains("kotgent mutex run kotlin-build -- ./kotlin"))
+        val _ = assertIs<PlanResult.Conflict>(investigators.investigate("local:1", finding.id, finding.rev, "claude", PlanActor.Operator))
+    }
+
+    @Test fun decisionCleanupSurvivesFailureAndStartupAlsoReapsUnlinkedLaunches() = runBlocking {
+        val f = Fixture(); f.start(); val finding = f.finding()
+        val ports = InvestigatorFixture(f); val investigators = ports.service()
+        val started = assertIs<PlanResult.Accepted>(investigators.investigate("local:1", finding.id!!, finding.rev, "claude", PlanActor.Operator))
+        val linked = started.document.execution.findings.single()
+        assertIs<PlanResult.Accepted>(f.plans.execute("local:1", PlanAction.Decide(finding.id, linked.rev,
+            FindingDecision(FindingDecisionKind.fix_later)), PlanActor.Operator))
+        ports.failArchive = true
+        assertFailsWith<IllegalStateException> { investigators.reconcile() }
+        assertEquals("investigator1", f.plans.get("local:1")!!.execution.findings.single().investigatorSessionId)
+        ports.failArchive = false
+        ports.service().reconcile()
+        assertEquals(true, f.sessions.getSession(SessionId("investigator1"))!!.archived)
+        val orphan = f.sessions.getSession(SessionId("investigator1"))!!.copy(id = SessionId("orphan"), archived = false)
+        f.sessions.upsertSession(orphan)
+        ports.service().reconcile()
+        assertEquals(listOf(SessionId("investigator1"), SessionId("orphan")), ports.archived)
+        assertEquals(false, f.sessions.getSession(SessionId("root"))!!.archived)
+    }
+
+    @Test fun aDecisionRacingLaunchArchivesTheNewChildInsteadOfLinkingIt() = runBlocking {
+        val f = Fixture(); f.start(); val finding = f.finding()
+        val ports = InvestigatorFixture(f)
+        ports.duringLaunch = {
+            assertIs<PlanResult.Accepted>(f.plans.execute("local:1", PlanAction.Decide(finding.id!!, finding.rev,
+                FindingDecision(FindingDecisionKind.wont_fix)), PlanActor.Operator))
+        }
+        assertIs<PlanResult.Conflict>(ports.service().investigate("local:1", finding.id!!, finding.rev, "claude", PlanActor.Operator))
+        assertEquals(listOf(SessionId("investigator1")), ports.archived)
+        assertNull(f.plans.get("local:1")!!.execution.findings.single().investigatorSessionId)
+    }
+
+    @Test fun aDisconnectedLaunchFinishesItsLinkAndBackgroundCleanupReactsToDecisions() = runBlocking {
+        val f = Fixture(); f.start(); val finding = f.finding()
+        val ports = InvestigatorFixture(f); val investigators = ports.service()
+        val entered = CompletableDeferred<Unit>(); val continueLaunch = CompletableDeferred<Unit>()
+        ports.duringLaunch = { entered.complete(Unit); continueLaunch.await() }
+        val request = launch { investigators.investigate("local:1", finding.id!!, finding.rev, "claude", PlanActor.Operator) }
+        entered.await(); request.cancel(); continueLaunch.complete(Unit); request.join()
+        val linked = f.plans.get("local:1")!!.execution.findings.single()
+        assertEquals("investigator1", linked.investigatorSessionId)
+        val monitor = investigators.start(this)
+        try {
+            val stopped = async(start = CoroutineStart.UNDISPATCHED) {
+                withTimeout(5.seconds) { f.sessions.sessionUpdates.first { it.sessionId.value == "investigator1" && it.archived } }
+            }
+            assertIs<PlanResult.Accepted>(f.plans.execute("local:1", PlanAction.Decide(finding.id!!, linked.rev,
+                FindingDecision(FindingDecisionKind.fix_later)), PlanActor.Operator))
+            stopped.await()
+            assertEquals(listOf(SessionId("investigator1")), ports.archived)
+        } finally { monitor.cancelAndJoin() }
+    }
+
 }

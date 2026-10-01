@@ -53,6 +53,40 @@ class FindingDecisionTest {
         assertEquals(true, page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth"))
     }
 
+
+    @Test fun investigatorOpensTheFindingReusesItsSessionAndDecisionArchivesOnlyTheChild() = onFindings("finding-investigator") { harness, page ->
+        page.locator("[data-finding='f_6'] .finding-investigate").click()
+        assertThat(page.locator(".workspace-tab.active")).containsText("Terminal · Plan")
+        assertThat(page.locator("[data-finding='f_6']")).isFocused()
+        val investigatorUrl = page.url()
+        val id = investigatorUrl.substringAfterLast('/')
+        assertEquals(true, page.evaluate("""async id => {
+            const rows = await (await fetch('/api/v1/sessions')).json();
+            const row = rows.find(row => row.id === id);
+            return row.readOnly && row.parentSessionId === 's-work' && row.cwd === '/repo/worker' && row.taskRef === 'local:1';
+        }""", id))
+        harness.send("restart")
+        page.navigate(harness.baseUrl + "/tasks/local%3A1/plan")
+        page.locator("[data-finding='f_6'] .finding-investigate").click()
+        assertThat(page).hasURL(investigatorUrl)
+        assertThat(page.locator("[data-finding='f_6']")).isFocused()
+        val card = page.locator("[data-finding='f_6']")
+        card.getByLabel("Fix later", Locator.GetByLabelOptions().setExact(true)).click()
+        assertThat(card.getByLabel("Fix later", Locator.GetByLabelOptions().setExact(true))).isChecked()
+        card.getByText("Save decision", exact()).click()
+        page.waitForFunction("""async id => {
+            const rows = await (await fetch('/api/v1/sessions')).json();
+            return rows.find(row => row.id === id)?.archived === true;
+        }""", id).dispose()
+        assertEquals(true, page.evaluate("""async () => {
+            const rows = await (await fetch('/api/v1/sessions')).json();
+            const root = rows.find(row => row.id === 's-work');
+            return root.taskRef === 'local:1' && !root.archived;
+        }"""))
+        page.navigate(harness.baseUrl + "/tasks/local%3A1")
+        assertThat(page.locator("#task-detail-state")).hasValue("in_progress")
+    }
+
     @Test fun changingModePreservesThisReviewAndAutonomousReviewsHideOperatorControls() {
         onFindings("finding-next-mode") { _, page ->
             page.getByLabel("Execution mode", Page.GetByLabelOptions().setExact(true)).selectOption("autonomous")
@@ -63,10 +97,10 @@ class FindingDecisionTest {
         }
         onFindings("finding-autonomous", scenario = "plan-findings-auto") { _, page ->
             assertThat(page.locator(".finding-mode")).hasText("autonomous")
-            assertThat(page.locator(".finding-decision,.finding-send")).hasCount(0)
+            assertThat(page.locator(".finding-decision,.finding-send,.finding-investigate")).hasCount(0)
             page.getByLabel("Execution mode", Page.GetByLabelOptions().setExact(true)).selectOption("supervised")
             assertThat(page.locator(".finding-review")).containsText("This review stays autonomous")
-            assertThat(page.locator(".finding-decision,.finding-send")).hasCount(0)
+            assertThat(page.locator(".finding-decision,.finding-send,.finding-investigate")).hasCount(0)
         }
     }
 }

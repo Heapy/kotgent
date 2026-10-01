@@ -133,7 +133,7 @@ the common workflow and links to those guides; implementation invariants belong 
 ## Structured plans
 
 - `SqlitePlanStore` is the sole writer of `plans`, `plan_blocks`, `plan_view_marks`, `plan_threads`,
-  `plan_edits` and `plan_rounds`. One plan belongs to one task reference. Persist content and review state
+  `plan_edits`, `plan_rounds` and `plan_execution`. One plan belongs to one task reference. Persist content and review state
   in one transaction before publishing a revision. Keep deleted block ids in `plan_blocks`: stale writes
   must report deletions and generated ids must never reuse them.
 - Every visible change advances the plan revision; a block revision advances only on authored content.
@@ -153,6 +153,29 @@ the common workflow and links to those guides; implementation invariants belong 
   their block revision and preserve drafts through conflicts; retry requires accepting the latest base.
 - Plan shortcuts `v` and `n` belong to the focused plan panel, excluding forms. A task's Plan action in
   a session opens or reuses a Terminal · Plan tab; the board uses `/tasks/<ref>/plan`.
+
+- Execution mutations and authored puts share the plan coordinator lock. A put preserves runtime state,
+  settings and findings, and cannot delete started tasks or change their dependencies. A live
+  orchestrator owns start/merge/completion; only the assigned child worker finishes tasks and steps.
+- Persist task transitions and execution events in one transaction. Waits do not consume events: each
+  caller advances a cursor only after handling its returned batch. Retain events until task deletion.
+  Session-end callbacks enqueue worker-loss reconciliation; startup also checks workers lost offline.
+- Finding mutations carry expected finding revisions. An amendment retains previous details and clears
+  verification and decision; notes and investigator linkage also advance the finding revision. Review
+  mode is fixed for an iteration; settings changes update its next mode. Supervised decisions belong to
+  the operator, autonomous decisions to the assigned worker with a note. All findings need independent
+  verification; subagents sharing one pane may share session attribution.
+- Investigator launches are operator-only, Claude-only, read-only children of the current live
+  orchestrator, linked to its task in the worker worktree. Claude plan mode is advisory. Keep the launch
+  and finding link under the investigator lock and protect that short sequence from client cancellation.
+  The reserved `kotgent-plan-investigator` session tag lets startup reap a launch whose finding link was
+  lost in a crash. Do not use that tag for ordinary sessions.
+- The investigator monitor rereads durable state on plan/session changes and retries cleanup failures.
+  Decisions, superseded reviews, missing plans and dead parents retire investigators with `markDone`;
+  children never close the parent task. Retain the finding's investigator ID as durable cleanup evidence.
+- Finding decision drafts freeze their expected revision and survive conflict refreshes. `state/layout.ts`
+  owns transient per-session finding focus; opening an investigator reuses Terminal · Plan and focuses
+  the requested finding after its document loads.
 
 ## Usage and notifications
 

@@ -14,7 +14,10 @@ import kotlin.time.Duration
 @Serializable
 data class PlanExecutionResponse(val event: String, val cursor: Long, val events: List<ExecutionEvent>, val document: PlanDocument)
 
-class PlanExecution(private val plans: PlanStore, private val sessions: EventStore) {
+class PlanExecution(private val plans: PlanStore, private val sessions: EventStore, private val investigators: PlanInvestigators? = null) {
+    suspend fun investigate(ref: String, id: String, rev: Long, agent: String, actor: PlanActor): PlanResult =
+        investigators?.investigate(ref, id, rev, agent, actor) ?: invalid("investigator", "investigator launch is not configured")
+
     suspend fun claim(ref: String, actor: PlanActor): PlanResult {
         val doc = plans.get(ref) ?: return PlanResult.Missing
         if (actor !is PlanActor.Session) return forbidden("calling session required")

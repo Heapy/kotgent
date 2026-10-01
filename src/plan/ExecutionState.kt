@@ -230,6 +230,7 @@ fun applyPlanAction(
             val finding = currentFinding(action.id) ?: return reject("unknown or superseded finding")
             if (finding.rev != action.rev || finding.decision != null) return reject("finding changed or was decided")
             if (review(finding.taskId)?.mode != ExecutionMode.supervised) return reject("this review is autonomous")
+            if (task(finding.taskId)?.status !in setOf(PlanTaskStatus.in_review, PlanTaskStatus.awaiting_decision)) return reject("review is no longer open")
             replaceFinding(finding.copy(investigatorSessionId = action.sessionId, rev = finding.rev + 1))
         }
         is PlanAction.WorkerEnded -> {

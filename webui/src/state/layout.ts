@@ -43,6 +43,14 @@ export function addTab(sessionId: string) {
   update(sessionId, (ws, now) => model.addTab(ws, model.AVAILABLE_COLUMN_TYPES, now));
 }
 
+export interface PlanFindingFocus { taskRef: string; findingId: string }
+const findingFocusState = signal<ReadonlyMap<string, PlanFindingFocus>>(new Map());
+export function findingFocusFor(sessionId: string): PlanFindingFocus | undefined { return findingFocusState.value.get(sessionId); }
+export function openFinding(sessionId: string, taskRef: string, findingId: string) {
+  openPlanTab(sessionId);
+  findingFocusState.value = new Map(findingFocusState.value).set(sessionId, { taskRef, findingId });
+}
+
 export function openPlanTab(sessionId: string) {
   update(sessionId, model.openPlanTab);
 }
@@ -84,5 +92,8 @@ export function moveDivider(
 
 // Only a full session snapshot proves a session is gone.
 export function pruneWorkspaces(liveIds: ReadonlySet<string>) {
+  if ([...findingFocusState.value.keys()].some(id => !liveIds.has(id))) {
+    findingFocusState.value = new Map([...findingFocusState.value].filter(([id]) => liveIds.has(id)));
+  }
   commit(model.pruneWorkspaces(workspaces.value, liveIds));
 }

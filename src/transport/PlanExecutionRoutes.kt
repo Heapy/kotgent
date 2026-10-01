@@ -9,6 +9,7 @@ import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 import kotlin.time.Duration.Companion.seconds
 
+@Serializable data class PlanInvestigateRequest(val rev: Long, val agent: String = "claude")
 @Serializable data class PlanSettingsRequest(val mode: ExecutionMode? = null, val featureBranch: String? = null, val concurrency: Int? = null)
 @Serializable data class PlanTaskStatusRequest(val status: PlanTaskStatus)
 @Serializable data class PlanFeedbackRequest(val findingIds: List<String> = emptyList(), val rebaseOnto: String? = null)
@@ -96,6 +97,12 @@ internal fun Route.planExecutionRoutes(routing: PlanRouting) {
         val actor = planActor(routing, sessionOnly = true) ?: return@post
         val body = planBody(routing, PlanMessageRequest.serializer(), MAX_THREAD_MESSAGE_BYTES * 6 + 1024) ?: return@post
         respondPlan(routing, routing.execution.execute(ref, PlanAction.Note(call.parameters["id"].orEmpty(), body.body), actor))
+    }
+    post("/findings/{id}/investigate") {
+        val ref = planRef() ?: return@post
+        val actor = planActor(routing, operatorOnly = true) ?: return@post
+        val body = planBody(routing, PlanInvestigateRequest.serializer(), 1024) ?: return@post
+        respondPlan(routing, routing.execution.investigate(ref, call.parameters["id"].orEmpty(), body.rev, body.agent, actor))
     }
     post("/findings/{id}/decide") {
         val ref = planRef() ?: return@post

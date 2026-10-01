@@ -151,3 +151,19 @@ note, then save each decision. **Send to worker** becomes available only after e
 verified and decided. The whole batch is sent together. If a finding changes while you are deciding,
 your note is kept; read the latest assessment and explicitly accept its revision before saving again.
 Autonomous reviews show the worker's recorded decisions and notes without operator decision controls.
+
+### Investigating a finding
+
+In an open supervised review, **Investigate with Claude** opens a read-only child of the orchestrator in
+the worker's worktree. The investigator receives the current finding, verifier assessment and notes,
+and can report evidence or amend the finding through the CLI. Opening it again reuses the live session
+and returns to the same finding in a **Terminal · Plan** workspace. An amendment needs verification again.
+
+Claude's plan permission mode is advisory; it is not an operating-system sandbox. Codex investigators
+are unavailable because its read-only sandbox also blocks the local CLI's network calls. Ordinary
+workers may still use either provider.
+
+A decision stops and archives the investigator without closing the task. Cleanup retries after failures
+and on daemon restart; a superseded review, deleted plan or lost parent also retires its investigator.
+The daemon reserves the `kotgent-plan-investigator` session tag for identifying abandoned launches.
+Do not remove it or use it on other sessions.

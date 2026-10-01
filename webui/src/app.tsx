@@ -126,7 +126,7 @@ import {
 import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
 import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
 import { mergeMutexes, mutexes as mutexesSignal, replaceMutexes } from "./state/mutexes.ts";
-import { openPlanTab, pruneWorkspaces } from "./state/layout.ts";
+import { findingFocusFor, openPlanTab, pruneWorkspaces } from "./state/layout.ts";
 import { planChanged, recoverPlans } from "./state/plans.ts";
 import {
   PREFS_SUPERSEDED,
@@ -1364,7 +1364,7 @@ function App() {
         </section>
       );
     }
-    if (type === "plan") return <PlanPanel key={ref} taskRef={ref} />;
+    if (type === "plan") return <PlanPanel key={ref} taskRef={ref} findingFocus={findingFocusFor(activeSession.id)} />;
     return (
       <TaskDetail key={ref} taskRef={ref} entry={findTask(ref)} sessions={sessions}
                   onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}

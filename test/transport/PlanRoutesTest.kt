@@ -98,7 +98,7 @@ class PlanRoutesTest {
             HttpMethod.Post to "$BASE/tasks/t_x/status", HttpMethod.Post to "$BASE/tasks/t_x/worker", HttpMethod.Post to "$BASE/tasks/t_x/feedback",
             HttpMethod.Post to "$BASE/tasks/t_x/wait", HttpMethod.Post to "$BASE/wait", HttpMethod.Post to "$BASE/steps/st_x/done",
             HttpMethod.Post to "$BASE/findings", HttpMethod.Post to "$BASE/findings/send", HttpMethod.Post to "$BASE/findings/f_x/verify",
-            HttpMethod.Post to "$BASE/findings/f_x/amend", HttpMethod.Post to "$BASE/findings/f_x/note", HttpMethod.Post to "$BASE/findings/f_x/decide",
+            HttpMethod.Post to "$BASE/findings/f_x/amend", HttpMethod.Post to "$BASE/findings/f_x/note", HttpMethod.Post to "$BASE/findings/f_x/decide", HttpMethod.Post to "$BASE/findings/f_x/investigate",
         )) assertEquals(HttpStatusCode.Unauthorized, f.request(request.first, request.second, "{}", token = false).status)
     }
 
@@ -107,6 +107,8 @@ class PlanRoutesTest {
         assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Put, "$BASE?baseRev=0", DOCUMENT).status)
         assertEquals(HttpStatusCode.BadRequest, f.request(HttpMethod.Put, "$BASE?baseRev=0", "{}", session = true).status)
         assertTrue(f.refuseOversized().contains(" 413 "), "reject a declared oversized body before reading it")
+        assertEquals(HttpStatusCode.Forbidden, f.request(HttpMethod.Post, "$BASE/findings/f_x/investigate", "{}", session = true).status)
+        assertEquals(HttpStatusCode.BadRequest, f.request(HttpMethod.Post, "$BASE/findings/f_x/investigate", "{}").status)
         val initial = f.put()
         val section = initial.plan.sections.single()
         assertEquals(HttpStatusCode.Conflict, f.request(HttpMethod.Put, "$BASE?baseRev=0", DOCUMENT, session = true).status)

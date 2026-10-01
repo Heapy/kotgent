@@ -55,8 +55,10 @@ restarting the daemon—must not discard the work.
 
 ## Deliberate boundaries
 
-- Kotgent is a terminal-oriented control plane, not a replacement chat UI, autonomous approval service, or
-  cloud scheduler.
+- Kotgent is a terminal-oriented control plane, not a replacement chat UI or cloud scheduler. Structured
+  plans may delegate review-finding decisions to assigned workers in an explicitly selected autonomous
+  mode. This does not approve provider permission prompts, bypass the operator's plan approval, or close
+  the final human review. Supervised mode keeps finding decisions with the operator.
 - The service worker is network-only: without the local daemon there is no useful offline application state.
 - Shell sessions provide a remotely reachable login shell, not a durable conversation or provider import.
 - Usage meters assume one account per provider on the host and show only available percentage windows.

@@ -5,13 +5,16 @@ import { pendingMutation } from "../lib/mutation.ts";
 import { isPlanViewed, nextUnviewed, planBlocks } from "../lib/plans.ts";
 import type { DisplayPlanBlock, PlanDocument, PlanThread } from "../lib/plans.ts";
 import { changePlan, planEntry, refreshPlan, retainPlan } from "../state/plans.ts";
+import type { PlanFindingFocus } from "../state/layout.ts";
 import { navigate, sessionPath } from "../lib/router.ts";
 import { FindingReview } from "./FindingCard.tsx";
 import { Markdown } from "./Markdown.tsx";
 
 type Change = import("../lib/plans.ts").PlanChange;
 
-export function PlanPanel({ taskRef, onClose = null }: { taskRef: string; onClose?: (() => void) | null }) {
+export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
+  taskRef: string; onClose?: (() => void) | null; findingFocus?: PlanFindingFocus | undefined;
+}) {
   const entry = planEntry(taskRef);
   const document = entry.document;
   const [active, setActive] = useState<string | null>(null);
@@ -20,6 +23,18 @@ export function PlanPanel({ taskRef, onClose = null }: { taskRef: string; onClos
   const root = useRef<HTMLElement>(null);
   const alive = useRef(true);
   const titleId = useId();
+  const handledFocus = useRef<PlanFindingFocus | undefined>(undefined);
+  useEffect(() => {
+    if (!findingFocus || findingFocus.taskRef !== taskRef || handledFocus.current === findingFocus) return;
+    const target = root.current?.querySelector<HTMLElement>(`[data-finding="${findingFocus.findingId}"]`);
+    if (!target) return;
+    for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === "DETAILS") (parent as HTMLDetailsElement).open = true;
+    }
+    target.scrollIntoView({ block: "nearest" });
+    target.focus({ preventScroll: true });
+    handledFocus.current = findingFocus;
+  }, [findingFocus, taskRef, document]);
   useEffect(() => {
     alive.current = true;
     const release = retainPlan(taskRef);
@@ -142,7 +157,7 @@ function PlanBlockView({ block, document, change, busy, onActive, onViewed }: {
       if (alive.current) setEdit(null);
     }
   };
-  return <article class="plan-block" data-block={block.id} tabIndex={-1} onFocus={onActive} onClick={onActive}>
+  return <article class="plan-block" data-block={block.id} tabIndex={-1} onFocusIn={onActive} onClick={onActive}>
     <header><h3>{block.label}</h3><span class="field-hint">rev {block.rev}</span></header>
     <div class="plan-block-actions">
       <label><input type="checkbox" checked={marked} disabled={busy} onChange={onViewed} /> Viewed</label>

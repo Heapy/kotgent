@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from "preact/hooks";
 import type { Finding, FindingDecisionKind, PlanActor, PlanChange, PlanDocument, PlanTask } from "../lib/plans.ts";
 import { canDecideFindings, canSendFindings, currentFindings, findingDecisionPayload, taskReview } from "../lib/plans.ts";
+import { navigate, sessionPath } from "../lib/router.ts";
+import { openFinding } from "../state/layout.ts";
+import { planEntry } from "../state/plans.ts";
 import { Markdown } from "./Markdown.tsx";
 
 export function FindingReview({ document, task, change, busy }: {
@@ -15,14 +18,14 @@ export function FindingReview({ document, task, change, busy }: {
     <header><h4>Review · iteration {review.iteration}</h4><span class="finding-mode">{review.mode}</span></header>
     {review.nextMode !== review.mode && <p class="field-hint">Next review: {review.nextMode}. This review stays {review.mode}.</p>}
     {findings.length === 0 && <p class="field-hint">No findings in this review.</p>}
-    {findings.map(finding => <FindingCard key={finding.id} finding={finding} editable={controls} change={change} busy={busy} />)}
+    {findings.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding} editable={controls} change={change} busy={busy} />)}
     {controls && findings.length > 0 && <button type="button" class="button button-primary finding-send"
       disabled={busy || !canSendFindings(document, task)} onClick={() => void change("/findings/send", "POST", { taskId: task.id })}>
       Send to worker</button>}
     {!controls && findings.length > 0 && <p class="field-hint">{review.mode === "autonomous"
       ? "The assigned worker records each decision and its reason." : "Decisions have been sent to the worker."}</p>}
     {history.length > 0 && <details class="finding-history"><summary>Earlier findings ({history.length})</summary>
-      {history.map(finding => <FindingCard key={finding.id} finding={finding} editable={false} change={change} busy={busy} />)}
+      {history.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding} editable={false} change={change} busy={busy} />)}
     </details>}
   </section>;
 }
@@ -30,8 +33,8 @@ export function FindingReview({ document, task, change, busy }: {
 function actorName(actor: PlanActor | null): string { return actor?.type === "session" ? actor.sessionId : actor ? "You" : "Agent"; }
 interface DecisionDraft { rev: number; kind: FindingDecisionKind; option: number; note: string }
 
-export function FindingCard({ finding, editable, change, busy }: {
-  finding: Finding; editable: boolean; change: PlanChange; busy: boolean;
+export function FindingCard({ taskRef, finding, editable, change, busy }: {
+  taskRef: string; finding: Finding; editable: boolean; change: PlanChange; busy: boolean;
 }) {
   const [draft, setDraft] = useState<DecisionDraft | null>(null);
   const alive = useRef(true);
@@ -68,6 +71,14 @@ export function FindingCard({ finding, editable, change, busy }: {
       {finding.revisions.map((revision, index) => <div key={index}><small>{actorName(revision.author)}</small>
         <Markdown text={revision.condition} /><Markdown text={revision.impact} /></div>)}
     </details>}
+    {editable && !finding.decision && <button type="button" class="button button-small finding-investigate" disabled={busy}
+      onClick={async () => {
+        if (!await change(`/findings/${finding.id}/investigate`, "POST", { rev: finding.rev, agent: "claude" }) || !alive.current) return;
+        const investigator = planEntry(taskRef).document?.execution.findings.find(f => f.id === finding.id)?.investigatorSessionId;
+        if (!investigator) return;
+        openFinding(investigator, taskRef, finding.id);
+        navigate(sessionPath(investigator));
+      }}>{finding.investigatorSessionId ? "Open Claude investigator" : "Investigate with Claude"}</button>}
     {editable && <form class="finding-decision" onSubmit={async event => {
       event.preventDefault();
       setDraft(current);
