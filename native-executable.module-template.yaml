@@ -3,7 +3,7 @@ apply:
 
 settings:
   kotlin:
-    version: 2.4.10
+    version: 2.4.20
     freeCompilerArgs:
       - -linker-option
       - -lsqlite3
