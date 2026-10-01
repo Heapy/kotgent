@@ -1,3 +1,4 @@
+import { SidebarToggle } from "./SidebarToggle.tsx";
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { formatMutexElapsed, isHeldLong, mutexElapsed, sessionMutexPills } from "../lib/mutexes.ts";
@@ -120,16 +121,7 @@ export function MutexesScreen({
           title="Sessions"
           onClick={onToggleDrawer}
         >☰</button>
-        <button
-          id="sidebar-toggle"
-          class="icon-button icon-button-small sidebar-toggle"
-          type="button"
-          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded={sidebarCollapsed ? "false" : "true"}
-          aria-controls="sidebar"
-          title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
-          onClick={onToggleSidebar}
-        >{sidebarCollapsed ? "›" : "‹"}</button>
+        <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <div class="mutexes-identity">
           <h1 class="mutexes-title">Mutexes</h1>
           <span id="mutexes-summary" class="mutexes-summary">

@@ -216,6 +216,20 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
     activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [sessionId, tab.id, phone]);
 
+  const columnMenu = <HeaderPopover key={sessionId + ":layout"} id="workspace-layout" label="Configure columns"
+      className="workspace-tab-layout" trigger={<Icon name="columns" />} panelClass="workspace-layout-menu">
+      {(close) => <>
+        <p class="header-popover-label">Columns in this tab</p>
+        {candidates.map((entry) => <ColumnHeader key={entry.index} type={entry.type}
+          types={AVAILABLE_COLUMN_TYPES} canAdd={canAdd} canClose={tab.columns.length > 1}
+          onType={(type) => setColumnType(sessionId, tab.id, entry.index, type)}
+          onAdd={() => { addColumn(sessionId, tab.id, entry.index); close(); }}
+          onClose={() => closeColumn(sessionId, tab.id, entry.index)} />)}
+        {candidates.length === 0 && <button class="button" type="button"
+          onClick={() => { addColumn(sessionId, tab.id, tab.columns.length - 1); close(); }}>Add a terminal</button>}
+      </>}
+    </HeaderPopover>;
+
   const tabs = (close: () => void) => <>
     <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
       {ws.tabs.map((entry) => {
@@ -232,6 +246,7 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
             <Icon name={icon} /><span>{label}</span>
             {panels.length > 1 && <span class="workspace-tab-count" aria-hidden="true">{panels.length}</span>}
           </button>
+          {active && !phone && columnMenu}
           {ws.tabs.length > 1 && <button type="button" class="workspace-tab-close"
             aria-label={"Close tab " + label} title="Close tab"
             onClick={() => closeTab(sessionId, entry.id)}><Icon name="close" /></button>}
@@ -245,24 +260,12 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
   </>;
 
   return <div class="workspace-toolbar">
-    {phone ? <HeaderPopover key={sessionId} id="workspace-tab-picker" label="Workspace tabs"
+    {phone ? <div class="workspace-mobile-tab"><HeaderPopover key={sessionId} id="workspace-tab-picker" label="Workspace tabs"
       className="workspace-tab-picker" panelClass="workspace-tab-menu"
       initialFocus=".workspace-tab.active .workspace-tab-label"
       trigger={<><Icon name={focused?.type === "task" || focused?.type === "plan" ? focused.type : "terminal"} /><span>{tabLabel(tab)}</span><Icon name="caret" /></>}>
       {tabs}
-    </HeaderPopover> : <div class="workspace-desktop-tabs">{tabs(() => {})}</div>}
-    <HeaderPopover key={sessionId + ":layout"} id="workspace-layout" label="Configure columns"
-      trigger={<Icon name="columns" />} panelClass="workspace-layout-menu">
-      {(close) => <>
-        <p class="header-popover-label">Columns in this tab</p>
-        {candidates.map((entry) => <ColumnHeader key={entry.index} type={entry.type}
-          types={AVAILABLE_COLUMN_TYPES} canAdd={canAdd} canClose={tab.columns.length > 1}
-          onType={(type) => setColumnType(sessionId, tab.id, entry.index, type)}
-          onAdd={() => { addColumn(sessionId, tab.id, entry.index); close(); }}
-          onClose={() => closeColumn(sessionId, tab.id, entry.index)} />)}
-        {candidates.length === 0 && <button class="button" type="button"
-          onClick={() => { addColumn(sessionId, tab.id, tab.columns.length - 1); close(); }}>Add a terminal</button>}
-      </>}
-    </HeaderPopover>
+    </HeaderPopover>{columnMenu}</div> : <div class="workspace-desktop-tabs">{tabs(() => {})}</div>}
+
   </div>;
 }

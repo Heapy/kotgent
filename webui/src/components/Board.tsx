@@ -1,6 +1,7 @@
 /* Positions are project-scoped, so the board intentionally has no cross-project ordering. Task rows
  * arrive from events; write responses merge into the same revision-ordered app state. */
 
+import { SidebarToggle } from "./SidebarToggle.tsx";
 import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
@@ -704,16 +705,7 @@ export function Board({
           title="Projects"
           onClick={onToggleDrawer}
         >☰</button>
-        <button
-          id="sidebar-toggle"
-          class="icon-button icon-button-small sidebar-toggle"
-          type="button"
-          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded={sidebarCollapsed ? "false" : "true"}
-          aria-controls="sidebar"
-          title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
-          onClick={onToggleSidebar}
-        >{sidebarCollapsed ? "›" : "‹"}</button>
+        <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <div class="board-identity">
           <span class="board-project">{project ? (project.name || project.id) : "No project"}</span>
           <span class="board-project-path" title={(project && project.path) || ""}>

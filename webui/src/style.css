@@ -809,6 +809,7 @@ textarea:focus-visible {
   background: currentColor;
   mask: no-repeat center / contain;
 }
+.sidebar-toggle,
 .header-control,
 #terminal-head > .icon-button {
   display: inline-flex;
@@ -967,6 +968,24 @@ textarea:focus-visible {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14.5%, transparent);
 }
 .workspace-tab:not(.active):hover { background: var(--row-hover); }
+.workspace-tab .workspace-tab-layout {
+  min-width: 28px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 6px;
+  margin-right: 3px;
+  border-radius: 4px;
+  color: #c1afd9;
+}
+.workspace-tab-layout .ui-icon { width: 15px; height: 15px; flex-basis: 15px; }
+.workspace-mobile-tab {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 6px;
+  background: var(--pill-active);
+  box-shadow: inset 0 0 0 1px var(--pill-active-border);
+}
 .workspace-tab-label,
 .workspace-tab-close {
   background: transparent;

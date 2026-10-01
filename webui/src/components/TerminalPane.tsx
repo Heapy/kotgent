@@ -1,5 +1,6 @@
 /* xterm owns terminal-host DOM and its WebSocket outside the vdom; one attachment effect owns both. */
 
+import { SidebarToggle } from "./SidebarToggle.tsx";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { createContext } from "preact";
@@ -600,16 +601,7 @@ export function TerminalPane({
           title="Sessions"
           onClick={onToggleDrawer}
         ><Icon name="list" /></button>
-        <button
-          id="sidebar-toggle"
-          class="icon-button icon-button-small sidebar-toggle"
-          type="button"
-          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded={sidebarCollapsed ? "false" : "true"}
-          aria-controls="sidebar"
-          title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
-          onClick={onToggleSidebar}
-        ><Icon name="sidebar" /></button>
+        <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <div class="terminal-identity">
           {session ? <HeaderPopover key={session.id} id="session-details" label="Session details"
             className="session-details-toggle" panelClass="session-details"

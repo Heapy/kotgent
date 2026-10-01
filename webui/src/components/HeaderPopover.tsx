@@ -51,12 +51,14 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     document.addEventListener("pointerdown", outside);
     document.addEventListener("focusin", outside);
     document.addEventListener("keydown", escape, true);
+    document.addEventListener("scroll", align, true);
     if (initialFocus) panel.current?.querySelector<HTMLElement>(initialFocus)?.focus();
     return () => {
       observer.disconnect();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);
+      document.removeEventListener("scroll", align, true);
     };
   }, [open, initialFocus]);
 
