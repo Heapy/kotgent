@@ -44,7 +44,17 @@ class PlanExecution(private val plans: PlanStore, private val sessions: EventSto
                 return invalid("sessionId", "stop the previous worker before replacing it")
             }
         }
-        return plans.execute(ref, action, actor)
+        val result = plans.execute(ref, action, actor)
+        if (action is PlanAction.Worker && result is PlanResult.Accepted) {
+            // An end callback can run before the assignment is visible. Recheck after persisting it;
+            // an end after this read will see the assignment through the normal queued callback.
+            val worker = sessions.getSession(SessionId(action.worker.sessionId))
+            if (worker == null || !worker.state.isAlive || worker.archived) {
+                plans.workerEnded(action.worker.sessionId)
+                return plans.get(ref)?.let { PlanResult.Accepted(it) } ?: PlanResult.Missing
+            }
+        }
+        return result
     }
 
     /** Events are retained until task deletion. The caller acknowledges only by advancing its next cursor. */

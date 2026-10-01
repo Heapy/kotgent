@@ -4,6 +4,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.plan.*
+import io.kotgent.store.EventStore
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePlanStore
 import io.kotgent.store.PlanResult
@@ -37,7 +38,7 @@ class PlanExecutionTest {
             sessions.upsertSession(SessionMeta(id = SessionId(id), name = id, agent = "claude", cwd = "/work/$id", tmuxSession = "kt-$id",
                 state = state, createdAt = 1, updatedAt = 1, parentSessionId = parent?.let(::SessionId)))
         }
-        suspend fun start() {
+        suspend fun start(assignWorker: Boolean = true) {
             session("root"); session("worker", parent = "root"); session("stranger")
             val doc = assertIs<PlanResult.Accepted>(plans.put(Plan("local:1", "Execution", tasks = listOf(PlanTask(ordinal = 1, title = "Work"))), 0)).document
             task = requireNotNull(doc.plan.tasks.single().id)
@@ -45,8 +46,29 @@ class PlanExecutionTest {
             val _ = plans.submitReview("local:1", 1, ReviewVerdict.approved)
             assertIs<PlanResult.Accepted>(service.claim("local:1", root))
             assertIs<PlanResult.Accepted>(service.execute("local:1", PlanAction.Start(task), root))
-            assertIs<PlanResult.Accepted>(service.execute("local:1", PlanAction.Worker(task, PlanWorker("worker", "work/one", "/work/worker")), root))
+            if (assignWorker) assertIs<PlanResult.Accepted>(service.execute("local:1", PlanAction.Worker(task, PlanWorker("worker", "work/one", "/work/worker")), root))
         }
+    }
+
+    @Test fun anEndCallbackBeforeAssignmentCannotLeaveADeadWorkerRunning() = runBlocking {
+        val f = Fixture(); f.start(assignWorker = false)
+        var race = true
+        val sessions = object : EventStore by f.sessions {
+            override suspend fun getSession(sessionId: SessionId): SessionMeta? {
+                val row = f.sessions.getSession(sessionId)
+                if (sessionId.value == "worker" && race) {
+                    race = false
+                    f.session("worker", SessionState.stopped, "root")
+                    f.plans.workerEnded("worker") // There is no assigned worker yet, so this callback finds nothing.
+                }
+                return row
+            }
+        }
+        val service = PlanExecution(f.plans, sessions)
+        val result = assertIs<PlanResult.Accepted>(service.execute("local:1", PlanAction.Worker(f.task,
+            PlanWorker("worker", "work/one", "/work/worker")), f.root))
+        assertEquals(PlanTaskStatus.blocked, result.document.plan.tasks.single().status)
+        assertEquals(1, result.document.execution.events.count { it.kind == "worker_lost" })
     }
 
     @Test fun feedbackWakesOnlyItsWorkerAndDroppedDeliveryCanBeReplayed() = runBlocking {
@@ -179,7 +201,7 @@ class PlanExecutionTest {
         val ports = InvestigatorFixture(f); val investigators = ports.service()
         val entered = CompletableDeferred<Unit>(); val continueLaunch = CompletableDeferred<Unit>()
         ports.duringLaunch = { entered.complete(Unit); continueLaunch.await() }
-        val request = launch { investigators.investigate("local:1", finding.id!!, finding.rev, "claude", PlanActor.Operator) }
+        val request = launch { val _ = investigators.investigate("local:1", finding.id!!, finding.rev, "claude", PlanActor.Operator) }
         entered.await(); request.cancel(); continueLaunch.complete(Unit); request.join()
         val linked = f.plans.get("local:1")!!.execution.findings.single()
         assertEquals("investigator1", linked.investigatorSessionId)
