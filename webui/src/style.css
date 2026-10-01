@@ -10,6 +10,13 @@
   --accent-hover: #6E43DF;
   --attn: #ff6b6b;
   --attn-bg: #3a1f22;
+  --status-running: #5c9dff;
+  --status-ready: #4cdb85;
+  --status-attention: #ffb547;
+  --status-stopped: #7c879a;
+  --status-crashed: #ff5c67;
+  --status-lost: #000000;
+  --status-resumable: #ab83ff;
   --row-hover: #232833;
   --row-active: #2a3242;
   --term-bg: #000000;
@@ -857,6 +864,7 @@ textarea:focus-visible {
   flex: 0 0 7px;
   width: 7px;
   height: 7px;
+  color: var(--dot, var(--muted));
   background: currentColor;
   border-radius: 50%;
 }
@@ -2252,21 +2260,33 @@ button.task-card-title:hover,
   height: 8px;
   width: 8px;
 }
+/* One saturated state palette for sidebar, header and linked-task dots. */
+.session-status-dot.badge-running,
 .task-session-dot[data-state="running"],
-.task-session-dot[data-state="badge-running"] { --dot: #6f9cff; }
+.task-session-dot[data-state="badge-running"] { --dot: var(--status-running); }
+.session-status-dot.badge-ready,
 .task-session-dot[data-state="ready"],
-.task-session-dot[data-state="badge-ready"] { --dot: #58c47c; }
+.task-session-dot[data-state="badge-ready"] { --dot: var(--status-ready); }
+.session-status-dot.badge-attention,
 .task-session-dot[data-state="needs_approval"],
 .task-session-dot[data-state="needs_answer"],
-.task-session-dot[data-state="badge-attention"] { --dot: var(--attn); }
+.task-session-dot[data-state="badge-attention"] { --dot: var(--status-attention); }
+.session-status-dot.badge-dead,
 .task-session-dot[data-state="stopped"],
-.task-session-dot[data-state="badge-dead"] { --dot: #6c7482; }
+.task-session-dot[data-state="badge-dead"] { --dot: var(--status-stopped); }
+.session-status-dot.badge-crashed,
 .task-session-dot[data-state="crashed"],
-.task-session-dot[data-state="badge-crashed"] { --dot: #a68cf0; }
+.task-session-dot[data-state="badge-crashed"] { --dot: var(--status-crashed); }
+.session-status-dot.badge-lost,
 .task-session-dot[data-state="lost"],
-.task-session-dot[data-state="badge-lost"] { --dot: #c98fc0; }
+.task-session-dot[data-state="badge-lost"] {
+  --dot: var(--status-lost);
+  outline: 1px solid #8590a1;
+  outline-offset: 0;
+}
+.session-status-dot.badge-resumable,
 .task-session-dot[data-state="resumable"],
-.task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
+.task-session-dot[data-state="badge-resumable"] { --dot: var(--status-resumable); }
 /* An archived holder keeps its link until the last live session closes the task; a hollow dot says so. */
 .task-session-dot[data-archived="true"] {
   background: none;
