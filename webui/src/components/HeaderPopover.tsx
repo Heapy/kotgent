@@ -20,8 +20,23 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     if (panel.current?.contains(document.activeElement)) button.current?.focus({ preventScroll: true });
     setOpen(false);
   };
+  const align = () => {
+    const pane = button.current?.closest<HTMLElement>("#terminal-pane");
+    if (!pane || !button.current || !panel.current) return;
+    const paneBox = pane.getBoundingClientRect();
+    const buttonBox = button.current.getBoundingClientRect();
+    const left = Math.max(6, Math.min(buttonBox.left - paneBox.left,
+      paneBox.width - panel.current.offsetWidth - 6));
+    panel.current.style.left = left + "px";
+  };
+  // A tab label can change the trigger's position without changing the pane's width.
+  useLayoutEffect(() => { if (open) align(); });
   useLayoutEffect(() => {
     if (!open) return undefined;
+    const pane = button.current?.closest<HTMLElement>("#terminal-pane");
+    const observer = new ResizeObserver(align);
+    if (pane) observer.observe(pane);
+    if (panel.current) observer.observe(panel.current);
     const outside = (event: Event) => {
       const target = event.target;
       if (target instanceof Node && !panel.current?.contains(target) && !button.current?.contains(target)) close();
@@ -38,6 +53,7 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     document.addEventListener("keydown", escape, true);
     if (initialFocus) panel.current?.querySelector<HTMLElement>(initialFocus)?.focus();
     return () => {
+      observer.disconnect();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);

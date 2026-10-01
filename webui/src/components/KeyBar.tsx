@@ -8,6 +8,7 @@ interface TerminalKey {
   bytes: number[];
   wide?: boolean;
   releasesCtrl?: boolean;
+  icon?: "up" | "down" | "left" | "right";
 }
 
 export interface KeyBarProps {
@@ -21,14 +22,14 @@ export interface KeyBarProps {
 const NAVIGATION_KEYS: TerminalKey[] = [
   { label: "Esc", name: "Escape", bytes: [0x1b] },
   { label: "Tab", name: "Tab", bytes: [0x09] },
-  { label: "↑", name: "Up arrow", bytes: [0x1b, 0x5b, 0x41] },
-  { label: "↓", name: "Down arrow", bytes: [0x1b, 0x5b, 0x42] },
+  { label: "↑", name: "Up arrow", bytes: [0x1b, 0x5b, 0x41], icon: "up" },
+  { label: "↓", name: "Down arrow", bytes: [0x1b, 0x5b, 0x42], icon: "down" },
 ];
 
 const EXTRA_KEYS: TerminalKey[] = [
   { label: "⇧Tab", name: "Shift Tab", bytes: [0x1b, 0x5b, 0x5a], wide: true },
-  { label: "←", name: "Left arrow", bytes: [0x1b, 0x5b, 0x44] },
-  { label: "→", name: "Right arrow", bytes: [0x1b, 0x5b, 0x43] },
+  { label: "←", name: "Left arrow", bytes: [0x1b, 0x5b, 0x44], icon: "left" },
+  { label: "→", name: "Right arrow", bytes: [0x1b, 0x5b, 0x43], icon: "right" },
   { label: "⇧←", name: "Shift Left arrow", bytes: [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x44], wide: true },
 ];
 
@@ -68,7 +69,7 @@ export function KeyBar({ barRef, sendBytesRef, ctrlActive, onToggleCtrl, onRelea
   const renderKey = (key: TerminalKey) => (
     <button key={key.name} class={"key-bar-key" + (key.wide ? " key-bar-wide" : "")}
             type="button" aria-label={key.name}
-            onClick={() => send(key)}>{key.label}</button>
+            onClick={() => send(key)}>{key.icon ? <Icon name={key.icon} /> : key.label}</button>
   );
 
   return (

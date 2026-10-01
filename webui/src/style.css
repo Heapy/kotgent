@@ -785,9 +785,9 @@ textarea:focus-visible {
 #terminal-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 6px;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 0 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex: 0 0 48px;
@@ -796,9 +796,11 @@ textarea:focus-visible {
 .terminal-identity {
   display: flex;
   align-items: center;
-  flex: 0 1 240px;
+  flex: 0 0 auto;
+  max-width: min(240px, 30%);
   min-width: 0;
 }
+.header-separator { height: 18px; width: 1px; background: var(--border); margin: 0 7px; flex: 0 0 1px; }
 .ui-icon {
   display: inline-block;
   width: 18px;
@@ -814,27 +816,30 @@ textarea:focus-visible {
   justify-content: center;
   flex: 0 0 auto;
   gap: 6px;
-  height: 36px;
-  min-height: 36px;
-  min-width: 36px;
+  height: 32px;
+  min-height: 32px;
+  min-width: 32px;
   width: auto;
-  padding: 0 8px;
+  padding: 0 7px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
-.header-control:hover,
-.header-control[aria-expanded="true"] { background: var(--row-active); color: var(--text); }
+.header-control:hover { background: var(--row-hover); color: var(--text); }
+.header-control[aria-expanded="true"] { background: var(--pill-active); color: #d9caff; }
 .header-control:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .session-details-toggle {
   justify-content: flex-start;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-  padding: 0 4px;
+  padding: 0 8px;
+  gap: 8px;
+  height: 34px;
 }
+.session-details-toggle > .ui-icon { width: 12px; height: 12px; flex-basis: 12px; }
 .session-status-dot {
   flex: 0 0 7px;
   width: 7px;
@@ -869,8 +874,8 @@ textarea:focus-visible {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.workspace-toolbar { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
-.workspace-desktop-tabs { display: flex; flex: 1 1 auto; align-items: center; min-width: 0; }
+.workspace-toolbar { display: flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; }
+.workspace-desktop-tabs { display: flex; flex: 0 1 auto; gap: 3px; align-items: center; min-width: 0; }
 .workspace-tab-picker { min-width: 0; font-size: 12px; }
 .workspace-tab-picker > span:not(.ui-icon) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-tab-menu .workspace-tabs { flex-direction: column; align-items: stretch; overflow: visible; }
@@ -879,19 +884,20 @@ textarea:focus-visible {
 .workspace-tab-menu .workspace-tab-label,
 .workspace-tab-menu .workspace-tab-close,
 .workspace-tab-menu .workspace-add-tab { min-height: 44px; }
-.workspace-layout-menu .column-header { padding: 0; border: 0; }
+.workspace-layout-menu .column-header { padding: 0; border: 0; gap: 7px; color: var(--muted); }
+.workspace-layout-menu .column-header > .ui-icon { width: 16px; height: 16px; flex-basis: 16px; }
 .workspace-layout-menu .column-type { min-width: 0; font-size: 14px; height: 44px; }
-.workspace-layout-menu .icon-button-small { width: 44px; min-height: 44px; }
+.workspace-layout-menu .icon-button-small { display: inline-flex; align-items: center; justify-content: center; width: 36px; min-height: 36px; }
+.workspace-layout-menu .icon-button-small:hover:not(:disabled) { background: var(--row-hover); color: var(--text); }
 #terminal-head #drawer-toggle { display: none; }
 #terminal-head #sidebar-toggle { display: inline-flex; }
-#terminal-head .palette-button { margin-left: 0; }
-#terminal-head:not(:has(.workspace-toolbar)) .palette-button { margin-left: auto; }
+#terminal-head .palette-button { margin-left: auto; }
 #terminal-head .workspace-tabs {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
 }
 #terminal-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
@@ -943,7 +949,7 @@ textarea:focus-visible {
   background: var(--panel);
   display: flex;
   flex: 0 0 auto;
-  gap: 2px;
+  gap: 3px;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0;
@@ -956,21 +962,31 @@ textarea:focus-visible {
   display: flex;
   flex: 0 0 auto;
 }
-.workspace-tab.active { background: var(--row-active); }
+.workspace-tab.active {
+  background: color-mix(in srgb, var(--accent) 12.5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14.5%, transparent);
+}
+.workspace-tab:not(.active):hover { background: var(--row-hover); }
 .workspace-tab-label,
 .workspace-tab-close {
   background: transparent;
   border: 0;
-  color: var(--muted);
+  color: #9da5b4;
   cursor: pointer;
   min-height: 32px;
 }
 .workspace-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11.5px;
-  font-weight: 600;
-  padding: 0 8px;
+  font-weight: 500;
+  padding: 0 10px;
   white-space: nowrap;
 }
+.workspace-tab-label .ui-icon { width: 15px; height: 15px; flex-basis: 15px; }
+.workspace-tab-count { font-size: 9px; line-height: 15px; min-width: 15px; text-align: center; border-radius: 4px; background: #ffffff0b; color: var(--muted); }
+.workspace-tab-close .ui-icon { width: 12px; height: 12px; flex-basis: 12px; }
 .workspace-tab-close {
   display: flex;
   align-items: center;
@@ -979,7 +995,7 @@ textarea:focus-visible {
   line-height: 1;
   padding: 0 7px 0 2px;
 }
-.workspace-tab.active .workspace-tab-label,
+.workspace-tab.active .workspace-tab-label { color: #e5dbff; }
 .workspace-tab-label:hover,
 .workspace-tab-close:hover { color: var(--text); }
 .workspace-tab-label:focus-visible,
@@ -1085,14 +1101,17 @@ textarea:focus-visible {
   user-select: none;
 }
 .key-bar-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 1 1 0;
   min-width: 44px;
   min-height: 44px;
   padding: 0 3px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--row-hover);
-  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: #252a33;
+  color: #c4cbd6;
   cursor: pointer;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 11px;
@@ -1100,7 +1119,9 @@ textarea:focus-visible {
   overflow: hidden;
   white-space: nowrap;
 }
-.key-bar-key:active { background: var(--row-active); }
+.key-bar-key .ui-icon { width: 17px; height: 17px; flex-basis: 17px; }
+.key-bar-key[aria-label="Control C"] { color: #dab7bd; }
+.key-bar-key:active { background: #454b59; }
 .key-bar-key:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -2608,21 +2629,26 @@ button.task-card-title:hover,
     gap: 2px;
     padding: 0 2px;
   }
+  .header-separator { display: none; }
   #terminal-head #drawer-toggle { display: inline-flex; }
   #terminal-head #sidebar-toggle { display: none; }
   .header-control, #terminal-head > .icon-button { height: 44px; min-height: 44px; min-width: 44px; padding-inline: 5px; }
   .terminal-identity {
     flex: 1 1 auto;
     min-width: 44px;
+    max-width: none;
   }
   .session-details-toggle { min-width: 0; gap: 5px; }
   .session-details-toggle > .ui-icon { display: none; }
   .workspace-toolbar { flex: 0 1 auto; gap: 0; max-width: 50%; }
-  .workspace-tab-picker { min-width: 44px; max-width: 120px; }
-  .workspace-tab-picker > .ui-icon:first-child { display: none; }
+  .workspace-tab-picker { min-width: 44px; max-width: 120px; color: #d9caff; font-size: 11px; }
+  .workspace-tab-picker > .ui-icon:first-child { width: 15px; height: 15px; flex-basis: 15px; }
+  .workspace-tab-picker > .ui-icon:last-child { width: 10px; height: 10px; flex-basis: 10px; color: #a390c1; }
   .workspace-layout-menu .column-type { font-size: 16px; }
+  .workspace-layout-menu .icon-button-small { width: 44px; min-height: 44px; }
   .workspace-switcher { padding: 0 4px; gap: 4px; height: 44px; }
-  .workspace-switcher .workspace-switch { flex: 1; min-height: 43px; border-radius: 0; border: 0; background: transparent; }
+  .workspace-switcher .workspace-switch { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: 1; min-height: 43px; border-radius: 0; border: 0; background: transparent; }
+  .workspace-switcher .ui-icon { width: 14px; height: 14px; flex-basis: 14px; }
   .workspace-switcher .workspace-switch[aria-pressed="true"] { box-shadow: inset 0 -2px var(--accent); color: var(--text); }
   #terminal-title { font-size: 12px; }
 

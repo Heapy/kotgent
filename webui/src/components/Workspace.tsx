@@ -183,6 +183,7 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
             <button key={entry.index} type="button" class="button button-small workspace-switch"
                     data-type={entry.type} aria-pressed={shownIndexes.has(entry.index) ? "true" : "false"}
                     onClick={() => focusColumn(sessionId, tab.id, entry.index)}>
+              <Icon name={entry.type === "task" || entry.type === "plan" ? entry.type : "terminal"} />
               {COLUMN_LABELS[entry.type]}
             </button>
           ))}
@@ -220,11 +221,17 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
       {ws.tabs.map((entry) => {
         const active = entry.id === tab.id;
         const label = tabLabel(entry);
+        const panels = candidatesOf(entry);
+        const type = panels[0]?.type;
+        const icon = panels.length > 1 ? "columns" : type === "task" || type === "plan" ? type : "terminal";
         return <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")}
                     role="presentation" ref={active ? activeTabRef : null}>
           <button type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
                   aria-selected={active} aria-controls="workspace-panel"
-                  onClick={() => { selectTab(sessionId, entry.id); close(); }}>{label}</button>
+                  onClick={() => { selectTab(sessionId, entry.id); close(); }}>
+            <Icon name={icon} /><span>{label}</span>
+            {panels.length > 1 && <span class="workspace-tab-count" aria-hidden="true">{panels.length}</span>}
+          </button>
           {ws.tabs.length > 1 && <button type="button" class="workspace-tab-close"
             aria-label={"Close tab " + label} title="Close tab"
             onClick={() => closeTab(sessionId, entry.id)}><Icon name="close" /></button>}

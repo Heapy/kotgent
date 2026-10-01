@@ -628,6 +628,7 @@ export function TerminalPane({
             </>}
           </HeaderPopover> : <span id="terminal-title">No session selected</span>}
         </div>
+        {workspaceToolbar && <span class="header-separator" aria-hidden="true" />}
         {workspaceToolbar}
         <button
           id="palette-button"

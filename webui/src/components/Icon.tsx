@@ -9,6 +9,10 @@ const icons = {
   terminal: new URL("../assets/icons/terminal-window.svg", import.meta.url).href,
   task: new URL("../assets/icons/check-square.svg", import.meta.url).href,
   plan: new URL("../assets/icons/file-text.svg", import.meta.url).href,
+  up: new URL("../assets/icons/arrow-up.svg", import.meta.url).href,
+  down: new URL("../assets/icons/arrow-down.svg", import.meta.url).href,
+  left: new URL("../assets/icons/arrow-left.svg", import.meta.url).href,
+  right: new URL("../assets/icons/arrow-right.svg", import.meta.url).href,
 };
 
 export function Icon({ name }: { name: keyof typeof icons }) {
