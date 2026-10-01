@@ -101,6 +101,7 @@ class MutexesTest {
             assertThat(pills).hasCount(1)
             assertThat(pills.first()).hasText("⏳ deploy · #1")
 
+            page.locator("#session-details-toggle").click()
             pills.first().click()
             assertThat(page).hasURL(harness.baseUrl + "/mutexes")
             assertThat(page.locator("main.mutexes-screen")).isVisible()

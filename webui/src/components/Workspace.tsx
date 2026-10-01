@@ -13,6 +13,8 @@ import {
   setColumnType,
   workspaceOf,
 } from "../state/layout.ts";
+import { HeaderPopover } from "./HeaderPopover.tsx";
+import { Icon } from "./Icon.tsx";
 import { ColumnHeader } from "./ColumnHeader.tsx";
 import { TerminalSlot } from "./TerminalPane.tsx";
 
@@ -127,7 +129,6 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
   const tab = activeTabOf(ws);
   const phone = usePhone();
   const columnsRef = useRef<HTMLDivElement>(null);
-  const activeTabRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
 
   useLayoutEffect(() => {
@@ -140,10 +141,6 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
     return () => observer.disconnect();
   }, []);
 
-  useLayoutEffect(() => {
-    activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [sessionId, tab.id]);
-
   const shown = visibleColumns(tab, {
     width: width,
     minWidth: MIN_COLUMN_WIDTH,
@@ -152,23 +149,12 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
   });
   const candidates = candidatesOf(tab);
   const shownIndexes = new Set(shown.map((column) => column.index));
-  const held = new Set(tab.columns.map((column) => column.type));
-  const canAdd = AVAILABLE_COLUMN_TYPES.some((type) => !held.has(type));
   const shownShare = shown.reduce((sum, column) => sum + (tab.fractions[column.index] || 0), 0);
 
   const column = (entry: VisibleColumn) => (
     <section key={tab.id + ":" + entry.type} class="workspace-column" data-type={entry.type}
              aria-label={COLUMN_LABELS[entry.type]} style={{ flex: entry.fraction + " 1 0px" }}
              onFocusIn={() => focusColumn(sessionId, tab.id, entry.index)}>
-      <ColumnHeader
-        type={entry.type}
-        types={AVAILABLE_COLUMN_TYPES}
-        canAdd={canAdd}
-        canClose={tab.columns.length > 1}
-        onType={(type) => setColumnType(sessionId, tab.id, entry.index, type)}
-        onAdd={() => addColumn(sessionId, tab.id, entry.index)}
-        onClose={() => closeColumn(sessionId, tab.id, entry.index)}
-      />
       <div class="workspace-column-body">
         {entry.type === "terminal" ? <TerminalSlot /> : renderPanel(entry.type)}
       </div>
@@ -191,25 +177,6 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
 
   return (
     <div class="workspace">
-      <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
-        {ws.tabs.map((entry) => {
-          const active = entry.id === tab.id;
-          const label = tabLabel(entry);
-          return (
-            <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")} role="presentation"
-                 ref={active ? activeTabRef : null}>
-              <button type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
-                      aria-selected={active ? "true" : "false"} aria-controls="workspace-panel"
-                      onClick={() => selectTab(sessionId, entry.id)}>{label}</button>
-              {ws.tabs.length > 1 && (
-                <button type="button" class="workspace-tab-close" aria-label={"Close tab " + label}
-                        title="Close tab" onClick={() => closeTab(sessionId, entry.id)}>×</button>)}
-            </div>
-          );
-        })}
-        <button type="button" id="workspace-add-tab" class="icon-button icon-button-small workspace-add-tab"
-                aria-label="New tab" title="New tab" onClick={() => addTab(sessionId)}>+</button>
-      </div>
       {candidates.length > shown.length && shown.length > 0 && (
         <div class="workspace-switcher" role="group" aria-label="Shown column">
           {candidates.map((entry) => (
@@ -221,7 +188,7 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
           ))}
         </div>)}
       <div class="workspace-columns" id="workspace-panel" role="tabpanel"
-           aria-labelledby={"workspace-tab-" + tab.id} ref={columnsRef}>
+           aria-label={tabLabel(tab)} ref={columnsRef}>
         {shown.length > 0 ? body : (
           <div class="workspace-unavailable">
             <p class="field-hint">This tab only holds panels this version cannot show.</p>
@@ -232,4 +199,63 @@ export function Workspace({ sessionId, renderPanel }: WorkspaceProps) {
       </div>
     </div>
   );
+}
+
+/** The toolbar and panels share the layout owner; moving controls never replaces a terminal. */
+export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
+  const ws = workspaceOf(sessionId);
+  const tab = activeTabOf(ws);
+  const phone = usePhone();
+  const activeTabRef = useRef<HTMLDivElement>(null);
+  const candidates = candidatesOf(tab);
+  const focused = candidates.find((entry) => entry.index === tab.focus) ?? candidates[0];
+  const held = new Set(tab.columns.map((column) => column.type));
+  const canAdd = AVAILABLE_COLUMN_TYPES.some((type) => !held.has(type));
+  useLayoutEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [sessionId, tab.id, phone]);
+
+  const tabs = (close: () => void) => <>
+    <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
+      {ws.tabs.map((entry) => {
+        const active = entry.id === tab.id;
+        const label = tabLabel(entry);
+        return <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")}
+                    role="presentation" ref={active ? activeTabRef : null}>
+          <button type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
+                  aria-selected={active} aria-controls="workspace-panel"
+                  onClick={() => { selectTab(sessionId, entry.id); close(); }}>{label}</button>
+          {ws.tabs.length > 1 && <button type="button" class="workspace-tab-close"
+            aria-label={"Close tab " + label} title="Close tab"
+            onClick={() => closeTab(sessionId, entry.id)}><Icon name="close" /></button>}
+        </div>;
+      })}
+    </div>
+    <button type="button" id="workspace-add-tab" class="header-control workspace-add-tab"
+            aria-label="New tab" title="New tab" onClick={() => { addTab(sessionId); close(); }}>
+      <Icon name="plus" />{phone && "New tab"}
+    </button>
+  </>;
+
+  return <div class="workspace-toolbar">
+    {phone ? <HeaderPopover key={sessionId} id="workspace-tab-picker" label="Workspace tabs"
+      className="workspace-tab-picker" panelClass="workspace-tab-menu"
+      initialFocus=".workspace-tab.active .workspace-tab-label"
+      trigger={<><Icon name={focused?.type === "task" || focused?.type === "plan" ? focused.type : "terminal"} /><span>{tabLabel(tab)}</span><Icon name="caret" /></>}>
+      {tabs}
+    </HeaderPopover> : <div class="workspace-desktop-tabs">{tabs(() => {})}</div>}
+    <HeaderPopover key={sessionId + ":layout"} id="workspace-layout" label="Configure columns"
+      trigger={<Icon name="columns" />} panelClass="workspace-layout-menu">
+      {(close) => <>
+        <p class="header-popover-label">Columns in this tab</p>
+        {candidates.map((entry) => <ColumnHeader key={entry.index} type={entry.type}
+          types={AVAILABLE_COLUMN_TYPES} canAdd={canAdd} canClose={tab.columns.length > 1}
+          onType={(type) => setColumnType(sessionId, tab.id, entry.index, type)}
+          onAdd={() => { addColumn(sessionId, tab.id, entry.index); close(); }}
+          onClose={() => closeColumn(sessionId, tab.id, entry.index)} />)}
+        {candidates.length === 0 && <button class="button" type="button"
+          onClick={() => { addColumn(sessionId, tab.id, tab.columns.length - 1); close(); }}>Add a terminal</button>}
+      </>}
+    </HeaderPopover>
+  </div>;
 }

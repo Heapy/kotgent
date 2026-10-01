@@ -162,6 +162,15 @@ export function MutexesScreen({
 }
 
 /** The open session's holdings and waits; each pill leads to the full list. */
+export function MutexIndicator({ sessionId }: { sessionId: string }) {
+  const pills = sessionMutexPills(mutexes.value, sessionId);
+  if (pills.length === 0) return null;
+  const waiting = pills.some((pill) => pill.kind === "waiting");
+  const label = pills.map((pill) => pill.kind === "held" ? "Holds " + pill.key
+    : "Waiting for " + pill.key + ", position " + pill.position).join("; ");
+  return <span class="mutex-indicator" role="img" aria-label={label} title={label}>{waiting ? "⏳" : "🔒"}</span>;
+}
+
 export function MutexPills({ sessionId }: { sessionId: string | null }) {
   const pills = sessionMutexPills(mutexes.value, sessionId);
   if (pills.length === 0) return null;

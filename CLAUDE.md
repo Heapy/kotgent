@@ -256,6 +256,15 @@ the common workflow and links to those guides; implementation invariants belong 
   the two columns. Layouts are pruned only after a full `sessions_snapshot` and capped at 200 by
   `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`files`,
   `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
+- The session header is one 48px row. Workspace tabs share it on desktop; phones use a tab picker.
+  Configure columns owns all column type/add/close controls, leaving panels without header rows.
+  The phone panel switcher appears only when some columns are hidden. Session details hold cwd,
+  agent/model, task and mutex links; attention and mutex indicators remain visible in the header.
+- `useVisiblePane` caps the entire terminal-pane flex stack to `visualViewport`, including workspace
+  panels and the key bar. Capping only the nested xterm host leaves the footer below the keyboard.
+  Ignore transient zero geometry, account for viewport offset, and clear the cap on keyboard dismissal.
+  The app reserves safe areas once, delegating the bottom inset to the phone key bar when present.
+  Extra terminal keys must preserve the xterm textarea's touch focus.
 - `TaskDetail` takes `onClose`: the board passes its way back to `/tasks`, a workspace column passes null
   and renders embedded. The board's floating-overlay CSS is scoped to `#app:has(.board)`, so it never
   applies to the column.

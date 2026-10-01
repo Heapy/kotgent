@@ -771,6 +771,9 @@ textarea:focus-visible {
 #terminal-pane {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
+  max-height: var(--pane-visible-height, none);
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--term-bg);
@@ -783,23 +786,109 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 14px;
+  gap: 8px;
+  padding: 0 6px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
+  flex: 0 0 48px;
+  min-width: 0;
 }
 .terminal-identity {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex: 0 1 240px;
   min-width: 0;
 }
-.terminal-session {
-  display: flex;
-  flex-direction: column;
+.ui-icon {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  background: currentColor;
+  mask: no-repeat center / contain;
+}
+.header-control,
+#terminal-head > .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  height: 36px;
+  min-height: 36px;
+  min-width: 36px;
+  width: auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.header-control:hover,
+.header-control[aria-expanded="true"] { background: var(--row-active); color: var(--text); }
+.header-control:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.session-details-toggle {
+  justify-content: flex-start;
+  flex: 0 1 auto;
   min-width: 0;
-  line-height: 14px;
+  max-width: 100%;
+  padding: 0 4px;
+}
+.session-status-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+  border-radius: 50%;
+}
+.session-status-dot.badge-attention { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
+.mutex-indicator { flex: 0 0 auto; font-size: 12px; }
+.header-popover {
+  position: absolute;
+  z-index: 20;
+  right: 6px;
+  top: 48px;
+  width: 300px;
+  max-width: calc(100% - 12px);
+  max-height: calc(100% - 56px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.header-popover-label { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
+.session-details { left: 6px; right: auto; width: 360px; }
+.session-details:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.session-details-name { flex: 1 1 auto; min-width: 0; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.session-details-agent { width: 100%; margin: 0; font-size: 12px; color: var(--muted); }
+.session-details #terminal-cwd {
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.workspace-toolbar { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.workspace-desktop-tabs { display: flex; flex: 1 1 auto; align-items: center; min-width: 0; }
+.workspace-tab-picker { min-width: 0; font-size: 12px; }
+.workspace-tab-picker > span:not(.ui-icon) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-tab-menu .workspace-tabs { flex-direction: column; align-items: stretch; overflow: visible; }
+.workspace-tab-menu .workspace-tab-label { flex: 1; text-align: left; }
+.workspace-tab-menu .workspace-tab-close { flex: 0 0 44px; }
+.workspace-tab-menu .workspace-tab-label,
+.workspace-tab-menu .workspace-tab-close,
+.workspace-tab-menu .workspace-add-tab { min-height: 44px; }
+.workspace-layout-menu .column-header { padding: 0; border: 0; }
+.workspace-layout-menu .column-type { min-width: 0; font-size: 14px; height: 44px; }
+.workspace-layout-menu .icon-button-small { width: 44px; min-height: 44px; }
+#terminal-head #drawer-toggle { display: none; }
+#terminal-head #sidebar-toggle { display: inline-flex; }
+#terminal-head .palette-button { margin-left: 0; }
+#terminal-head:not(:has(.workspace-toolbar)) .palette-button { margin-left: auto; }
+#terminal-head .workspace-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 #terminal-title {
   font-size: 13px;
@@ -817,9 +906,6 @@ textarea:focus-visible {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-}
-#terminal-host.visual-viewport-sized {
-  max-height: var(--terminal-visible-height);
 }
 /* FitAddon subtracts .xterm padding; touch-action keeps the swipe bridge alive on tablets and landscape. */
 #terminal-host .xterm {
@@ -855,14 +941,13 @@ textarea:focus-visible {
 .workspace-tabs {
   align-items: center;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
   display: flex;
   flex: 0 0 auto;
   gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 3px 8px;
-  scroll-padding-inline: 8px 32px;
+  padding: 0;
+  scroll-padding-inline: 0;
   scrollbar-width: none;
 }
 .workspace-tab {
@@ -878,7 +963,7 @@ textarea:focus-visible {
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  min-height: 26px;
+  min-height: 32px;
 }
 .workspace-tab-label {
   font-size: 11.5px;
@@ -887,6 +972,9 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 .workspace-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 14px;
   line-height: 1;
   padding: 0 7px 0 2px;
@@ -899,14 +987,6 @@ textarea:focus-visible {
 .workspace-divider:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-/* Stays reachable at the strip's end however far the tabs scroll. */
-.workspace-add-tab.icon-button-small {
-  flex: 0 0 auto;
-  min-height: 24px;
-  position: sticky;
-  right: 0;
-  width: 24px;
 }
 .workspace-switcher {
   background: var(--panel);
@@ -997,18 +1077,17 @@ textarea:focus-visible {
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 5px 6px;
+  position: relative;
+  padding: 4px;
   background: var(--panel);
   border-top: 1px solid var(--border);
   touch-action: manipulation;
   user-select: none;
 }
 .key-bar-key {
-  flex: 1 1 28px;
-  min-width: 24px;
-  min-height: 48px;
+  flex: 1 1 0;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0 3px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1027,9 +1106,24 @@ textarea:focus-visible {
   outline-offset: -2px;
 }
 .key-bar-wide {
-  flex-basis: 40px;
-  min-width: 34px;
+  min-width: 44px;
 }
+.key-bar-extra {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 4px;
+  left: 4px;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  z-index: 10;
+}
+.key-bar > button:last-of-type { display: flex; align-items: center; justify-content: center; }
+@media (max-width: 359px) { .key-bar { gap: 0; padding-inline: 4px; } }
 .key-bar-key[aria-pressed="true"] {
   background: var(--accent-fill);
   border-color: var(--accent-fill);
@@ -2511,19 +2605,31 @@ button.task-card-title:hover,
   }
 
   #terminal-head {
-    gap: 8px;
-    padding: 6px 10px;
+    gap: 2px;
+    padding: 0 2px;
   }
+  #terminal-head #drawer-toggle { display: inline-flex; }
+  #terminal-head #sidebar-toggle { display: none; }
+  .header-control, #terminal-head > .icon-button { height: 44px; min-height: 44px; min-width: 44px; padding-inline: 5px; }
   .terminal-identity {
     flex: 1 1 auto;
-    gap: 6px;
+    min-width: 44px;
   }
+  .session-details-toggle { min-width: 0; gap: 5px; }
+  .session-details-toggle > .ui-icon { display: none; }
+  .workspace-toolbar { flex: 0 1 auto; gap: 0; max-width: 50%; }
+  .workspace-tab-picker { min-width: 44px; max-width: 120px; }
+  .workspace-tab-picker > .ui-icon:first-child { display: none; }
+  .workspace-layout-menu .column-type { font-size: 16px; }
+  .workspace-switcher { padding: 0 4px; gap: 4px; height: 44px; }
+  .workspace-switcher .workspace-switch { flex: 1; min-height: 43px; border-radius: 0; border: 0; background: transparent; }
+  .workspace-switcher .workspace-switch[aria-pressed="true"] { box-shadow: inset 0 -2px var(--accent); color: var(--text); }
   #terminal-title { font-size: 12px; }
 
   #terminal-host .xterm { padding: 4px 6px; }
   .key-bar {
     display: flex;
-    padding-bottom: calc(5px + var(--active-safe-area-bottom));
+    padding-bottom: calc(4px + var(--active-safe-area-bottom));
   }
 
   .board,

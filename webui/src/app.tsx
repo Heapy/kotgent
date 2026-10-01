@@ -144,7 +144,7 @@ import { CommandPalette } from "./components/CommandPalette.tsx";
 import { MutexesScreen, sessionLabel } from "./components/MutexesScreen.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TerminalPane } from "./components/TerminalPane.tsx";
-import { Workspace } from "./components/Workspace.tsx";
+import { Workspace, WorkspaceToolbar } from "./components/Workspace.tsx";
 import {
   DeleteProjectDialog,
   ForceReleaseMutexDialog,
@@ -1472,6 +1472,7 @@ function App() {
           onToggleSidebar={toggleSidebar}
           onOpenPalette={openPalette}
           onTerminalClosed={onTerminalClosed}
+          workspaceToolbar={activeSession ? <WorkspaceToolbar sessionId={activeSession.id} /> : null}
           workspace={activeSession
             ? <Workspace sessionId={activeSession.id} renderPanel={renderPanel} />
             : null}

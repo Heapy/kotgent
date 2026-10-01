@@ -40,7 +40,9 @@ class MobileFeaturesTest {
             var echoed = ""
             var pressed = 0
             for (key in SPECIAL_KEYS) {
-                page.locator(KEY_BAR + " button[aria-label='" + key.label + "']").tap()
+                val button = page.locator(KEY_BAR + " button[aria-label='" + key.label + "']")
+                if (!button.isVisible()) page.locator(KEY_BAR + " button[aria-label='More terminal keys']").tap()
+                button.tap()
                 pressed++
                 page.waitForCondition { sent.count { frame -> frame.text() == null } >= pressed }
                 if (key.echo == null) {

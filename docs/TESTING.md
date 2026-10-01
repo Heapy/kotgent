@@ -311,6 +311,11 @@ driver.
 `WorkspaceTest` records the terminal socket's resize frames to prove the workspace's one-xterm slot: a tab
 switch keeps the same socket and xterm element, a parked terminal reports nothing through a viewport
 change, and showing it reports exactly once. Its negative windows wait past the 120 ms refit debounce.
+It also shrinks the visual viewport while leaving the layout viewport tall, then checks the complete
+workspace, footer, reported terminal rows, offset changes, transient zeroes and keyboard dismissal.
+All seven primary keys must remain at least 44×44 at 320px width; extra keys open above them.
+The compact header, tab picker and column menu are exercised through their real controls. These checks
+prove the layout response to viewport events, not physical iOS keyboard or safe-area reporting.
 
 Browser tests that need a module-level probe use `routeWebUiProbe` in `webuitest/test/HarnessFixture.kt`.
 It builds an entry from `webuitest/probes/` with Vite at test time and serves the bundle through Playwright

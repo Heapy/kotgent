@@ -22,7 +22,9 @@ class WorkspaceTest {
 
             page.locator("#workspace-add-tab").click()
             assertThat(page.locator(".workspace-tab")).hasCount(2)
-            page.locator(".workspace-column[data-type='terminal'] .column-type").selectOption("task")
+            page.locator("#workspace-layout-toggle").click()
+            page.locator("#workspace-layout .column-type").selectOption("task")
+            page.keyboard().press("Escape")
             assertThat(page.locator(".terminal-parking #terminal-host")).hasCount(1)
             assertThat(page.locator(".workspace-column[data-type='task']")).isVisible()
             page.settle()
@@ -54,10 +56,11 @@ class WorkspaceTest {
             page.openSession(harness, SESSION_WORK)
             val colsAlone = page.settledCols(terminal)
 
-            page.locator(".workspace-column[data-type='terminal'] .column-add").click()
+            page.addWorkspaceColumn()
             val divider = page.locator(".workspace-divider")
             assertThat(divider).hasAttribute("aria-valuenow", "50")
             assertThat(divider).hasAttribute("role", "separator")
+            assertThat(page.locator(".workspace-column > .column-header")).hasCount(0)
             val colsHalf = page.settledCols(terminal)
             assertTrue(colsHalf < colsAlone, "sharing the row narrowed the terminal: $colsAlone -> $colsHalf")
             val halfWidth = page.columnWidth("terminal")
@@ -88,12 +91,12 @@ class WorkspaceTest {
         }
 
     @Test
-    fun aPhoneShowsOneColumnWithASwitcherAndAScrollableTabStrip() =
+    fun aPhoneShowsOneColumnWithASwitcherAndAnAccessibleTabPicker() =
         onTheWorkspace("workspace-phone", phone = true) { harness, page, terminal ->
             page.openSession(harness, SESSION_WORK)
             assertThat(page.locator(".key-bar")).isVisible()
 
-            page.locator(".workspace-column[data-type='terminal'] .column-add").click()
+            page.addWorkspaceColumn()
             assertThat(page.locator(".workspace-column")).hasCount(1)
             assertThat(page.locator(".workspace-column[data-type='task'] #task-detail-title")).hasText("local:1")
             assertThat(page.locator(".terminal-parking #terminal-host")).hasCount(1)
@@ -112,25 +115,103 @@ class WorkspaceTest {
             assertEquals(1, terminal.resizes().size, "switching back reports the grid once")
             assertEquals(1, terminal.sockets())
 
-            repeat(EXTRA_TABS) { page.locator("#workspace-add-tab").click() }
+            repeat(EXTRA_TABS) {
+                page.locator("#workspace-tab-picker-toggle").click()
+                page.locator("#workspace-add-tab").click()
+            }
             assertThat(page.locator(".workspace-tab")).hasCount(EXTRA_TABS + 1)
-            val strip = page.evaluate(TAB_STRIP_JS) as Map<*, *>
-            val number = { key: String -> (strip[key] as Number).toDouble() }
-            assertTrue(number("scrollWidth") > number("clientWidth"), "the tab strip overflows: $strip")
-            assertEquals("auto", strip["overflowX"], "and scrolls sideways")
-            assertEquals(1.0, number("activeInView"), "the new active tab is scrolled into view: $strip")
-            assertEquals(1.0, number("addInView"), "and + stays at the strip's end: $strip")
-            assertTrue(
-                number("pageScrollWidth") <= number("viewportWidth"),
-                "the page itself never scrolls sideways: $strip",
-            )
+            assertThat(page.locator("#workspace-tab-picker")).isHidden()
+            assertEquals(48.0, page.locator("#terminal-head").boundingBox().height)
+            assertThat(page.locator(".workspace-column > .column-header")).hasCount(0)
+            page.locator("#workspace-tab-picker-toggle").click()
+            assertThat(page.locator(".workspace-tab.active")).isVisible()
+            page.locator("#workspace-tab-t1").click()
+            assertThat(page.locator("#workspace-tab-picker-toggle")).containsText("Terminal · Task")
+            page.locator("#workspace-tab-picker-toggle").click()
+            page.locator(".workspace-tab.active .workspace-tab-close").click()
+            assertThat(page.locator(".workspace-tab")).hasCount(EXTRA_TABS)
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#workspace-tab-picker-toggle")).isFocused()
+            assertEquals(true, page.evaluate("() => document.documentElement.scrollWidth <= innerWidth"))
+        }
+
+    @Test
+    fun theKeyboardShrinksTheWholeWorkspaceAndKeepsEveryPrimaryKeyReachable() =
+        onTheWorkspace("workspace-keyboard", phone = true) { harness, page, terminal ->
+            page.openSession(harness, SESSION_WORK)
+            page.settle()
+            page.evaluate("""() => {
+              const app = document.querySelector('#app');
+              app.style.setProperty('--device-safe-area-top', '20px');
+              app.style.setProperty('--device-safe-area-bottom', '34px');
+            }""")
+            page.settle()
+            val fullBar = page.locator(".key-bar").boundingBox()
+            assertEquals(87.0, fullBar.height, "the key bar reserves the bottom inset once")
+            assertEquals(844.0, fullBar.y + fullBar.height)
+            val fullKey = page.locator(".key-bar > button").first().boundingBox()
+            assertEquals(806.0, fullKey.y + fullKey.height, "keys stay above the 34px inset and 4px padding")
+            val fullHeight = page.locator("#terminal-pane").boundingBox().height
+            val fullRows = page.renderedRows()
+            page.evaluate("""() => {
+              window.__keyboardViewport = { height: 420, offsetTop: 0 };
+              for (const key of ['height', 'offsetTop']) Object.defineProperty(visualViewport, key, {
+                configurable: true, get: () => window.__keyboardViewport[key]
+              });
+              visualViewport.dispatchEvent(new Event('resize'));
+            }""")
+            page.settle()
+            fun assertKeysFit(bottom: Double) {
+                val bar = page.locator(".key-bar").boundingBox()
+                assertTrue(bar.y + bar.height <= bottom + 1, "the key bar stays above the keyboard: $bar")
+                val host = page.locator("#terminal-host").boundingBox()
+                assertTrue(host.y + host.height <= bar.y + 1, "the workspace reserves room for keys")
+                val keys = page.locator(".key-bar > button")
+                assertThat(keys).hasCount(7)
+                for (i in 0 until keys.count()) {
+                    val key = keys.nth(i).boundingBox()
+                    assertTrue(key.width >= 44 && key.height >= 44, "every key remains a 44px target: $key")
+                    assertTrue(key.x >= 0 && key.x + key.width <= page.viewportSize().width + 1, "key stays on screen: $key")
+                }
+            }
+            assertKeysFit(420.0)
+            assertTrue(page.renderedRows() < fullRows, "the terminal actually shrinks with the workspace")
+            assertEquals(page.renderedRows(), terminal.resizes().last().second)
+            page.locator(".key-bar button[aria-label='More terminal keys']").tap()
+            assertThat(page.locator("#key-bar-extra")).isVisible()
+            val extras = page.locator("#key-bar-extra").boundingBox()
+            assertTrue(extras.y >= 48 && extras.y + extras.height <= 420, "extra keys open above the bar")
+            page.locator(".key-bar button[aria-label='More terminal keys']").tap()
+            page.evaluate("""() => {
+              window.__keyboardViewport.offsetTop = 24;
+              visualViewport.dispatchEvent(new Event('scroll'));
+            }""")
+            page.settle()
+            assertKeysFit(444.0)
+            page.evaluate("""() => {
+              window.__keyboardViewport.height = 0;
+              visualViewport.dispatchEvent(new Event('resize'));
+            }""")
+            page.settle()
+            assertKeysFit(444.0)
+            page.evaluate("""() => {
+              delete visualViewport.height; delete visualViewport.offsetTop;
+              visualViewport.dispatchEvent(new Event('resize'));
+            }""")
+            page.settle()
+            assertEquals(fullHeight, page.locator("#terminal-pane").boundingBox().height, "keyboard dismissal restores height")
+            assertEquals(fullRows, page.renderedRows())
+            page.setViewportSize(320, 480)
+            page.settle()
+            assertKeysFit(480.0)
+            assertEquals(1, terminal.sockets(), "keyboard geometry never reattaches")
         }
 
     @Test
     fun theTaskColumnShowsTheLinkedTaskBesideTheTerminal() =
         onTheWorkspace("workspace-task-column") { harness, page, _ ->
             page.openSession(harness, SESSION_WORK)
-            page.locator(".workspace-column[data-type='terminal'] .column-add").click()
+            page.addWorkspaceColumn()
 
             val column = page.locator(".workspace-column[data-type='task']")
             assertThat(column.locator("#task-detail-title")).hasText("local:1")
@@ -141,14 +222,16 @@ class WorkspaceTest {
             assertThat(page.locator(".workspace-column[data-type='terminal'] #terminal-host")).hasCount(1)
             assertThat(page).hasURL(Regex(".*/s/$SESSION_WORK$").toPattern())
 
-            page.locator(".workspace-column[data-type='task'] .column-type").selectOption("terminal")
+            page.locator("#workspace-layout-toggle").click()
+            page.locator("#workspace-layout .column-type").nth(1).selectOption("terminal")
+            page.keyboard().press("Escape")
             val columns = page.locator(".workspace-column")
             assertThat(columns.first()).hasAttribute("data-type", "task")
             assertThat(columns.last()).hasAttribute("data-type", "terminal")
             assertThat(columns).hasCount(2)
 
             page.openSession(harness, SESSION_FREE)
-            page.locator(".workspace-column[data-type='terminal'] .column-add").click()
+            page.addWorkspaceColumn()
             assertThat(page.locator("#workspace-task-empty")).isVisible()
             assertThat(page.locator("#workspace-link-task")).isVisible()
         }
@@ -229,21 +312,7 @@ private fun Page.renderedRows(): Int =
 private fun Page.columnWidth(type: String): Double =
     locator(".workspace-column[data-type='$type']").boundingBox().width
 
-private val TAB_STRIP_JS = """
-    () => {
-      const strip = document.querySelector(".workspace-tabs");
-      const active = strip.querySelector(".workspace-tab.active");
-      const s = strip.getBoundingClientRect();
-      const a = active.getBoundingClientRect();
-      const plus = document.querySelector("#workspace-add-tab").getBoundingClientRect();
-      return {
-        scrollWidth: strip.scrollWidth,
-        clientWidth: strip.clientWidth,
-        overflowX: getComputedStyle(strip).overflowX,
-        activeInView: a.left >= s.left - 1 && a.right <= plus.left + 1 ? 1 : 0,
-        addInView: plus.left >= s.left - 1 && plus.right <= s.right + 1 ? 1 : 0,
-        pageScrollWidth: document.documentElement.scrollWidth,
-        viewportWidth: window.innerWidth
-      };
-    }
-""".trimIndent()
+internal fun Page.addWorkspaceColumn() {
+    locator("#workspace-layout-toggle").click()
+    locator("#workspace-layout .column-add").first().click()
+}

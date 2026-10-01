@@ -11,8 +11,11 @@ import type { Session } from "../lib/sessions.ts";
 import type { Task } from "../lib/tasks.ts";
 import { navigate, taskPath } from "../lib/router.ts";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
+import { HeaderPopover } from "./HeaderPopover.tsx";
+import { Icon } from "./Icon.tsx";
+import { useVisiblePane } from "./useVisiblePane.ts";
 import { KeyBar } from "./KeyBar.tsx";
-import { MutexPills } from "./MutexesScreen.tsx";
+import { MutexIndicator, MutexPills } from "./MutexesScreen.tsx";
 import type { KeyBarProps } from "./KeyBar.tsx";
 import type { TerminalUnicodeModeValue } from "../lib/unicode.ts";
 
@@ -34,6 +37,7 @@ export interface TerminalPaneProps extends HeaderTaskBadgeProps {
   onOpenPalette: (mode: "leader") => void;
   onTerminalClosed: (id: string) => void;
   workspace: ComponentChildren;
+  workspaceToolbar: ComponentChildren;
 }
 
 interface TerminalSlotPort {
@@ -315,8 +319,10 @@ function installSwipeScroll(term: Terminal) {
 
 export function TerminalPane({
   session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
-  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed, workspace,
+  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed, workspace, workspaceToolbar,
 }: TerminalPaneProps) {
+  const paneRef = useRef<HTMLElement>(null);
+  useVisiblePane(paneRef);
   const hostRef = useRef<HTMLDivElement | null>(null);
   if (hostRef.current === null) {
     const created = document.createElement("div");
@@ -376,8 +382,6 @@ export function TerminalPane({
     if (!attachedId) return undefined;
     const host = hostRef.current;
     if (!host) return undefined;
-    const app = host.closest("#app");
-    if (!app) return undefined;
     ctrlActiveRef.current = false;
     setCtrlActive(false);
 
@@ -399,48 +403,6 @@ export function TerminalPane({
     term.loadAddon(fit);
     term.open(host);
 
-    // Use visualViewport for keyboard geometry, tolerating iOS PWA safe-area loss without a keyboard.
-    const viewport = window.visualViewport;
-    const sizeForVisualViewport = () => {
-      if (!viewport || !shownRef.current) return;
-      if (!Number.isFinite(viewport.height) || !Number.isFinite(viewport.offsetTop) ||
-          viewport.height <= 0) return; // Safari emits transient zeroes during rotation.
-
-      const appBounds = app.getBoundingClientRect();
-      if (!Number.isFinite(appBounds.height) || appBounds.height <= 0) return;
-      const appStyle = getComputedStyle(app);
-      const safeAreaHeight =
-        (Number.parseFloat(appStyle.getPropertyValue("--device-safe-area-top")) || 0) +
-        (Number.parseFloat(appStyle.getPropertyValue("--device-safe-area-bottom")) || 0);
-      const viewportShrunken = viewport.height < appBounds.height - safeAreaHeight - 1;
-
-      // Measure without the previous keyboard cap; restore it if new metrics are invalid.
-      const previousHeight = host.style.getPropertyValue("--terminal-visible-height");
-      host.classList.remove("visual-viewport-sized");
-      host.style.removeProperty("--terminal-visible-height");
-      // Toggle before measuring the key bar because the state changes its safe-area height.
-      app.classList.toggle("visual-viewport-shrunken", viewportShrunken);
-      if (!viewportShrunken) return;
-
-      const bounds = host.getBoundingClientRect();
-      const visibleBottom = viewport.offsetTop + viewport.height;
-      // Reserve the key bar inside the visual-viewport ceiling.
-      const keyBarHeight = keyBarRef.current?.getBoundingClientRect().height || 0;
-      const visibleHeight = Math.floor(Math.min(
-        bounds.height,
-        visibleBottom - bounds.top - keyBarHeight,
-      ));
-      if (!Number.isFinite(visibleHeight) || visibleHeight <= 0) {
-        if (previousHeight) {
-          host.classList.add("visual-viewport-sized");
-          host.style.setProperty("--terminal-visible-height", previousHeight);
-        }
-        return;
-      }
-      host.classList.add("visual-viewport-sized");
-      host.style.setProperty("--terminal-visible-height", visibleHeight + "px");
-    };
-    sizeForVisualViewport();
     if (shownRef.current) {
       try { fit.fit(); } catch (_) { /* ResizeObserver retries after layout. */ }
     }
@@ -533,27 +495,13 @@ export function TerminalPane({
     };
     host.addEventListener("click", focusTerminal);
 
-    const viewportChanged = () => {
-      sizeForVisualViewport();
-      // Move immediately but debounce tmux reflow across keyboard animation frames.
-      refit();
-    };
-    if (viewport) {
-      viewport.addEventListener("resize", viewportChanged);
-      viewport.addEventListener("scroll", viewportChanged);
-    }
-
     const visibility: TerminalVisibility = {
       show: () => {
         refit.cancel();
-        sizeForVisualViewport();
         fitAndReport();
       },
       hide: () => {
         refit.cancel();
-        host.classList.remove("visual-viewport-sized");
-        host.style.removeProperty("--terminal-visible-height");
-        app.classList.remove("visual-viewport-shrunken");
       },
     };
     visibilityRef.current = visibility;
@@ -568,13 +516,6 @@ export function TerminalPane({
       observer.disconnect();
       host.removeEventListener("click", focusTerminal);
       swipeScroll.dispose();
-      if (viewport) {
-        viewport.removeEventListener("resize", viewportChanged);
-        viewport.removeEventListener("scroll", viewportChanged);
-      }
-      host.classList.remove("visual-viewport-sized");
-      host.style.removeProperty("--terminal-visible-height");
-      app.classList.remove("visual-viewport-shrunken");
       dataSubscription.dispose();
       binarySubscription.dispose();
       resizeSubscription.dispose();
@@ -647,7 +588,7 @@ export function TerminalPane({
   const openPalette = () => onOpenPalette("leader");
 
   return (
-    <main id="terminal-pane">
+    <main id="terminal-pane" ref={paneRef}>
       <div id="terminal-head">
         <button
           id="drawer-toggle"
@@ -658,7 +599,7 @@ export function TerminalPane({
           aria-controls="sidebar"
           title="Sessions"
           onClick={onToggleDrawer}
-        >☰</button>
+        ><Icon name="list" /></button>
         <button
           id="sidebar-toggle"
           class="icon-button icon-button-small sidebar-toggle"
@@ -668,20 +609,26 @@ export function TerminalPane({
           aria-controls="sidebar"
           title={sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
           onClick={onToggleSidebar}
-        >{sidebarCollapsed ? "›" : "‹"}</button>
+        ><Icon name="sidebar" /></button>
         <div class="terminal-identity">
-          <div class="terminal-session">
-            <span id="terminal-title">{session ? displayName(session) : "No session selected"}</span>
-            {session?.cwd && (
-              <span id="terminal-cwd" title={session.cwd}>{session.cwd}</span>
-            )}
-          </div>
-          <span id="terminal-state" class={badge ? "pill badge " + badge.cls : "pill badge"}>
-            {badge ? badge.label : ""}
-          </span>
-          <HeaderTaskBadge session={session} tasks={tasks} />
-          <MutexPills sessionId={session ? session.id : null} />
+          {session ? <HeaderPopover key={session.id} id="session-details" label="Session details"
+            className="session-details-toggle" panelClass="session-details"
+            trigger={<>
+              <span class={"session-status-dot " + badge!.cls} role="img" aria-label={badge!.label} title={badge!.label} />
+              <span id="terminal-title">{displayName(session)}</span>
+              <MutexIndicator sessionId={session.id} /><Icon name="caret" />
+            </>}>
+            {() => <>
+              <p class="session-details-name">{displayName(session)}</p>
+              <span id="terminal-state" class={"pill badge " + badge!.cls}>{badge!.label}</span>
+              {session.cwd && <span id="terminal-cwd" title={session.cwd}>{session.cwd}</span>}
+              <p class="session-details-agent">{[session.agent, session.model].filter(Boolean).join(" · ")}</p>
+              <HeaderTaskBadge session={session} tasks={tasks} />
+              <MutexPills sessionId={session.id} />
+            </>}
+          </HeaderPopover> : <span id="terminal-title">No session selected</span>}
         </div>
+        {workspaceToolbar}
         <button
           id="palette-button"
           class="icon-button icon-button-small palette-button"
@@ -689,7 +636,7 @@ export function TerminalPane({
           aria-label="Open command palette"
           title="Commands"
           onClick={openPalette}
-        >⋯</button>
+        ><Icon name="more" /></button>
       </div>
 
       <TerminalSlotContext.Provider value={slotPortRef.current}>

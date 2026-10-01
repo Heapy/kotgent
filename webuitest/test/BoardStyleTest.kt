@@ -765,6 +765,7 @@ class BoardStyleTest {
 
             for ([id, directory] in listOf("s-alpha" to "/a/b", "s-gamma" to "/a/c")) {
                 page.locator("#session-list .session-row[data-id='$id']").click()
+                page.locator("#session-details-toggle").click()
                 assertThat(cwd).isVisible()
                 assertThat(cwd).hasText(directory)
                 assertThat(cwd).hasAttribute("title", directory)
@@ -782,43 +783,29 @@ class BoardStyleTest {
             TASK_LINKED_SESSION_SCENARIO, "terminal-working-directory-phone", 375, PHONE_HEIGHT, mobile = true,
         ) { harness, page ->
             page.navigate(harness.baseUrl + "/s/s-linked-1")
-            val cwd = page.locator("#terminal-cwd")
-            assertThat(cwd).hasText("/repo/linked")
             val head = page.locator("#terminal-head")
-            val height = head.rect().height
-
-            cwd.setText("/repo/" + "long-working-directory/".repeat(12))
-            page.locator("#terminal-task").setLabel("W".repeat(120))
-            assertEquals("11px", cwd.style("font-size"))
-            assertEquals(page.resolved("var(--muted)"), cwd.style("color"))
-            assertEquals("nowrap", cwd.style("white-space"))
-            assertEquals("hidden", cwd.style("overflow-x"))
-            assertEquals("ellipsis", cwd.style("text-overflow"))
-            assertTrue(
-                cwd.number("el => el.scrollWidth") > cwd.number("el => el.clientWidth"),
-                "a long working directory is truncated inside the phone header",
-            )
-
-            val box = head.rect()
-            for (selector in listOf(
-                "#drawer-toggle", "#terminal-title", "#terminal-cwd", "#terminal-state",
-                "#terminal-task", "#palette-button",
-            )) {
+            assertClose(48.0, head.rect().height, "the phone header takes one compact row")
+            page.locator("#terminal-title").setText("A very long session name ".repeat(10))
+            for (selector in listOf("#drawer-toggle", "#terminal-title", "#workspace-tab-picker-toggle",
+                "#workspace-layout-toggle", "#palette-button")) {
                 val element = page.locator(selector)
                 assertThat(element).isVisible()
                 val bounds = element.rect()
-                assertTrue(
-                    bounds.left >= box.left && bounds.right <= box.right &&
-                        bounds.top >= box.top && bounds.bottom <= box.bottom,
-                    "$selector stays inside the phone header with a long working directory: $bounds in $box",
-                )
+                val box = head.rect()
+                assertTrue(bounds.left >= box.left && bounds.right <= box.right &&
+                    bounds.top >= box.top && bounds.bottom <= box.bottom,
+                    "$selector stays inside the compact phone header: $bounds in $box")
             }
-            val identity = page.locator(".terminal-identity")
-            assertClose(
-                identity.number("el => el.clientWidth"), identity.number("el => el.scrollWidth"),
-                "the working directory leaves room for the state and task badges",
-            )
-            assertClose(height, box.height, "a long working directory keeps the phone header height")
+            page.locator("#session-details-toggle").click()
+            val cwd = page.locator("#terminal-cwd")
+            assertThat(cwd).hasText("/repo/linked")
+            cwd.setText("/repo/" + "long-working-directory/".repeat(12))
+            assertEquals("normal", cwd.style("white-space"))
+            assertClose(cwd.number("el => el.clientWidth"), cwd.number("el => el.scrollWidth"),
+                "the complete working directory wraps inside session details")
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#session-details")).isHidden()
+            assertThat(page.locator("#session-details-toggle")).isFocused()
             page.locator("#palette-button").click()
             assertThat(page.locator("#command-palette")).isVisible()
         }
@@ -862,6 +849,7 @@ class BoardStyleTest {
             )
 
             page.navigate(harness.baseUrl + "/s/s-linked-1")
+            page.locator("#session-details-toggle").click()
             val header = page.locator("#terminal-task")
             assertThat(header).isVisible()
             val title = page.locator("#terminal-title")

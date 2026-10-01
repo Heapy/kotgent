@@ -419,6 +419,7 @@ class TaskCommandsTest {
                 "the Web UI names the selected session explicitly instead of relying on a pane header",
             )
 
+            page.locator("#session-details-toggle").click()
             val badge = page.locator("#terminal-task")
             assertThat(badge).isVisible()
             assertThat(badge).hasText("Beta same-rank task")

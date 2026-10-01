@@ -83,6 +83,7 @@ class RouterTest {
         page.navigate("$base/s/$DEEP_SESSION")
         assertSessionView(page)
 
+        page.locator("#session-details-toggle").click()
         page.locator(TERMINAL_TASK).click()
         assertThat(page).hasURL(taskUrl(base))
         assertTaskDetail(page)

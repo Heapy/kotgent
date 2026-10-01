@@ -50,7 +50,7 @@ class PlanReviewTest {
     fun taskEntryOpensPlanBesideTheTerminalAndPhoneUsesContentsDropdown() = onPlan("plan-phone", phone = true) { harness, page ->
         page.navigate(harness.baseUrl + "/s/s-work")
         page.awaitSessionView()
-        page.locator(".workspace-column[data-type='terminal'] .column-add").click()
+        page.addWorkspaceColumn()
         page.locator(".task-open-plan").click()
         assertThat(page.locator(".workspace-tab.active")).containsText("Terminal · Plan")
         assertThat(page.locator(".workspace-column[data-type='plan']")).isVisible()
