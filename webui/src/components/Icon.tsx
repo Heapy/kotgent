@@ -1,4 +1,11 @@
 const icons = {
+  folder: new URL("../assets/icons/folder-simple.svg", import.meta.url).href,
+  rename: new URL("../assets/icons/pencil-simple.svg", import.meta.url).href,
+  command: new URL("../assets/icons/command.svg", import.meta.url).href,
+  copy: new URL("../assets/icons/copy.svg", import.meta.url).href,
+  lock: new URL("../assets/icons/lock-simple.svg", import.meta.url).href,
+  pause: new URL("../assets/icons/pause.svg", import.meta.url).href,
+  check: new URL("../assets/icons/check.svg", import.meta.url).href,
   sidebar: new URL("../assets/icons/sidebar-simple.svg", import.meta.url).href,
   list: new URL("../assets/icons/list.svg", import.meta.url).href,
   more: new URL("../assets/icons/dots-three.svg", import.meta.url).href,

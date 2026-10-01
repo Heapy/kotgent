@@ -15,6 +15,54 @@ import kotlin.test.assertTrue
 class WorkspaceTest {
 
     @Test
+    fun sessionDetailsRenameTheSelectedSessionAndOpenItsLinkedTask() =
+        onTheWorkspace("workspace-session-details") { harness, page, terminal ->
+            page.openSession(harness, SESSION_WORK)
+            page.locator("#session-details-toggle").click()
+            val details = page.locator("#session-details")
+            assertThat(details.locator("dt")).hasText(arrayOf("Status", "Agent", "Folder", "Task"))
+            assertThat(details.locator("#terminal-state")).hasText("running")
+            details.locator("button:has-text('Rename')").click()
+            assertThat(details).isHidden()
+            assertThat(page.locator("#rename-session-dialog")).isVisible()
+            page.locator("#rename-session-name").fill("Review workspace")
+            page.locator("#rename-session-submit").click()
+            assertThat(page.locator("#rename-session-dialog")).hasCount(0)
+            assertThat(page.locator("#terminal-title")).hasText("Review workspace")
+            assertEquals(1, terminal.sockets(), "renaming never replaces the terminal attachment")
+            page.locator("#session-details-toggle").click()
+            assertThat(details.locator(".session-details-name")).hasText("Review workspace")
+            details.locator("button:has-text('Open task')").click()
+            assertThat(page).hasURL(harness.baseUrl + "/tasks/local%3A1")
+            assertThat(page.locator("#task-detail-title-input")).hasValue(TASK_TITLE)
+        }
+
+    @Test
+    fun sessionActionsReuseTheWorkspaceAndReturnFocusAfterCommands() =
+        onTheWorkspace("workspace-session-actions") { harness, page, terminal ->
+            page.openSession(harness, SESSION_WORK)
+            page.locator("#session-actions-toggle").click()
+            page.locator("#session-actions button:has-text('Review beside terminal')").click()
+            assertThat(page.locator(".workspace-column[data-type='plan']")).isVisible()
+            assertThat(page.locator(".workspace-column[data-type='terminal']")).isVisible()
+            assertEquals(1, terminal.sockets(), "opening review keeps the same terminal")
+            page.openHeaderCommands()
+            assertThat(page.locator("#command-palette")).isVisible()
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#session-actions-toggle")).isFocused()
+            assertThat(page.locator("#session-actions")).isHidden()
+
+            page.openSession(harness, SESSION_FREE)
+            page.locator("#session-actions-toggle").click()
+            assertThat(page.locator("#session-actions button:has-text('Open linked task')")).isDisabled()
+            assertThat(page.locator("#session-actions button:has-text('Review beside terminal')")).isDisabled()
+            page.keyboard().press("Escape")
+            page.locator("#session-details-toggle").click()
+            assertThat(page.locator("#session-details button:has-text('Open task')")).isDisabled()
+            assertThat(page.locator("#session-details button:has-text('Rename')")).isEnabled()
+        }
+
+    @Test
     fun aTabWithoutTheTerminalParksItOnTheSameSocketAndReportsNoSizeUntilItShowsAgain() =
         onTheWorkspace("workspace-tab-switch") { harness, page, terminal ->
             page.openSession(harness, SESSION_WORK)

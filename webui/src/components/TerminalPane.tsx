@@ -7,25 +7,23 @@ import { createContext } from "preact";
 import type { ComponentChildren, JSX } from "preact";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
-import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
+import type { Command } from "../lib/commands.ts";
 import type { Session } from "../lib/sessions.ts";
 import type { Task } from "../lib/tasks.ts";
-import { navigate, taskPath } from "../lib/router.ts";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
-import { HeaderPopover } from "./HeaderPopover.tsx";
+import { SessionActions, SessionDetails } from "./SessionMenus.tsx";
 import { Icon } from "./Icon.tsx";
 import { useVisiblePane } from "./useVisiblePane.ts";
 import { KeyBar } from "./KeyBar.tsx";
-import { MutexIndicator, MutexPills } from "./MutexesScreen.tsx";
 import type { KeyBarProps } from "./KeyBar.tsx";
 import type { TerminalUnicodeModeValue } from "../lib/unicode.ts";
 
-interface HeaderTaskBadgeProps {
+interface SessionContextProps {
   session: Session | null;
   tasks: readonly Task[];
 }
 
-export interface TerminalPaneProps extends HeaderTaskBadgeProps {
+export interface TerminalPaneProps extends SessionContextProps {
   attachedId: string | null;
   focusRequest: { sessionId: string } | null;
   terminalFontSize: number;
@@ -36,6 +34,8 @@ export interface TerminalPaneProps extends HeaderTaskBadgeProps {
   onToggleDrawer: JSX.MouseEventHandler<HTMLButtonElement>;
   onToggleSidebar: JSX.MouseEventHandler<HTMLButtonElement>;
   onOpenPalette: (mode: "leader") => void;
+  commands: readonly Command[];
+  onCopyCwd: () => void;
   onTerminalClosed: (id: string) => void;
   workspace: ComponentChildren;
   workspaceToolbar: ComponentChildren;
@@ -320,7 +320,7 @@ function installSwipeScroll(term: Terminal) {
 
 export function TerminalPane({
   session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
-  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed, workspace, workspaceToolbar,
+  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, commands, onCopyCwd, onTerminalClosed, workspace, workspaceToolbar,
 }: TerminalPaneProps) {
   const paneRef = useRef<HTMLElement>(null);
   useVisiblePane(paneRef);
@@ -575,7 +575,6 @@ export function TerminalPane({
     sendResize(ws, term.cols, term.rows);
   }, [terminalFontSize]);
 
-  const badge = session ? stateBadge(session.state) : null;
   const attached = !!session && session.id === attachedId;
   const toggleCtrl = () => {
     const next = !ctrlActiveRef.current;
@@ -603,33 +602,22 @@ export function TerminalPane({
         ><Icon name="list" /></button>
         <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         <div class="terminal-identity">
-          {session ? <HeaderPopover key={session.id} id="session-details" label="Session details"
-            className="session-details-toggle" panelClass="session-details"
-            trigger={<>
-              <span class={"session-status-dot " + badge!.cls} role="img" aria-label={badge!.label} title={badge!.label} />
-              <span id="terminal-title">{displayName(session)}</span>
-              <MutexIndicator sessionId={session.id} /><Icon name="caret" />
-            </>}>
-            {() => <>
-              <p class="session-details-name">{displayName(session)}</p>
-              <span id="terminal-state" class={"pill badge " + badge!.cls}>{badge!.label}</span>
-              {session.cwd && <span id="terminal-cwd" title={session.cwd}>{session.cwd}</span>}
-              <p class="session-details-agent">{[session.agent, session.model].filter(Boolean).join(" · ")}</p>
-              <HeaderTaskBadge session={session} tasks={tasks} />
-              <MutexPills sessionId={session.id} />
-            </>}
-          </HeaderPopover> : <span id="terminal-title">No session selected</span>}
+          {session ? <SessionDetails key={session.id} session={session} tasks={tasks} commands={commands} />
+            : <span id="terminal-title">No session selected</span>}
         </div>
         {workspaceToolbar && <span class="header-separator" aria-hidden="true" />}
         {workspaceToolbar}
-        <button
-          id="palette-button"
-          class="icon-button icon-button-small palette-button"
-          type="button"
-          aria-label="Open command palette"
-          title="Commands"
-          onClick={openPalette}
-        ><Icon name="more" /></button>
+        {session ? <SessionActions key={session.id} session={session} commands={commands}
+          onOpenPalette={openPalette} onCopyCwd={onCopyCwd} /> : (
+          <button
+            id="palette-button"
+            class="icon-button icon-button-small palette-button"
+            type="button"
+            aria-label="Open command palette"
+            title="Commands"
+            onClick={openPalette}
+          ><Icon name="more" /></button>)}
+
       </div>
 
       <TerminalSlotContext.Provider value={slotPortRef.current}>
@@ -649,29 +637,5 @@ export function TerminalPane({
 
       {hint && <p id="terminal-hint" class="terminal-hint">{hint}</p>}
     </main>
-  );
-}
-
-/** Preserve real-link behavior while routing plain task-badge clicks in-app. */
-function HeaderTaskBadge({ session, tasks }: HeaderTaskBadgeProps) {
-  if (!session) return null;
-  const task = taskBadge(session, tasks);
-  if (!task) return null;
-  const open: JSX.MouseEventHandler<HTMLAnchorElement> = (event) => {
-    event.stopPropagation();
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    navigate(taskPath(task.ref));
-  };
-  return (
-    <a
-      id="terminal-task"
-      class={"task-badge" + (task.known ? "" : " task-badge-unknown")}
-      href={taskPath(task.ref)}
-      title={task.tooltip}
-      onClick={open}
-    >
-      <span class="task-session-dot" data-state={session.state}></span>{task.label}
-    </a>
   );
 }

@@ -146,8 +146,8 @@ class TerminalSwipeTest {
                 "a tap is not a swipe: it is never claimed and reports nothing",
             )
 
-            f.page.locator("#palette-button").focus()
-            assertEquals("palette-button", f.activeElement(), "focus starts outside the terminal")
+            f.page.locator("#session-actions-toggle").focus()
+            assertEquals("session-actions-toggle", f.activeElement(), "focus starts outside the terminal")
 
             f.resetWheels()
             f.swipe(x, box.y + box.height * 0.9, x, box.y + box.height * 0.4)

@@ -1,5 +1,7 @@
 import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { Icon } from "./Icon.tsx";
+import { SessionStatus } from "./SessionStatus.tsx";
 import { UsageStrip } from "./UsageStrip.tsx";
 import { groupEntries, groupSessions, orderGroupsByRecentChange, treeCwd } from "../lib/paths.ts";
 import type { SessionGroup as SessionGroupData } from "../lib/paths.ts";
@@ -418,7 +420,7 @@ function SessionRow({
             title="Bring this session back to the sidebar"
             onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
           >Restore</button>)
-        : (<span class={"pill badge " + badge.cls}>{badge.label}</span>)}
+        : (<SessionStatus state={session.state} />)}
     </li>
   );
 }
@@ -490,7 +492,7 @@ function SessionGroup({
           title={(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
           onClick={() => onToggle(collapseKey)}
         >
-          <Chevron collapsed={collapsed} />
+          <Icon name="folder" />
           <span class="group-title" title={group.path || group.label}>{group.label}</span>
           <span class="group-count">{group.sessionCount}</span>
           {hidingAttention &&
@@ -516,7 +518,7 @@ function SessionGroup({
             title={"New session in " + group.path}
             aria-label={"New session in " + group.path}
             onClick={() => onNewSession?.(group.path)}
-          >+</button>)}
+          ><Icon name="plus" /></button>)}
       </div>
       {!collapsed && (
         <ul class="session-list group-contents">

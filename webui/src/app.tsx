@@ -1062,6 +1062,17 @@ function App() {
     }
   }, []);
 
+  const copyWorkingDirectory = useCallback(async () => {
+    const cwd = activeSessionSignal.value?.cwd;
+    if (!cwd) return;
+    try {
+      await writeClipboard(cwd);
+      say("Working directory copied to clipboard.");
+    } catch (_) {
+      say("Could not copy the working directory.", true);
+    }
+  }, []);
+
   const onTerminalClosed = useCallback((id: string) => {
     const s = findSession(id);
     dispatchReattach(terminalClosed(id, s ? s.state : null));
@@ -1472,6 +1483,8 @@ function App() {
           onToggleSidebar={toggleSidebar}
           onOpenPalette={openPalette}
           onTerminalClosed={onTerminalClosed}
+          commands={commands}
+          onCopyCwd={copyWorkingDirectory}
           workspaceToolbar={activeSession ? <WorkspaceToolbar sessionId={activeSession.id} /> : null}
           workspace={activeSession
             ? <Workspace sessionId={activeSession.id} renderPanel={renderPanel} />

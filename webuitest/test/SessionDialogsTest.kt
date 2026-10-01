@@ -541,7 +541,9 @@ class SessionDialogsTest {
                             previous?.let { page.waitForFunction(BADGE_CHANGED, listOf(BADGE_SESSION, it)) }
                             val label = badge.textContent().trim()
                             previous = label
-                            label to badge.getAttribute("class").orEmpty()
+                            assertThat(badge).hasAttribute("title", label)
+                            assertThat(badge).hasAttribute("aria-label", label)
+                            label to badge.getAttribute("class").orEmpty().split(" ").single { it.startsWith("badge-") }
                         }
 
                         runFromPalette(page, "Help")
@@ -553,10 +555,10 @@ class SessionDialogsTest {
                         assertEquals(
                             painted,
                             documented.all().map {
-                                it.textContent().trim() to it.getAttribute("class").orEmpty()
+                                it.textContent().trim() to it.getAttribute("class").orEmpty().split(" ").single { cls -> cls.startsWith("badge-") }
                             },
                             "Help's state list must be the vocabulary the sidebar actually paints, in the " +
-                                "order the reducer declares — label AND badge class",
+                                "order the reducer declares — label AND semantic color class",
                         )
 
                         val controls = page.locator(

@@ -258,10 +258,13 @@ the common workflow and links to those guides; implementation invariants belong 
   `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
 - The session header is one 48px row. Workspace tabs share it on desktop; phones use a tab picker.
   Add-tab follows the last desktop tab; column controls sit inside the active tab's shared shape as a
-  separate button. The phone picker groups the same controls. The command palette stays at the right edge.
+  separate button. The phone picker groups the same controls. The right-hand session menu includes Commands and reuses
+  the command registry for session actions. ⌘K still opens the command palette directly.
   Configure columns owns all column type/add/close controls, leaving panels without header rows.
   The phone panel switcher appears only when some columns are hidden. Session details hold cwd,
-  agent/model, task and mutex links; attention and mutex indicators remain visible in the header.
+  agent/model, task and mutex links in a key-value list, plus Open task and Rename; attention and mutex
+  indicators remain visible in the header. Sidebar status dots keep state labels in accessible text and
+  hover tooltips. Folder icons use the existing grouping preference; they do not introduce a second tree.
 - `useVisiblePane` caps the entire terminal-pane flex stack to `visualViewport`, including workspace
   panels and the key bar. Capping only the nested xterm host leaves the footer below the keyboard.
   Ignore transient zero geometry, account for viewport offset, and clear the cap on keyboard dismissal.

@@ -250,13 +250,13 @@ class CommandPaletteTest {
                 assertThat(page.locator("#$id")).hasCount(0)
             }
 
-            page.locator("#palette-button").click()
+            page.openHeaderCommands()
             assertThat(page.locator(LEADER_GRID)).isVisible()
 
             page.locator("#command-palette-close").click()
             assertThat(page.locator(PALETTE)).hasCount(0)
 
-            page.locator("#palette-button").click()
+            page.openHeaderCommands()
             assertThat(page.locator(LEADER_GRID)).isVisible()
             assertLeaderOwnsTheKeyboard(page)
             page.keyboard().press("KeyH")

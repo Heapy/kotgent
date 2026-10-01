@@ -431,11 +431,11 @@ class SidebarTest {
             rowMark(page, "s-delta").focus()
             page.keyboard().press("Enter")
             page.waitForCondition { held.get() != null }
-            page.locator("#palette-button").focus()
+            page.locator("#session-actions-toggle, #terminal-head > #palette-button").focus()
             held.get()!!.resume()
 
             assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(0)
-            assertThat(page.locator("#palette-button")).isFocused()
+            assertThat(page.locator("#session-actions-toggle, #terminal-head > #palette-button")).isFocused()
         }
     }
 
@@ -1493,7 +1493,7 @@ private fun configureGrouping(page: Page, basePath: String, level: Int) {
 }
 
 private fun runLeaderCommand(page: Page, title: String) {
-    page.locator("#palette-button").click()
+    page.openHeaderCommands()
     assertThat(page.locator("#command-palette")).isVisible()
     page.locator(".command-palette-leader-command")
         .filter(Locator.FilterOptions().setHasText(title))

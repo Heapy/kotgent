@@ -314,7 +314,7 @@ class LayoutTest {
                 assertThat(terminal).hasCount(1)
                 terminal.evaluate("el => { el.dataset.layoutIdentity = 'original'; }")
 
-                page.locator("#palette-button").click()
+                page.openHeaderCommands()
                 assertThat(page.locator("#command-palette")).isVisible()
                 page.locator(".command-palette-leader-command:has-text(\"Preferences\")").click()
                 assertThat(page.locator("#prefs-dialog")).isVisible()
@@ -362,7 +362,7 @@ class LayoutTest {
                     "the fixture starts on the default terminal font step",
                 )
 
-                page.locator("#palette-button").click()
+                page.openHeaderCommands()
                 assertThat(page.locator("#command-palette")).isVisible()
                 page.locator(".command-palette-leader-command:has-text(\"Preferences\")").click()
                 assertThat(page.locator("#prefs-dialog")).isVisible()
@@ -384,7 +384,7 @@ class LayoutTest {
                     "the stored font step is the one the reloaded terminal was built with",
                 )
 
-                page.locator("#palette-button").click()
+                page.openHeaderCommands()
                 assertThat(page.locator("#command-palette")).isVisible()
                 page.locator(".command-palette-leader-command:has-text(\"Preferences\")").click()
                 assertThat(page.locator("#prefs-dialog")).isVisible()

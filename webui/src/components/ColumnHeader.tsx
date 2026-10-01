@@ -21,12 +21,14 @@ export function ColumnHeader({ type, types, canAdd, canClose, onType, onAdd, onC
   };
   return (
     <div class="column-header">
-      <Icon name={type === "task" || type === "plan" ? type : "terminal"} />
-      <select class="column-type" aria-label={label + " column type"} value={type} onChange={change}>
-        {types.map((option) => (
-          <option key={option} value={option} selected={option === type}>{COLUMN_LABELS[option]}</option>
-        ))}
-      </select>
+      <label class="column-type-control">
+        <Icon name={type === "task" || type === "plan" ? type : "terminal"} />
+        <select class="column-type" aria-label={label + " column type"} value={type} onChange={change}>
+          {types.map((option) => (
+            <option key={option} value={option} selected={option === type}>{COLUMN_LABELS[option]}</option>
+          ))}
+        </select>
+      </label>
       <button type="button" class="icon-button icon-button-small column-add" disabled={!canAdd}
               aria-label={"Add a column beside " + label} title="Add a column" onClick={onAdd}><Icon name="plus" /></button>
       <button type="button" class="icon-button icon-button-small column-close" disabled={!canClose}

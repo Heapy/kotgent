@@ -787,7 +787,7 @@ class BoardStyleTest {
             assertClose(48.0, head.rect().height, "the phone header takes one compact row")
             page.locator("#terminal-title").setText("A very long session name ".repeat(10))
             for (selector in listOf("#drawer-toggle", "#terminal-title", "#workspace-tab-picker-toggle",
-                "#workspace-layout-toggle", "#palette-button")) {
+                "#workspace-layout-toggle", "#session-actions-toggle")) {
                 val element = page.locator(selector)
                 assertThat(element).isVisible()
                 val bounds = element.rect()
@@ -806,7 +806,7 @@ class BoardStyleTest {
             page.keyboard().press("Escape")
             assertThat(page.locator("#session-details")).isHidden()
             assertThat(page.locator("#session-details-toggle")).isFocused()
-            page.locator("#palette-button").click()
+            page.openHeaderCommands()
             assertThat(page.locator("#command-palette")).isVisible()
         }
 
@@ -856,8 +856,8 @@ class BoardStyleTest {
             assertTrue(title.rect().width > 0, "the session's own name is on the header row beside it")
             header.setLabel("W".repeat(120))
             assertTrue(
-                header.rect().width <= BADGE_MAX_WIDTH + 1,
-                "a long task title is clamped rather than allowed to grow the badge",
+                header.rect().width <= header.number("el => el.parentElement.clientWidth") + 1,
+                "a long task title is clamped inside the key-value column",
             )
             assertTrue(
                 header.number("el => el.scrollWidth") > header.number("el => el.clientWidth"),

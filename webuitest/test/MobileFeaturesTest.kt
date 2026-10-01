@@ -532,7 +532,7 @@ class MobileFeaturesTest {
     }
 
     private fun runLeaderCommand(page: Page, title: String) {
-        page.locator("#palette-button").click()
+        page.openHeaderCommands()
         assertThat(page.locator("#command-palette")).isVisible()
         page.locator(
             ".command-palette-leader-command",
