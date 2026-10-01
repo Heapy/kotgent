@@ -349,6 +349,8 @@ class ApiClient(
             is PlanPut -> "?baseRev=${command.baseRev}"
             is PlanShow -> ""
             is PlanReviewCommand -> "/review/wait?wait=${command.wait}" + (command.afterRound?.let { "&afterRound=$it" } ?: "")
+            is PlanMutation -> command.path
+            is PlanWait -> (command.taskId?.let { "/tasks/${it.encodeURLPathPart()}" } ?: "") + "/wait?wait=${command.wait}&after=${command.after}"
             is PlanReply -> "/threads/${command.thread.encodeURLPathPart()}/messages"
         }
         val query = command.session?.let { (if ('?' in suffix) "&" else "?") + "sessionId=${it.encodeURLParameter()}" }.orEmpty()
@@ -356,6 +358,7 @@ class ApiClient(
             method = when (command) {
                 is PlanPut -> HttpMethod.Put
                 is PlanShow -> HttpMethod.Get
+                is PlanMutation -> if (command.patch) HttpMethod.Patch else HttpMethod.Post
                 else -> HttpMethod.Post
             }
             bearer()
@@ -363,12 +366,18 @@ class ApiClient(
             contentType(ContentType.Application.Json)
             when (command) {
                 is PlanPut -> setBody(command.document)
+                is PlanMutation -> setBody(command.body)
                 is PlanReply -> setBody(json.encodeToString(PlanMessageRequest.serializer(), PlanMessageRequest(command.message)))
                 else -> Unit
             }
-            if (command is PlanReviewCommand) timeout {
-                requestTimeoutMillis = longPollTimeoutMillis(command.wait)
-                socketTimeoutMillis = longPollTimeoutMillis(command.wait)
+            val wait = when (command) {
+                is PlanReviewCommand -> command.wait
+                is PlanWait -> command.wait
+                else -> null
+            }
+            if (wait != null) timeout {
+                requestTimeoutMillis = longPollTimeoutMillis(wait)
+                socketTimeoutMillis = longPollTimeoutMillis(wait)
             }
         }
         ensureSuccess(response)

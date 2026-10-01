@@ -147,7 +147,22 @@ val USAGE: String = """
       plan review <ref> [--wait S]   wait for review, default 90 seconds; pending is safe to repeat
           [--after-round N] [--json] acknowledge round N and open/continue its successor
       plan reply <ref> <thread> -m T reply to a question ('-m -' reads stdin)
-      Plan commands accept --session S; review also accepts --json.
+      plan claim|complete <ref>     claim orchestration or complete an executed plan
+      plan set <ref> mode|branch|concurrency <value>
+      plan task <ref> <id> start|finish|block
+      plan task <ref> <id> worker --worker-session S --branch B --worktree P
+      plan task <ref> <id> status awaiting_decision|merging|done
+      plan task <ref> <id> feedback --findings f_1,f_2 | --rebase-onto B
+      plan task <ref> <id> wait [--after N] [--wait S] [--json]
+      plan wait <ref> [--after N] [--wait S] [--json]   orchestrator events
+      plan step <ref> <id> done
+      plan ask <ref> <block> -m TEXT [--kind question|decision|review]
+      plan finding <ref> add        finding JSON on stdin
+      plan finding <ref> verify|amend <id> --rev N   verifier/finding JSON on stdin
+      plan finding <ref> note <id> -m TEXT
+      plan finding <ref> decide <id> --rev N --kind fix_now|fix_later|wont_fix
+          [--option N] [--note TEXT]   options are zero-based; autonomous decisions require a note
+      Plan commands accept --session S. Wait cursors advance only after handling returned events.
 
       Mutexes serialize work across sessions; only a kotgent session can hold or wait for one,
       and its end releases them.
@@ -384,7 +399,7 @@ private const val MUTEX_SUBCOMMANDS = "acquire | release | run | list"
 
 private const val SESSION_SUBCOMMANDS = "rename <id> <name>"
 
-private sealed interface Scan {
+internal sealed interface Scan {
     data class Ok(
         val positionals: List<String>,
         val values: Map<String, String>,
@@ -398,7 +413,7 @@ private sealed interface Scan {
  * Value flags require real values, repeats and unknown flags are rejected, and [END_OF_FLAGS] permits
  * dash-prefixed positionals. Strict parsing prevents unattended agents from mutating the wrong task.
  */
-private fun scanFlags(
+internal fun scanFlags(
     command: String,
     rest: List<String>,
     valueFlags: Map<String, String> = emptyMap(),
@@ -716,7 +731,8 @@ private fun parseProjectInit(rest: List<String>): CliCommand {
 }
 
 private fun parsePlan(rest: List<String>, readStdin: () -> String): CliCommand {
-    val sub = rest.firstOrNull() ?: return CliCommand.Invalid("plan requires put | show | review | reply")
+    val sub = rest.firstOrNull() ?: return CliCommand.Invalid("plan requires a subcommand; see kotgent help")
+    if (sub in PLAN_EXECUTION_VERBS) return parsePlanExecution(rest, readStdin)
     val flags = when (sub) {
         "put" -> valueFlags("--base-rev", SESSION_FLAG)
         "show" -> valueFlags(SESSION_FLAG)
@@ -861,7 +877,7 @@ private fun malformedMutexKey(command: String, key: String): CliCommand? =
         )
     }
 
-private fun valueFlags(vararg names: String): Map<String, String> = names.associateWith { it }
+internal fun valueFlags(vararg names: String): Map<String, String> = names.associateWith { it }
 
 private fun messageSpellings(): Map<String, String> = mapOf("-m" to MESSAGE_FLAG, MESSAGE_FLAG to MESSAGE_FLAG)
 

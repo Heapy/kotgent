@@ -34,7 +34,7 @@ The daemon issues stable block IDs. Preserve them on updates; omit an ID only fo
 block to delete it, which resolves its open threads. To set dependencies between new tasks, first put
 them without dependencies, then use their returned IDs in `dependsOn` in a second put.
 
-`show`, `put` and `reply` return `{plan, review}`. Feed the `plan` member back to `put`, using its current
+`show`, `put` and `reply` return `{plan, review, execution}`. Feed the `plan` member back to `put`, using its current
 `rev` as `--base-rev`. A stale write returns HTTP 409 and changed block IDs, including deleted IDs. Fetch
 again and incorporate the operator's changes before retrying. Put preserves execution state and settings.
 Viewed marks and discussion also advance the plan revision; only authored text advances a block revision.
@@ -77,3 +77,64 @@ Submit review returns `changes` to the waiting author. Approve returns `approved
 if threads remain unresolved. Both actions name the displayed round, so an old browser cannot submit
 a later one. With focus inside the panel, `v` toggles Viewed and `n` jumps to the next unviewed block.
 These shortcuts do not run in text fields.
+
+## Execution CLI
+
+An approved plan can be claimed by its orchestrator. Another live orchestrator cannot take it over;
+a replacement session may claim after the old session ends. `show` returns `{plan, review, execution}`,
+including assigned workers, findings, task-review modes, and durable events.
+
+```sh
+kotgent plan claim local:42
+kotgent plan set local:42 branch feature/export
+kotgent plan set local:42 concurrency 3
+kotgent plan set local:42 mode supervised
+kotgent plan task local:42 t_export start
+kotgent plan task local:42 t_export worker --worker-session CHILD --branch worker/export --worktree /absolute/worktree
+kotgent plan wait local:42 --after 0 --wait 90 --json
+```
+
+The orchestrator starts only tasks whose dependencies are done, within the plan's concurrency limit.
+The worker must be a live child of the orchestrator in the specified worktree. The assigned worker uses
+`plan step REF STEP done`, asks questions with `plan ask REF BLOCK -m TEXT [--kind decision]`, then
+`plan task REF TASK finish` and `plan task REF TASK wait --after CURSOR --json`. `finish` starts a new task
+review. `block` reports a worker-side blocker. A lost worker becomes blocked and wakes the orchestrator.
+
+Wait responses contain `event`, `cursor`, `events`, and the current `document`. Handle every returned
+event before saving its cursor for the next call. Retrying an old cursor replays events; delivery does
+not consume them. Cursors and events survive daemon restarts and remain until the backlog task is
+deleted. A dropped connection prints only `event: pending` (or its JSON equivalent): keep the previous
+cursor. Both worker and orchestrator waits use the review wait's timeout and exit-code contract.
+
+### Findings and feedback
+
+Reviewers add a finding JSON object with `plan finding REF add < finding.json`. Include `taskId`,
+`condition`, `impact`, `danger`, `likelihood`, at least one `options` entry (`fix`, `outcome`, `cost`,
+`fit`), and zero-based `recommended`; optionally include `location` as `file:line`. Scores are `low`,
+`medium`, or `high`. Omit runtime fields such as ID, author, revision, iteration, verifier and decision.
+The daemon assigns them. A finding is limited to 32 KiB including its retained history.
+
+An independent verifier sends `plan finding REF verify FINDING --rev REV < verifier.json`. Its body
+contains `danger`, `likelihood`, one `{cost, fit}` score per option, `verdict` (`confirmed` or `rejected`),
+and `reason`. A rejected finding still needs an explicit decision. Reviewers and verifiers must be
+independent reviewers; subagents may share their orchestrator's Kotgent session attribution.
+
+`plan finding REF amend FINDING --rev REV < finding.json` records the old details and clears the
+current verification and decision. `plan finding REF note FINDING -m TEXT` adds an attributed note.
+Each change advances the finding revision; re-read after a 409 and reconcile before retrying.
+
+Supervised decisions come from the operator in the Web UI. In autonomous mode, the assigned worker
+uses `plan finding REF decide FINDING --rev REV --kind fix_now --option 0 --note TEXT`, or `fix_later` /
+`wont_fix` without `--option`. Every autonomous decision needs a note. The mode is fixed for a task's
+current review; changing the plan mode affects its next review.
+
+The orchestrator sends the complete current finding batch with
+`plan task REF TASK feedback --findings f_one,f_two`; supervised findings must already be decided.
+A rebase request instead uses `feedback --rebase-onto BRANCH`. Feedback and its targeted worker event
+persist in one transaction. The worker handles it, reports each finding's outcome in a note, finishes
+again, and resumes waiting. Only verified, decided findings permit merging.
+
+The orchestrator records `plan task REF TASK status awaiting_decision|merging|done`; these commands
+record workflow state and do not run Git. After every task is done, `plan complete REF` marks the plan
+done. Task closure and final human review remain separate actions. Authored updates during execution
+must preserve started tasks and their dependencies; new tasks may be appended.
