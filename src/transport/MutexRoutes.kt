@@ -100,7 +100,7 @@ fun MutexListing.toDto(serverNow: Long): MutexListingDto = MutexListingDto(
  * the close as soon as their body is read, so this installs the same close handler for keep-alive calls only.
  */
 @OptIn(InternalAPI::class)
-private val CancelOnDisconnect = createRouteScopedPlugin("KotgentCancelOnDisconnect") {
+internal val CancelOnDisconnect = createRouteScopedPlugin("KotgentCancelOnDisconnect") {
     on(CallSetup) { call ->
         val closing = call.request.headers.getAll(HttpHeaders.Connection).orEmpty()
             .any { header -> header.split(',').any { it.trim().equals("close", ignoreCase = true) } }

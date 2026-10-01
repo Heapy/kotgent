@@ -14,6 +14,7 @@ export type EventsFrame =
   | { type: "tasks_snapshot"; tasks: Task[] }
   | { type: "task_row" | "task_update"; task: Task }
   | { type: "task_removed"; ref: string }
+  | { type: "plan_changed"; taskRef: string; rev: number }
   | { type: "usage_snapshot"; windows: UsageWindow[]; serverNow: number }
   | { type: "usage_update"; window: UsageWindow; serverNow: number }
   | ({ type: "mutexes_snapshot" | "mutex_update" } & MutexListing)

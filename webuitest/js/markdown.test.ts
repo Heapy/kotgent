@@ -143,6 +143,130 @@ describe("parseMarkdown images", () => {
   });
 });
 
+describe("parseMarkdown GFM", () => {
+  test("preserves table alignment and inline content with the first row as the header", () => {
+    assert.deepEqual(parseMarkdown(
+      "| **Plan** | `Step` | Center | Right |\n" +
+      "| --- | :--- | :---: | ---: |\n" +
+      "| *Work* | [guide](https://example.com/guide) | ~~old~~ | ![diagram](https://example.com/diagram.png) |",
+    ), [{
+      type: "table",
+      align: [null, "left", "center", "right"],
+      rows: [
+        [
+          [{ type: "strong", children: [text("Plan")] }],
+          [{ type: "inlineCode", text: "Step" }],
+          [text("Center")],
+          [text("Right")],
+        ],
+        [
+          [{ type: "emphasis", children: [text("Work")] }],
+          [link("https://example.com/guide", text("guide"))],
+          [{ type: "delete", children: [text("old")] }],
+          [link("https://example.com/diagram.png", text("diagram"))],
+        ],
+      ],
+    }]);
+  });
+
+  test("preserves a header-only table", () => {
+    assert.deepEqual(parseMarkdown("| Plan | Status |\n| --- | --- |"), [{
+      type: "table",
+      align: [null, null],
+      rows: [[[text("Plan")], [text("Status")]]],
+    }]);
+  });
+
+  test("distinguishes checked, unchecked and ordinary list items", () => {
+    assert.deepEqual(parseMarkdown("- [x] **Done**\n- [ ] Pending\n- [X] Also done\n- Ordinary"), [{
+      type: "list",
+      ordered: false,
+      start: 1,
+      children: [
+        { type: "listItem", checked: true, children: [paragraph({ type: "strong", children: [text("Done")] })] },
+        { type: "listItem", checked: false, children: [paragraph(text("Pending"))] },
+        { type: "listItem", checked: true, children: [paragraph(text("Also done"))] },
+        { type: "listItem", checked: null, children: [paragraph(text("Ordinary"))] },
+      ],
+    }]);
+  });
+
+  test("preserves nested tasks in ordered lists", () => {
+    assert.deepEqual(parseMarkdown("3. [ ] Parent\n   - [x] Child"), [{
+      type: "list",
+      ordered: true,
+      start: 3,
+      children: [{ type: "listItem", checked: false, children: [
+        paragraph(text("Parent")),
+        { type: "list", ordered: false, start: 1, children: [
+          { type: "listItem", checked: true, children: [paragraph(text("Child"))] },
+        ] },
+      ] }],
+    }]);
+  });
+
+  test("preserves strikethrough with inline formatting", () => {
+    assert.deepEqual(parseMarkdown("Use ~~the **old** `plan`~~ instead."), [
+      paragraph(text("Use "), { type: "delete", children: [
+        text("the "), { type: "strong", children: [text("old")] }, text(" "), { type: "inlineCode", text: "plan" },
+      ] }, text(" instead.")),
+    ]);
+  });
+
+  test("validates HTTP(S) autolink literals and upgrades parser-provided www URLs to HTTPS", () => {
+    assert.deepEqual(parseMarkdown("http://example.com/plan https://example.com/guide www.example.com/notes"), [
+      paragraph(
+        link("http://example.com/plan", text("http://example.com/plan")),
+        text(" "),
+        link("https://example.com/guide", text("https://example.com/guide")),
+        text(" "),
+        link("https://www.example.com/notes", text("www.example.com/notes")),
+      ),
+    ]);
+  });
+
+  test("keeps javascript lookalikes and email literals as plain text", () => {
+    assert.deepEqual(parseMarkdown("javascript:alert(1) JaVaScRiPt:alert(2) agent@example.com"), [
+      paragraph(text("javascript:alert(1) JaVaScRiPt:alert(2) agent@example.com")),
+    ]);
+  });
+
+  test("keeps invalid HTTP(S) and www literal URLs as plain text", () => {
+    const markdown = "https://example.com:999999/plan www.example.com:999999/plan";
+    assert.deepEqual(parseMarkdown(markdown), [paragraph(text(markdown))]);
+  });
+
+  test("preserves explicit destinations with www labels", () => {
+    assert.deepEqual(parseMarkdown("[www.example.com/plan](http://www.example.com/plan) [www.example.com](javascript:alert(1))"), [
+      paragraph(link("http://www.example.com/plan", text("www.example.com/plan")), text(" www.example.com")),
+    ]);
+  });
+
+  test("drops HTML and rejects unsafe links inside table cells", () => {
+    assert.deepEqual(parseMarkdown(
+      "| Before <img src=x onerror=alert(1)> after | <script>alert(2)</script> |\n" +
+      "| --- | --- |\n" +
+      '| <a href="javascript:alert(3)">label</a> | [unsafe](javascript:alert(4)) |',
+    ), [{
+      type: "table",
+      align: [null, null],
+      rows: [
+        [[text("Before  after")], [text("alert(2)")]],
+        [[text("label")], [text("unsafe")]],
+      ],
+    }]);
+  });
+
+  test("keeps footnote references as plain text and drops definitions", () => {
+    assert.deepEqual(parseMarkdown('Plan[^note].\n\n[^note]: Hidden **definition** <img src=x onerror=alert(1)>\n\nAfter.'), [
+      paragraph(text("Plan[^note].")),
+      paragraph(text("After.")),
+    ]);
+    assert.deepEqual(parseMarkdown("[^note]: Hidden definition"), []);
+    assert.deepEqual(parseMarkdown("Unknown[^missing]."), [paragraph(text("Unknown[^missing]."))]);
+  });
+});
+
 describe("parseMarkdown structure", () => {
   test("preserves nested unordered and ordered lists and their starting number", () => {
     assert.deepEqual(parseMarkdown("- parent\n\n  3. child\n     - leaf\n- sibling"), [{
@@ -150,18 +274,18 @@ describe("parseMarkdown structure", () => {
       ordered: false,
       start: 1,
       children: [
-        { type: "listItem", children: [
+        { type: "listItem", checked: null, children: [
           paragraph(text("parent")),
           { type: "list", ordered: true, start: 3, children: [
-            { type: "listItem", children: [
+            { type: "listItem", checked: null, children: [
               paragraph(text("child")),
               { type: "list", ordered: false, start: 1, children: [
-                { type: "listItem", children: [paragraph(text("leaf"))] },
+                { type: "listItem", checked: null, children: [paragraph(text("leaf"))] },
               ] },
             ] },
           ] },
         ] },
-        { type: "listItem", children: [paragraph(text("sibling"))] },
+        { type: "listItem", checked: null, children: [paragraph(text("sibling"))] },
       ],
     }]);
   });

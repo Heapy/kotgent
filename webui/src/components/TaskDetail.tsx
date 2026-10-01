@@ -5,7 +5,7 @@ import type { ComponentChildren, JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
-import { navigate, sessionPath, taskPath } from "../lib/router.ts";
+import { navigate, planPath, sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
 import type { LinkedSession, Task, TaskActivity, TaskDetail as TaskDetailData, TaskPatch } from "../lib/tasks.ts";
@@ -28,6 +28,7 @@ export interface TaskDetailProps {
   onAnnounce: (message: string, error?: boolean) => void;
   // Null embeds the detail in a workspace column, which has its own close control.
   onClose: (() => void) | null;
+  onOpenPlan?: () => void;
 }
 
 const ACTIVITY_FALLBACK: Record<string, string> = {
@@ -100,6 +101,7 @@ export function TaskDetail({
   onStartSession,
   onAnnounce,
   onClose,
+  onOpenPlan,
 }: TaskDetailProps) {
   const panelClass = onClose ? "task-detail" : "task-detail task-detail-embedded";
   const [response, setDetail] = useState<ApiResponse<TaskDetailData>>(null);
@@ -318,6 +320,8 @@ export function TaskDetail({
           </p>
         </div>,
         <div id="task-detail-tools">
+          <button class="button button-small task-open-plan" type="button"
+                  onClick={onOpenPlan ?? (() => navigate(planPath(taskRef)))}>Plan</button>
           <select id="task-detail-state" aria-label="State" disabled={busy}
                   value={entry.state} onChange={changeState}>
             {TASK_STATES.map((state) => (

@@ -18,6 +18,9 @@ restarting the daemon—must not discard the work.
 - Keep an ordered, dependency-aware backlog per project so ideas become explicit work rather than context
   remembered by the operator or trapped in one session.
 - Use the full terminal and backlog comfortably from an installable phone or tablet PWA.
+- Review a task's structured plan from a phone or desktop: mark blocks viewed, ask questions, edit text,
+  and approve a durable review round while the authoring agent waits. Concurrent changes preserve drafts
+  and make changed blocks unviewed again.
 
 ## Product principles
 
@@ -30,7 +33,8 @@ restarting the daemon—must not discard the work.
   resume semantics. Kotgent records enough identity and state to reconnect; it does not replace provider
   storage or pretend provider differences do not exist.
 - **Attention is actionable.** State and notifications should answer whether the operator must intervene,
-  not merely report that bytes or events arrived. Approvals remain human decisions made in the terminal.
+  not merely report that bytes or events arrived. Provider permission approvals remain human decisions
+  made in the terminal; plan review belongs to the task's Plan view.
 - **Quota follows provider evidence.** Shared meters use provider output already produced during
   normal work, without polling. Claude needs a decrease within an established session baseline; new
   sessions and unchanged cached renders cannot establish a reset. Early weekly reset notices retain the

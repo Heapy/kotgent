@@ -27,7 +27,7 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
         "append" -> handleAppend(words, ctx)
         "usage" -> handleUsage(words, ctx)
         "usage-clock" -> handleUsageClock(words, ctx)
-        else -> handleMutexCommand(words, ctx) ?: handleTaskCommand(words, ctx)
+        else -> handlePlanCommand(words, ctx) ?: handleMutexCommand(words, ctx) ?: handleTaskCommand(words, ctx)
     }
 }
 

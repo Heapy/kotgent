@@ -47,6 +47,7 @@ import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SqliteMutexStore
 import io.kotgent.store.SqliteTaskStore
 import io.kotgent.store.SqliteUsageStore
+import io.kotgent.store.SqlitePlanStore
 import io.kotgent.store.SqliteNotificationStore
 import io.kotgent.sys.currentLoginShell
 import io.kotgent.task.PosixProjectFileWriter
@@ -141,6 +142,10 @@ internal class StorageModule {
     val taskStore by bean { SqliteTaskStore.using(driver.value) }
 
     val usageStore by bean { SqliteUsageStore(driver.value) }
+
+    val planStore by bean {
+        SqlitePlanStore(driver.value, taskExists = { ref -> taskStore.value.entry(io.kotgent.core.TaskRef(ref)) != null })
+    }
 
     val notificationStore by bean { SqliteNotificationStore(driver.value) }
 

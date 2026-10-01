@@ -1,0 +1,97 @@
+CREATE TABLE plans (
+  task_ref TEXT NOT NULL PRIMARY KEY,
+  document TEXT NOT NULL
+);
+
+CREATE TABLE plan_blocks (
+  task_ref TEXT NOT NULL,
+  block_id TEXT NOT NULL,
+  changed_at_rev INTEGER NOT NULL,
+  PRIMARY KEY (task_ref, block_id)
+);
+
+CREATE TABLE plan_view_marks (
+  task_ref TEXT NOT NULL,
+  block_id TEXT NOT NULL,
+  document TEXT NOT NULL,
+  PRIMARY KEY (task_ref, block_id)
+);
+
+CREATE TABLE plan_threads (
+  task_ref TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  document TEXT NOT NULL,
+  PRIMARY KEY (task_ref, thread_id)
+);
+
+CREATE TABLE plan_edits (
+  task_ref TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  document TEXT NOT NULL,
+  PRIMARY KEY (task_ref, ordinal)
+);
+
+CREATE TABLE plan_rounds (
+  task_ref TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  document TEXT NOT NULL,
+  PRIMARY KEY (task_ref, round)
+);
+
+selectPlans:
+SELECT * FROM plans ORDER BY task_ref;
+
+selectPlan:
+SELECT document FROM plans WHERE task_ref = ?;
+
+putPlan:
+INSERT OR REPLACE INTO plans(task_ref, document) VALUES (?, ?);
+
+selectBlocks:
+SELECT * FROM plan_blocks WHERE task_ref = ? ORDER BY block_id;
+
+putBlocks:
+INSERT INTO plan_blocks(task_ref, block_id, changed_at_rev) VALUES (?, ?, ?);
+
+selectViewMarks:
+SELECT * FROM plan_view_marks WHERE task_ref = ? ORDER BY block_id;
+
+putViewMarks:
+INSERT INTO plan_view_marks(task_ref, block_id, document) VALUES (?, ?, ?);
+
+selectThreads:
+SELECT * FROM plan_threads WHERE task_ref = ? ORDER BY thread_id;
+
+putThreads:
+INSERT INTO plan_threads(task_ref, thread_id, document) VALUES (?, ?, ?);
+
+selectEdits:
+SELECT * FROM plan_edits WHERE task_ref = ? ORDER BY ordinal;
+
+putEdits:
+INSERT INTO plan_edits(task_ref, ordinal, document) VALUES (?, ?, ?);
+
+selectRounds:
+SELECT * FROM plan_rounds WHERE task_ref = ? ORDER BY round;
+
+putRounds:
+INSERT INTO plan_rounds(task_ref, round, document) VALUES (?, ?, ?);
+
+deletePlans:
+DELETE FROM plans WHERE task_ref = ?;
+
+deletePlanBlocks:
+DELETE FROM plan_blocks WHERE task_ref = ?;
+
+deletePlanViewMarks:
+DELETE FROM plan_view_marks WHERE task_ref = ?;
+
+deletePlanThreads:
+DELETE FROM plan_threads WHERE task_ref = ?;
+
+deletePlanEdits:
+DELETE FROM plan_edits WHERE task_ref = ?;
+
+deletePlanRounds:
+DELETE FROM plan_rounds WHERE task_ref = ?;
+

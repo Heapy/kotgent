@@ -1,9 +1,9 @@
 # Kotgent development guide
 
 Read [docs/INTENT.md](docs/INTENT.md) for product intent and [docs/TESTING.md](docs/TESTING.md) for the
-testing strategy. Active implementation plans belong in `docs/plans/`. Before deleting a completed plan,
-move durable decisions to their authoritative documents and unfinished work to an active plan or backlog.
-Do not archive completed plans.
+testing strategy. A new implementation plan lives in Kotgent on its task. Before closing the task, move
+durable decisions to authoritative `docs/` and unfinished work to the backlog. Existing `docs/plans/`
+documents remain usable; do not archive completed plans.
 
 Keep current user-facing agent behavior and accepted limitations in `docs/agents/`. The README provides
 the common workflow and links to those guides; implementation invariants belong here.
@@ -130,6 +130,30 @@ the common workflow and links to those guides; implementation invariants belong 
   add local monotonic time, as usage freshness does. Force release goes through the in-app dialog and
   re-checks the confirmed holder, because the route releases whoever holds the key.
 
+## Structured plans
+
+- `SqlitePlanStore` is the sole writer of `plans`, `plan_blocks`, `plan_view_marks`, `plan_threads`,
+  `plan_edits` and `plan_rounds`. One plan belongs to one task reference. Persist content and review state
+  in one transaction before publishing a revision. Keep deleted block ids in `plan_blocks`: stale writes
+  must report deletions and generated ids must never reuse them.
+- Every visible change advances the plan revision; a block revision advances only on authored content.
+  Viewed marks name a block revision, and an operator edit journals before/after text in the same write.
+- Review rounds survive restarts and repeated waits. Submitting names the current open round; a stale
+  browser cannot submit a newer round. A changed authored document after a verdict returns to draft.
+  `afterRound` explicitly acknowledges a completed round when answers alone need another review; retrying
+  that acknowledgement reuses its successor, even after further content edits.
+- Open rounds supply durable `plan.review:<taskRef>` notification levels without altering session attention.
+  Opening a round queues one best-effort payload-less wake; continuing never queues another.
+- `plan_changed` carries revision hints, including deletion. Each events connection compares every key
+  after a conflated change, so one plan cannot hide another. Open viewers reread on connection recovery.
+- Task deletion and plan creation share the plan coordinator's lock. Check task existence while holding
+  it, and delete the plan through `deleteTask` when removing the task.
+- `state/plans.ts` owns browser plan documents. Merge only higher revisions, reread observed plans on
+  event recovery, and never let a late missing response erase a newer mutation. Inline editors freeze
+  their block revision and preserve drafts through conflicts; retry requires accepting the latest base.
+- Plan shortcuts `v` and `n` belong to the focused plan panel, excluding forms. A task's Plan action in
+  a session opens or reuses a Terminal · Plan tab; the board uses `/tasks/<ref>/plan`.
+
 ## Usage and notifications
 
 - `SqliteUsageStore` owns the account projection keyed by provider/window, source baselines, sample
@@ -207,8 +231,8 @@ the common workflow and links to those guides; implementation invariants belong 
   under one `localStorage` key; `webui/src/lib/workspace.ts` holds the rules, and every operation returns
   its input unchanged when it does nothing. A type is unique within a tab, and choosing a held type swaps
   the two columns. Layouts are pruned only after a full `sessions_snapshot` and capped at 200 by
-  `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`plan`,
-  `files`, `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
+  `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`files`,
+  `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
 - `TaskDetail` takes `onClose`: the board passes its way back to `/tasks`, a workspace column passes null
   and renders embedded. The board's floating-overlay CSS is scoped to `#app:has(.board)`, so it never
   applies to the column.

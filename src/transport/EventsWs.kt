@@ -6,6 +6,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
 import io.kotgent.core.UsageWindowState
 import io.kotgent.store.EventStore
+import io.kotgent.store.PlanStore
 import io.kotgent.store.MutexStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
@@ -41,6 +42,7 @@ fun Route.eventsWs(
     usageStore: UsageStore? = null,
     usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     mutexStore: MutexStore? = null,
+    planStore: PlanStore? = null,
 ) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
@@ -49,7 +51,7 @@ fun Route.eventsWs(
                 if (sessionParam != null) {
                     streamOneSession(store, json, sessionParam)
                 } else {
-                    streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock, mutexStore)
+                    streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock, mutexStore, planStore)
                 }
             }
             try {
@@ -72,6 +74,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
     usageStore: UsageStore?,
     usageClock: () -> Long,
     mutexStore: MutexStore?,
+    planStore: PlanStore?,
 ) {
     val ws = this
     coroutineScope {
@@ -115,6 +118,17 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
             }
         }
 
+        if (planStore != null) launch {
+            val sentPlans = mutableMapOf<String, Long>()
+            planStore.revisions.collect { revisions ->
+                for (entry in revisions.entries) {
+                    if (sentPlans[entry.key] != entry.value) {
+                        ws.sendEventsFrame(json, PlanChangedDto(entry.key, entry.value))
+                        sentPlans[entry.key] = entry.value
+                    }
+                }
+            }
+        }
         if (taskStore != null) launchTaskStream(ws, taskStore, json)
         if (usageStore != null) launchUsageStream(ws, usageStore, json, usageClock)
         if (mutexStore != null) launchMutexStream(ws, mutexStore, json, usageClock)
@@ -434,3 +448,7 @@ fun StoredEvent.toDto(): StoredEventDto = StoredEventDto(
     source = source.name,
     event = event,
 )
+
+@Serializable
+@SerialName("plan_changed")
+data class PlanChangedDto(val taskRef: String, val rev: Long) : EventsFrame()

@@ -17,6 +17,7 @@ class TaskRouting(
     val sessions: EventStore,
     val paneLookup: suspend (PaneId) -> SessionId?,
     val json: Json = TRANSPORT_JSON,
+    val plans: io.kotgent.store.PlanStore? = null,
 )
 
 // Reuse the generated-hook header constant so pane identity cannot drift between ingress and task APIs.

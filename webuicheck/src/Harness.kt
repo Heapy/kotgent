@@ -18,6 +18,7 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalAttachEnv
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakeMutexStore
+import io.kotgent.store.FakePlanStore
 import io.kotgent.store.MutexStore
 import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.FakeTaskStore
@@ -46,6 +47,7 @@ class HarnessFakes(
     val usage: UsageFixture,
     val projectFs: FakeProjectFs,
     val projectFileWriter: MemoryProjectFileWriter,
+    val planStore: FakePlanStore = fixturePlanStore(),
 )
 
 /** Seed runs before bind; terminal argv is declared here so Harness remains the bridge's only owner. */
@@ -176,6 +178,7 @@ class Harness(
         usageClock = fakes.usage::currentTimeMillis,
         taskService = taskService,
         mutexStore = mutexes,
+        planStore = fakes.planStore,
         port = port,
     )
 }
@@ -188,3 +191,8 @@ const val READY_LINE: String = "READY"
 
 /** Prefix for commands whose browser-visible effects have no event-frame synchronization. */
 const val COMMAND_ACK_PREFIX: String = "OK "
+
+private fun fixturePlanStore(): FakePlanStore {
+    var nextId = 0
+    return FakePlanStore(newId = { prefix -> prefix + (++nextId).toString() })
+}

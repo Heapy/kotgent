@@ -30,7 +30,7 @@ interface ShownNotification {
   body: string;
   tag: string;
   renotify: boolean;
-  data: { type?: string; sessionId?: string };
+  data: { type?: string; sessionId?: string; taskRef?: string };
 }
 
 interface HarnessOptions {
@@ -304,6 +304,28 @@ test("a cold session click opens the encoded session URL", async () => {
   await h.click({ type: "session.attention", sessionId: "s /?#" }).done;
   assert.deepEqual(h.clientCalls.at(-1), ["openWindow", "/?session=s%20%2F%3F%23"]);
   assert.equal(h.closed, 1);
+});
+
+test("plan review wakes display their plan and open its encoded review path", async () => {
+  const h = harness({ fetchResponse: async () => response([
+    { type: "plan.review", id: "plan.review:local:1", taskRef: "local:1", title: "Structured plans" },
+  ]) });
+  await h.dispatch("push").done;
+  assert.deepEqual(h.shown, [{
+    title: "Kotgent — plan review", body: "Structured plans is ready for review.",
+    tag: "plan.review:local:1", renotify: false, data: { type: "plan.review", taskRef: "local:1" },
+  }]);
+  await h.click(h.shown[0]!.data).done;
+  assert.deepEqual(h.clientCalls.at(-1), ["openWindow", "/tasks/local%3A1/plan"]);
+});
+
+test("a plan review click navigates an existing window before focusing it", async () => {
+  const calls: string[] = [];
+  const window = windowClient({ navigateResult: { async focus() { calls.push("focus"); } } });
+  const h = harness({ clients: [window.client] });
+  await h.click({ type: "plan.review", taskRef: "local:1" }).done;
+  assert.deepEqual(window.calls, [["navigate", "/tasks/local%3A1/plan"]]);
+  assert.deepEqual(calls, ["focus"]);
 });
 
 test("a generic click focuses the current window without navigating or changing its selection", async () => {

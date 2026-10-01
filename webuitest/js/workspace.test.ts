@@ -91,8 +91,8 @@ describe("the default layout", () => {
     assert.deepEqual(only(ws).fractions, [1]);
   });
 
-  test("offers terminal and task until plans, files and diffs exist", () => {
-    assert.deepEqual([...AVAILABLE_COLUMN_TYPES], ["terminal", "task"]);
+  test("offers terminal, task and plan until files and diffs exist", () => {
+    assert.deepEqual([...AVAILABLE_COLUMN_TYPES], ["terminal", "task", "plan"]);
   });
 });
 
@@ -161,7 +161,7 @@ describe("columns", () => {
   });
 
   test("adding does nothing once every available type is in the tab", () => {
-    const ws = twoColumns();
+    const ws = addColumn(twoColumns(), "t1", 1, AVAILABLE_COLUMN_TYPES, 2);
 
     assert.equal(addColumn(ws, "t1", 1, AVAILABLE_COLUMN_TYPES, 9), ws);
   });
@@ -302,12 +302,12 @@ describe("visible columns", () => {
   });
 
   test("hide unavailable types and share their width among the rest", () => {
-    const tab = only(addColumn(twoColumns(), "t1", 1, ALL_TYPES, 2));
+    const tab = only(setColumnType(addColumn(twoColumns(), "t1", 1, ALL_TYPES, 2), "t1", 2, "files", 3));
 
     const shown = visibleColumns(tab, options(2000));
     assert.deepEqual(shown.map((c) => c.type), ["terminal", "task"]);
     close(shown.map((c) => c.fraction), [0.5, 0.5]);
-    assert.deepEqual(types(tab), ["terminal", "task", "plan"]);
+    assert.deepEqual(types(tab), ["terminal", "task", "files"]);
   });
 
   test("a tab holding nothing available shows nothing", () => {

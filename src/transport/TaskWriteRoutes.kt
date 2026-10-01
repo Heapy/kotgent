@@ -124,7 +124,8 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
 
     delete("/tasks/{ref}") {
         val ref = taskRefParam() ?: return@delete
-        if (!routing.service.delete(ref)) {
+        val deleted = routing.plans?.deleteTask(ref.value) { routing.service.delete(ref) } ?: routing.service.delete(ref)
+        if (!deleted) {
             fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
             return@delete
         }

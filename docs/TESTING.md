@@ -671,3 +671,12 @@ Release archives are built and smoke-tested in CI; release publication reuses th
 only after every platform gate passes. Smoke tests verify checksums, executable permissions, version/help
 outside the checkout, bundled resources and Linux shared-library resolution. No release test runs a real
 provider or the operator's long-lived daemon.
+
+Structured plan review checks on a real phone or tablet:
+
+- Open a `plan.review` push notification from the installed PWA while it is closed. The task's Plan view
+  should open directly and retain its round after reconnecting to the daemon.
+- Edit a long block with the software keyboard raised, scroll the latest-version conflict panel, and
+  save or cancel without losing text to viewport resizing. Check the approval dialog's focus and buttons.
+- In a Terminal · Plan tab, switch columns and return to the terminal. Its socket, buffer and keyboard
+  behavior should survive. A narrow Plan column uses the contents dropdown without sideways page scroll.

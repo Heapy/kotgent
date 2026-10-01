@@ -33,3 +33,13 @@ data class SessionAttentionNotification(
     val sessionId: String,
     val sessionName: String,
 ) : Notification
+
+@Serializable
+@SerialName("plan.review")
+data class PlanReviewNotification(
+    override val id: String,
+    override val createdAt: Long,
+    val taskRef: String,
+    val title: String,
+    val round: Int,
+) : Notification

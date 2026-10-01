@@ -26,6 +26,8 @@ interface NotificationCandidate {
   sessionId?: unknown;
   sessionName?: unknown;
   id?: unknown;
+  taskRef?: unknown;
+  title?: unknown;
   provider?: unknown;
   usedBefore?: unknown;
   usedBeforeSeenAt?: unknown;
@@ -35,6 +37,11 @@ type InboxNotification = {
   type: "session.attention";
   sessionId: string;
   sessionName?: unknown;
+} | {
+  type: "plan.review";
+  taskRef: string;
+  title: string;
+  id: string;
 } | {
   type: "usage.reset";
   id: string;
@@ -46,6 +53,7 @@ type InboxNotification = {
 interface NotificationData {
   type?: string;
   sessionId?: string;
+  taskRef?: string;
 }
 
 const TITLE = "Kotgent — needs attention";
@@ -220,6 +228,8 @@ async function currentNotifications(): Promise<InboxNotification[]> {
     return list.filter((item: NotificationCandidate | null): item is InboxNotification => {
       if (!item) return false;
       if (item.type === "session.attention") return typeof item.sessionId === "string" && item.sessionId.length > 0;
+      if (item.type === "plan.review") return typeof item.taskRef === "string" && item.taskRef.length > 0
+        && typeof item.title === "string" && typeof item.id === "string";
       return item.type === "usage.reset" && typeof item.id === "string" && item.id.length > 0
         && typeof item.provider === "string" && item.provider.length > 0
         && typeof item.usedBefore === "number" && Number.isFinite(item.usedBefore) && item.usedBefore >= 0 && item.usedBefore <= 100
@@ -252,6 +262,12 @@ async function showNotifications() {
         data: { type: item.type, sessionId: item.sessionId },
       });
     }
+    if (item.type === "plan.review") {
+      return self.registration.showNotification("Kotgent — plan review", {
+        body: item.title + " is ready for review.", tag: item.id, renotify: false,
+        data: { type: item.type, taskRef: item.taskRef },
+      });
+    }
     return self.registration.showNotification("Kotgent — early usage reset", {
       body: item.provider + " weekly limit reset early. " + item.usedBefore + "% used; last seen "
         + new Date(item.usedBeforeSeenAt).toLocaleString() + ".",
@@ -264,6 +280,17 @@ async function showNotifications() {
 
 // Focused clients must also switch sessions; focus alone leaves the old session selected.
 async function openNotification(data: NotificationData) {
+  if (data.type === "plan.review" && data.taskRef) {
+    const path = "/tasks/" + encodeURIComponent(data.taskRef) + "/plan";
+    const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (clients[0]) {
+      try {
+        const opened = await clients[0].navigate(path);
+        if (opened) return opened.focus();
+      } catch (_) {}
+    }
+    return self.clients.openWindow(path);
+  }
   const overview = data.type === "usage.reset";
   const sessionId = overview ? null : data.sessionId;
   const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });

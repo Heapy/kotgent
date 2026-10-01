@@ -30,6 +30,7 @@ import io.kotgent.transport.readFileBytesOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
@@ -231,6 +232,7 @@ object Commands {
         val eventStore = storage.eventStore.value
         val taskStore = storage.taskStore.value
         val taskService = storage.taskService.value
+        val planWakes = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.CONFLATED)
         val tmux = sessions.tmux.value
         tmux.ensureServer()
         val manager = sessions.manager.value
@@ -253,6 +255,9 @@ object Commands {
                 startDaemonServer(
                     assemblePush = { modules.push.start(sessions.background.value, eventStore) },
                     startUsage = { push ->
+                        if (push != null) sessions.background.value.launch {
+                            for (topic in planWakes) modules.push.sender.value.send(topic)
+                        }
                         UsageResetNotifier(
                             usageStore = storage.usageStore.value,
                             inbox = storage.notificationStore.value,
@@ -277,6 +282,8 @@ object Commands {
                             notificationStore = storage.notificationStore.value,
                             onCodexTurnCompleted = sessions.codexUsageCapture.value::onTurnCompleted,
                             mutexStore = sessions.mutexes.value,
+                            planStore = storage.planStore.value,
+                            onPlanReview = { topic -> if (push != null) { val _ = planWakes.trySend(topic) } },
                             port = port,
                         )
                     },

@@ -9,6 +9,15 @@ import kotlin.test.Test
 class RouterTest {
 
     @Test
+    fun aPlanPathWorksWithoutAnExistingPlanAndReturnsToItsTask() = routerTest("plan-path") { base, page ->
+        page.navigate("$base/tasks/$ENCODED_TASK/plan")
+        assertThat(page.locator(".plan-panel")).containsText("This task has no plan yet.")
+        page.locator(".plan-head button[aria-label='Back to task']").click()
+        assertTaskDetail(page)
+        assertThat(page).hasURL(taskUrl(base))
+    }
+
+    @Test
     fun aSessionPathOpensThatSessionOnFirstLoad() = routerTest("session-path") { base, page ->
         page.navigate("$base/s/$DEEP_SESSION")
         assertSessionView(page)

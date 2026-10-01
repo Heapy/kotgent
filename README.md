@@ -298,6 +298,7 @@ configuration, session status, usage meters, and known limitations.
 | Login shell | `kotgent start shell` | [Shell](docs/agents/SHELL.md) |
 
 Sessions of any type serialize shared work, such as builds, with [mutexes](docs/agents/MUTEX.md).
+[Structured plans](docs/agents/PLAN.md) attach reviewable plans, questions and edit history to backlog tasks.
 
 ## Build & test
 

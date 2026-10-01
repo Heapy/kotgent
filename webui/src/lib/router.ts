@@ -10,6 +10,7 @@ export { DEEP_LINK_PARAM };
 export const SCREEN_TASKS = "tasks";
 
 export const SCREEN_TASK = "task";
+export const SCREEN_PLAN = "plan";
 
 export const SCREEN_SESSIONS = "sessions";
 
@@ -18,7 +19,7 @@ export const SCREEN_MUTEXES = "mutexes";
 export const MUTEXES_PATH = "/mutexes";
 
 export interface Route {
-  screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_SESSIONS | typeof SCREEN_MUTEXES;
+  screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_PLAN | typeof SCREEN_SESSIONS | typeof SCREEN_MUTEXES;
   id: string | null;
 }
 
@@ -55,6 +56,9 @@ export function parseRoute(pathname: unknown, search?: string | null): Route {
   if (segments.length === 2 && segments[0] === SCREEN_TASKS) {
     return { screen: SCREEN_TASK, id: decodeSegment(segments[1]!) };
   }
+  if (segments.length === 3 && segments[0] === SCREEN_TASKS && segments[2] === SCREEN_PLAN) {
+    return { screen: SCREEN_PLAN, id: decodeSegment(segments[1]!) };
+  }
   if (segments.length === 2 && segments[0] === "s") {
     return { screen: SCREEN_SESSIONS, id: decodeSegment(segments[1]!) };
   }
@@ -67,6 +71,7 @@ export function routePath(route: Route | null | undefined) {
   if (screen === SCREEN_TASKS) return "/tasks";
   if (screen === SCREEN_MUTEXES) return MUTEXES_PATH;
   if (screen === SCREEN_TASK) return id ? taskPath(id) : "/tasks";
+  if (screen === SCREEN_PLAN) return id ? planPath(id) : "/tasks";
   if (screen === SCREEN_SESSIONS && id) return sessionPath(id);
   return "/";
 }
@@ -74,6 +79,8 @@ export function routePath(route: Route | null | undefined) {
 export function taskPath(ref: string) {
   return "/tasks/" + encodeURIComponent(ref);
 }
+
+export function planPath(ref: string) { return taskPath(ref) + "/plan"; }
 
 export function sessionPath(id: string) {
   return "/s/" + encodeURIComponent(id);

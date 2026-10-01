@@ -1,6 +1,8 @@
 package io.kotgent.transport
 
 import io.kotgent.core.NOTIFICATION_WINDOW_MILLIS
+import io.kotgent.core.PlanReviewNotification
+import io.kotgent.store.PlanStore
 import io.kotgent.core.Notification
 import io.kotgent.core.SessionAttentionNotification
 import io.kotgent.store.EventStore
@@ -18,10 +20,16 @@ fun Route.notificationRoutes(
     inbox: NotificationStore? = null,
     json: Json = TRANSPORT_JSON,
     now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    plans: PlanStore? = null,
 ) {
     get("/notifications") {
         val notifications = buildList<Notification> {
             addAll(inbox?.recent(now() - NOTIFICATION_WINDOW_MILLIS).orEmpty())
+            for (document in plans?.reviews().orEmpty()) {
+                val round = document.review.rounds.last()
+                add(PlanReviewNotification("plan.review:${document.plan.taskRef}", round.openedAt,
+                    document.plan.taskRef, document.plan.title, round.n))
+            }
             for (session in events.listSessions()) {
                 if (session.state.needsAttention && !session.archived) {
                     add(SessionAttentionNotification(

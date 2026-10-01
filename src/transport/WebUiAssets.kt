@@ -11,6 +11,7 @@ fun isSpaRoute(rel: String): Boolean {
     return when (segments.size) {
         1 -> segments[0] == SPA_TASKS_SEGMENT || segments[0] == SPA_MUTEXES_SEGMENT
         2 -> segments[0] == SPA_TASKS_SEGMENT || segments[0] == SPA_SESSION_SEGMENT
+        3 -> segments[0] == SPA_TASKS_SEGMENT && segments[2] == "plan"
         else -> false
     }
 }

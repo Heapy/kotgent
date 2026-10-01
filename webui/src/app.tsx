@@ -68,6 +68,7 @@ import {
   SCREEN_MUTEXES,
   SCREEN_SESSIONS,
   SCREEN_TASK,
+  SCREEN_PLAN,
   SCREEN_TASKS,
   clearDeepLink,
   navigate,
@@ -125,7 +126,8 @@ import {
 import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
 import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
 import { mergeMutexes, mutexes as mutexesSignal, replaceMutexes } from "./state/mutexes.ts";
-import { pruneWorkspaces } from "./state/layout.ts";
+import { openPlanTab, pruneWorkspaces } from "./state/layout.ts";
+import { planChanged, recoverPlans } from "./state/plans.ts";
 import {
   PREFS_SUPERSEDED,
   PREFS_UNREADABLE,
@@ -137,6 +139,7 @@ import {
 } from "./state/prefs.ts";
 import { Board } from "./components/Board.tsx";
 import { TaskDetail } from "./components/TaskDetail.tsx";
+import { PlanPanel } from "./components/PlanPanel.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { MutexesScreen, sessionLabel } from "./components/MutexesScreen.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -362,7 +365,7 @@ function App() {
   const [hint, setHint] = useState<string | null>(SELECT_HINT);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
+  const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK || route.screen === SCREEN_PLAN;
   const onMutexes = route.screen === SCREEN_MUTEXES;
   const sessionView = !onBoard && !onMutexes;
   sessionViewOnScreen = sessionView;
@@ -374,7 +377,7 @@ function App() {
   useLayoutEffect(() => { persistAdhdMode(adhdMode); }, [adhdMode]);
   useEffect(() => subscribeToRoute(setRoute), []);
 
-  const openTaskEntry = route.screen === SCREEN_TASK ? findTask(route.id) : null;
+  const openTaskEntry = onBoard ? findTask(route.id) : null;
 
   // Hold a notification target until a matching row exists.
   const deepLinkRef = useRef(deepLinkSessionId());
@@ -661,7 +664,7 @@ function App() {
 
   // Apply a task route's project once per ref so later manual project selection remains authoritative.
   const appliedTaskProjectRef = useRef<string | null>(null);
-  const openTaskRef = route.screen === SCREEN_TASK ? route.id : null;
+  const openTaskRef = onBoard ? route.id : null;
   useEffect(() => {
     if (!openTaskRef) { appliedTaskProjectRef.current = null; return; }
     if (appliedTaskProjectRef.current === openTaskRef) return;
@@ -789,6 +792,7 @@ function App() {
     else if (msg.type === "usage_update") mergeUsageWindow(msg.window, msg.serverNow);
     else if (msg.type === "mutexes_snapshot") replaceMutexes(msg);
     else if (msg.type === "mutex_update") mergeMutexes(msg);
+    else if (msg.type === "plan_changed") planChanged(msg.taskRef, msg.rev);
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
@@ -805,6 +809,7 @@ function App() {
       },
       onReady: ({ recovered }) => {
         disconnectAnnouncedRef.current = false;
+        recoverPlans();
         if (recovered) dispatchReattach(grantAndSchedule());
       },
       onFailure: () => {
@@ -1348,7 +1353,7 @@ function App() {
   });
 
   const renderPanel = (type: ColumnType) => {
-    if (type !== "task" || !activeSession) return null;
+    if ((type !== "task" && type !== "plan") || !activeSession) return null;
     const ref = activeSession.taskRef;
     if (!ref) {
       return (
@@ -1359,10 +1364,12 @@ function App() {
         </section>
       );
     }
+    if (type === "plan") return <PlanPanel key={ref} taskRef={ref} />;
     return (
       <TaskDetail key={ref} taskRef={ref} entry={findTask(ref)} sessions={sessions}
                   onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
-                  onStartSession={startSessionForTask} onAnnounce={say} onClose={null} />
+                  onStartSession={startSessionForTask} onAnnounce={say} onClose={null}
+                  onOpenPlan={() => openPlanTab(activeSession.id)} />
     );
   };
 
@@ -1435,6 +1442,8 @@ function App() {
           <TaskDetail taskRef={route.id!} entry={openTaskEntry} sessions={sessions}
                          onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
                          onStartSession={startSessionForTask} onAnnounce={say} onClose={openBoard} />)}
+        {route.screen === SCREEN_PLAN && <PlanPanel key={route.id!} taskRef={route.id!}
+          onClose={() => navigate(taskPath(route.id!))} />}
         <p id="board-status" class={"status-line board-status" + (status.error ? " error" : "")}
            role="status" aria-live="polite">{status.text}</p>
       </>) : onMutexes ? (<>

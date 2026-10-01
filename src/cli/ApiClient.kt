@@ -44,6 +44,9 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
+import io.ktor.client.request.request
+import io.ktor.http.HttpMethod
+import io.kotgent.transport.PlanMessageRequest
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -340,6 +343,37 @@ class ApiClient(
 
     suspend fun listMutexes(): MutexListingDto =
         json.decodeFromString(MutexListingDto.serializer(), taskGet("/mutexes"))
+
+    suspend fun planRequest(command: PlanCommand): String {
+        val suffix = when (command) {
+            is PlanPut -> "?baseRev=${command.baseRev}"
+            is PlanShow -> ""
+            is PlanReviewCommand -> "/review/wait?wait=${command.wait}" + (command.afterRound?.let { "&afterRound=$it" } ?: "")
+            is PlanReply -> "/threads/${command.thread.encodeURLPathPart()}/messages"
+        }
+        val query = command.session?.let { (if ('?' in suffix) "&" else "?") + "sessionId=${it.encodeURLParameter()}" }.orEmpty()
+        val response = client.request(url("/tasks/${command.ref.encodeURLPathPart()}/plan$suffix$query")) {
+            method = when (command) {
+                is PlanPut -> HttpMethod.Put
+                is PlanShow -> HttpMethod.Get
+                else -> HttpMethod.Post
+            }
+            bearer()
+            paneHeader()
+            contentType(ContentType.Application.Json)
+            when (command) {
+                is PlanPut -> setBody(command.document)
+                is PlanReply -> setBody(json.encodeToString(PlanMessageRequest.serializer(), PlanMessageRequest(command.message)))
+                else -> Unit
+            }
+            if (command is PlanReviewCommand) timeout {
+                requestTimeoutMillis = longPollTimeoutMillis(command.wait)
+                socketTimeoutMillis = longPollTimeoutMillis(command.wait)
+            }
+        }
+        ensureSuccess(response)
+        return response.bodyAsText()
+    }
 
     override fun close(): Unit = client.close()
 

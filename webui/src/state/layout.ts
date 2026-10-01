@@ -43,6 +43,10 @@ export function addTab(sessionId: string) {
   update(sessionId, (ws, now) => model.addTab(ws, model.AVAILABLE_COLUMN_TYPES, now));
 }
 
+export function openPlanTab(sessionId: string) {
+  update(sessionId, model.openPlanTab);
+}
+
 export function closeTab(sessionId: string, tabId: string) {
   update(sessionId, (ws, now) => model.closeTab(ws, tabId, now));
 }

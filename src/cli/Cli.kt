@@ -142,6 +142,13 @@ val USAGE: String = """
       project delete <uuid>          hide a project everywhere; its file, tasks and sessions stay
       project restore <uuid>         bring a deleted project and its backlog back
 
+      plan put <ref> [--base-rev N]  write a JSON document from stdin (new plans use revision 0)
+      plan show <ref>                plan document and review state as JSON
+      plan review <ref> [--wait S]   wait for review, default 90 seconds; pending is safe to repeat
+          [--after-round N] [--json] acknowledge round N and open/continue its successor
+      plan reply <ref> <thread> -m T reply to a question ('-m -' reads stdin)
+      Plan commands accept --session S; review also accepts --json.
+
       Mutexes serialize work across sessions; only a kotgent session can hold or wait for one,
       and its end releases them.
 
@@ -187,6 +194,7 @@ fun parseArgs(args: List<String>, readMessageStdin: () -> String = ::readStdinTe
         "config" -> parseConfig(rest)
         "task" -> parseTask(rest, readMessageStdin)
         "project" -> parseProject(rest)
+        "plan" -> parsePlan(rest, readMessageStdin)
         "mutex" -> parseMutex(rest)
         else -> CliCommand.Invalid("unknown command: ${args[0]}")
     }
@@ -707,6 +715,60 @@ private fun parseProjectInit(rest: List<String>): CliCommand {
     return ProjectInit(scan.positionals.getOrNull(0), scan.values[NAME_FLAG])
 }
 
+private fun parsePlan(rest: List<String>, readStdin: () -> String): CliCommand {
+    val sub = rest.firstOrNull() ?: return CliCommand.Invalid("plan requires put | show | review | reply")
+    val flags = when (sub) {
+        "put" -> valueFlags("--base-rev", SESSION_FLAG)
+        "show" -> valueFlags(SESSION_FLAG)
+        "review" -> valueFlags(WAIT_FLAG, SESSION_FLAG, "--after-round")
+        "reply" -> valueFlags(SESSION_FLAG, MESSAGE_FLAG) + ("-m" to MESSAGE_FLAG)
+        else -> return CliCommand.Invalid("plan: unknown subcommand '$sub'")
+    }
+    val scan = when (val result = scanFlags("plan $sub", rest.drop(1), flags, if (sub == "review") setOf(JSON_FLAG) else emptySet())) {
+        is Scan.Bad -> return CliCommand.Invalid(result.message)
+        is Scan.Ok -> result
+    }
+    val ref = scan.positionals.firstOrNull()
+        ?: return CliCommand.Invalid("plan $sub requires a task reference")
+    if (TaskRef.parseOrNull(ref) == null) return CliCommand.Invalid(malformedRef("plan $sub", ref))
+    if (scan.positionals.size != if (sub == "reply") 2 else 1) return CliCommand.Invalid("plan $sub: unexpected or missing argument")
+    val session = scan.values[SESSION_FLAG]
+    return when (sub) {
+        "show" -> PlanShow(ref, session)
+        "review" -> {
+            val wait = (scan.values[WAIT_FLAG] ?: "90").toIntOrNull()?.takeIf { it in 0..540 }
+                ?: return CliCommand.Invalid("plan review: --wait takes whole seconds from 0 to 540")
+            val afterRaw = scan.values["--after-round"]
+            val after = afterRaw?.toIntOrNull()
+            if (afterRaw != null && (after == null || after < 0)) return CliCommand.Invalid("--after-round must be non-negative")
+            PlanReviewCommand(ref, wait, JSON_FLAG in scan.switches, session, after)
+        }
+        "reply" -> {
+            val thread = scan.positionals[1]
+            if (!io.kotgent.plan.isPlanId(thread, "th_")) return CliCommand.Invalid("plan reply requires a thread id")
+            val raw = scan.values[MESSAGE_FLAG] ?: return CliCommand.Invalid("plan reply requires -m TEXT")
+            val message = if (raw == "-") readStdin().trimEnd() else raw
+            if (message.isBlank() || message.encodeToByteArray().size > io.kotgent.plan.MAX_THREAD_MESSAGE_BYTES)
+                return CliCommand.Invalid("plan reply requires a nonempty message of at most 8192 UTF-8 bytes")
+            PlanReply(ref, thread, message, session)
+        }
+        else -> {
+            val base = (scan.values["--base-rev"] ?: "0").toLongOrNull()?.takeIf { it >= 0 }
+                ?: return CliCommand.Invalid("plan put: --base-rev must be non-negative")
+            val document = readStdin()
+            if (document.encodeToByteArray().size > io.kotgent.plan.MAX_PLAN_DOCUMENT_BYTES)
+                return CliCommand.Invalid("plan put: document exceeds 512 KiB")
+            val parsed = try {
+                io.kotgent.transport.TRANSPORT_JSON.decodeFromString(io.kotgent.plan.Plan.serializer(), document)
+            } catch (_: kotlinx.serialization.SerializationException) {
+                return CliCommand.Invalid("plan put: stdin must be a plan JSON document")
+            }
+            if (parsed.taskRef != ref) return CliCommand.Invalid("plan put: document taskRef must match $ref")
+            PlanPut(ref, document, base, session)
+        }
+    }
+}
+
 private fun parseMutex(rest: List<String>): CliCommand {
     val sub = rest.firstOrNull()
         ?: return CliCommand.Invalid("mutex requires a subcommand: kotgent mutex $MUTEX_SUBCOMMANDS")
@@ -837,6 +899,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is ProjectList -> TaskCommands.projectList(command.archived)
     is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
     is ProjectArchive -> TaskCommands.projectArchive(command.id, command.archived)
+    is PlanCommand -> PlanCommands.run(command)
     is MutexAcquire -> MutexCommands.acquire(command)
     is MutexRelease -> MutexCommands.release(command)
     is MutexRun -> MutexCommands.run(command)

@@ -11,6 +11,8 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.push.PushStore
 import io.kotgent.store.EventStore
+import io.kotgent.store.PlanStore
+import io.kotgent.daemon.PlanReview
 import io.kotgent.store.MutexStore
 import io.kotgent.store.NotificationStore
 import io.kotgent.store.PreferencesStore
@@ -78,6 +80,8 @@ class KotgentServer(
     private val notificationStore: NotificationStore? = null,
     private val usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val mutexStore: MutexStore? = null,
+    private val planStore: PlanStore? = null,
+    private val onPlanReview: (String) -> Unit = {},
 ) {
     private var terminalRegistry: TerminalRegistry? = null
 
@@ -134,10 +138,10 @@ class KotgentServer(
                                 )
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
-                                notificationRoutes(eventStore, notificationStore, json)
+                                notificationRoutes(eventStore, notificationStore, json, plans = planStore)
                                 eventsWs(
                                     eventStore, preferencesStore, taskStore, json,
-                                    usageStore = usageStore, usageClock = usageClock, mutexStore = mutexStore,
+                                    usageStore = usageStore, usageClock = usageClock, mutexStore = mutexStore, planStore = planStore,
                                 )
                                 terminalWs(registry, eventStore, json)
                                 val backlog = taskStore
@@ -150,8 +154,12 @@ class KotgentServer(
                                             sessions = eventStore,
                                             paneLookup = sessionManager.paneLookup,
                                             json = json,
+                                            plans = planStore,
                                         ),
                                     )
+                                }
+                                planStore?.let { plans ->
+                                    planRoutes(PlanRouting(plans, eventStore, sessionManager.paneLookup, json, PlanReview(plans, onPlanReview)))
                                 }
                                 mutexStore?.let { mutexes ->
                                     mutexRoutes(
@@ -238,6 +246,8 @@ class KotgentServer(
             notificationStore: NotificationStore? = null,
             usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
             mutexStore: MutexStore? = null,
+            planStore: PlanStore? = null,
+            onPlanReview: (String) -> Unit = {},
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -258,6 +268,8 @@ class KotgentServer(
             notificationStore = notificationStore,
             usageClock = usageClock,
             mutexStore = mutexStore,
+            planStore = planStore,
+            onPlanReview = onPlanReview,
             host = host,
             port = port,
         )
