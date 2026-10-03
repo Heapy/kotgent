@@ -1,7 +1,7 @@
 [versions]
 coroutines = "1.11.0"
 komok = "1.2.0"
-ktor = "3.5.1"
+ktor = "3.6.0"
 # Keep the literal Playwright version in .github/workflows/ci.yml's browser-cache key in sync.
 playwright = "1.62.0"
 sqldelight = "2.3.2"
