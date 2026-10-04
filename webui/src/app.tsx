@@ -337,7 +337,8 @@ function runClickMutation(name: string, failure: string, work: () => Promise<voi
   });
 }
 
-function App() {
+function App({ rootElement }: { rootElement: HTMLElement }) {
+  const appRef = useRef(rootElement);
   // Render-body signal reads subscribe this component to the shared stores.
   const sessions = sessionsSignal.value;
   const sessionsReady = sessionsReadiness.status.value.state === READY;
@@ -1470,6 +1471,7 @@ function App() {
            role="status" aria-live="polite">{status.text}</p>
       </>) : (
         <TerminalPane
+          appRef={appRef}
           session={activeSession}
           tasks={tasks}
           attachedId={attachedId}
@@ -1539,4 +1541,4 @@ const installedApp =
   window.matchMedia("(display-mode: fullscreen)").matches ||
   (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
 appRoot.classList.toggle("installed-app", installedApp);
-render(<App />, appRoot);
+render(<App rootElement={appRoot} />, appRoot);

@@ -1,8 +1,8 @@
 /* Dialog is the sole owner of the native imperative API. Light-dismiss gestures use the backdrop or
  * touch grabber and fail toward preserving drafts. Copy interpolates literal `<` characters. */
 
-import type { ComponentChildren, TargetedEvent } from "preact";
-import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { ComponentChildren, Ref, TargetedEvent } from "preact";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.ts";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.ts";
@@ -33,11 +33,16 @@ import type { ReadinessStatus } from "../lib/readiness.ts";
 import type { Session } from "../lib/sessions.ts";
 import type { Project, Task } from "../lib/tasks.ts";
 
+export interface DialogHandle {
+  close: () => void;
+}
+
 export interface DialogProps {
   id: string;
   labelledBy: string;
   lightDismiss?: boolean;
   onClose: () => void;
+  handleRef?: Ref<DialogHandle>;
   children?: ComponentChildren;
 }
 
@@ -70,11 +75,19 @@ function prefersReducedMotion() {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }: DialogProps) {
+export function Dialog({ id, labelledBy, lightDismiss = true, onClose, handleRef, children }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   // Only one primary pointer's completed outside down-up-click may authorize dismissal.
   const outsidePress = useRef<OutsidePress | null>(null);
   const dragRef = useRef<DialogDrag | null>(null);
+
+  useImperativeHandle(handleRef ?? null, () => ({
+    close: () => {
+      const el = ref.current;
+      if (el?.open) el.close();
+      else onClose();
+    },
+  }), [onClose]);
 
   useEffect(() => {
     const el = ref.current;

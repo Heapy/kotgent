@@ -393,6 +393,44 @@ class BoardTest {
         }
 
     @Test
+    fun dragGeometryAndDropTargetsStayInsideTheirOwnBoard() =
+        onTheBoard("dragGeometryAndDropTargetsStayInsideTheirOwnBoard") { _, page ->
+            val writes = page.recordTaskWrites()
+            val _ = page.evaluate(
+                """
+                () => {
+                  const foreign = document.createElement('section');
+                  foreign.id = 'foreign-column';
+                  foreign.className = 'board-column';
+                  foreign.dataset.state = 'in_progress';
+                  Object.assign(foreign.style, {
+                    position: 'fixed', left: '-10000px', top: '10px',
+                    width: '120px', height: '120px', zIndex: '99999',
+                  });
+                  foreign.innerHTML = '<header class="board-column-head">Other board</header>' +
+                    '<div class="task-card" data-ref="foreign">Other task</div>';
+                  document.body.appendChild(foreign);
+                }
+                """.trimIndent(),
+            )
+
+            page.pressHandleOf("local:2")
+            page.travelTo(page.card("local:6").topHalf())
+            assertThat(page.locator(".board .board-drop-slot")).hasCount(1)
+            assertTrue(page.card("local:6").inlineTranslateY() > 0,
+                "another board's columns must not replace the destination geometry")
+
+            val foreign = page.locator("#foreign-column")
+            val _ = foreign.evaluate("el => { el.style.left = '10px'; }")
+            page.travelTo(foreign.centre())
+            assertThat(page.locator(".board .board-drop-target")).hasCount(0)
+            assertThat(page.locator(".board .board-drop-slot")).hasCount(0)
+            page.mouse().up()
+            assertEquals(emptyList<String>(), writes.snapshot(),
+                "dropping on a column outside this board writes nothing")
+        }
+
+    @Test
     fun aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite() =
         onTheBoard("aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite") { _, page ->
             val writes = page.recordTaskWrites()

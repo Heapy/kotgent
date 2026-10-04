@@ -132,16 +132,16 @@ function phoneNow() {
 }
 
 /** Resolve column ownership by paint order, then card order from transform-free layout geometry. */
-function dropResolutionAt(x: number, y: number, draggedRef: string): {
+function dropResolutionAt(root: HTMLElement | null, x: number, y: number, draggedRef: string): {
   column: HTMLElement | null;
   target: DropTarget | null;
 } {
-  if (typeof document === "undefined" || typeof document.elementFromPoint !== "function") {
+  if (!root || typeof root.ownerDocument.elementFromPoint !== "function") {
     return { column: null, target: null };
   }
-  const hit = document.elementFromPoint(x, y);
+  const hit = root.ownerDocument.elementFromPoint(x, y);
   const column = hit && hit.closest ? hit.closest<HTMLElement>(".board-column") : null;
-  if (!column) return { column: null, target: null };
+  if (!column || !root.contains(column)) return { column: null, target: null };
 
   const state = column.getAttribute("data-state");
   if (!state) return { column: null, target: null };
@@ -219,10 +219,10 @@ function previewShifts(
   return shifts;
 }
 
-function measureDragLayout(draggedRef: string, target: DropTarget | null): DragLayout {
-  if (typeof document === "undefined" || !draggedRef || !target) return EMPTY_DRAG_LAYOUT;
+function measureDragLayout(root: HTMLElement | null, draggedRef: string, target: DropTarget | null): DragLayout {
+  if (!root || !draggedRef || !target) return EMPTY_DRAG_LAYOUT;
 
-  const columns = Array.from(document.querySelectorAll<HTMLElement>(".board-column"));
+  const columns = Array.from(root.querySelectorAll<HTMLElement>(".board-column"));
   const cardsByState = new Map<string, string[]>();
   const elementsByState = new Map<string, HTMLElement[]>();
   let draggedCard: HTMLElement | null = null;
@@ -331,6 +331,7 @@ export function Board({
   onOpenPalette,
   onAnnounce,
 }: BoardProps) {
+  const rootRef = useRef<HTMLElement>(null);
   const [form, setForm] = useState<BoardForm | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
@@ -493,7 +494,7 @@ export function Board({
   const resolveGestureTarget = useCallback((gesture: DragGesture, x: number, y: number) => {
     gesture.lastX = x;
     gesture.lastY = y;
-    const resolution = dropResolutionAt(x, y, gesture.ref);
+    const resolution = dropResolutionAt(rootRef.current, x, y, gesture.ref);
     gesture.target = resolution.target;
     gesture.targetColumn = resolution.target ? resolution.column : null;
     setDropTarget((held) => sameDropTarget(held, resolution.target) ? held : resolution.target);
@@ -633,7 +634,7 @@ export function Board({
       setDragLayout(EMPTY_DRAG_LAYOUT);
       return;
     }
-    setDragLayout(measureDragLayout(draggingRef, dropTarget));
+    setDragLayout(measureDragLayout(rootRef.current, draggingRef, dropTarget));
   }, [draggingRef, dropTarget, entries, sessionsByTask, showAllDone, phone, activeColumn]);
 
   const draggedEntry = draggingRef
@@ -693,7 +694,7 @@ export function Board({
   };
 
   return (
-    <main class={"board" + (draggingRef ? " is-dragging" : "")} aria-label="Task board">
+    <main ref={rootRef} class={"board" + (draggingRef ? " is-dragging" : "")} aria-label="Task board">
       <header class="board-head">
         <button
           id="drawer-toggle"
