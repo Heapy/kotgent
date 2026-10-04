@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { filterCommands } from "../lib/commands.ts";
 import type { Command } from "../lib/commands.ts";
 import { Dialog } from "./dialogs.tsx";
+import type { DialogHandle } from "./dialogs.tsx";
 import { useTypeahead } from "./Typeahead.tsx";
 
 export interface CommandPaletteProps {
@@ -23,6 +24,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
   const [query, setQuery] = useState<string>("");
   const [leaderMessage, setLeaderMessage] = useState<string>("");
   const queryRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<DialogHandle>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const results = useMemo<Command[]>(() => filterCommands(commands, query), [commands, query]);
   const leaderCommands = commands.filter((item): item is Command & { chord: string } => !!item.chord);
@@ -45,8 +47,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
   const closeThenRun = (item: Command | null | undefined) => {
     if (!item || item.disabled) return;
     // Close synchronously so clipboard commands retain the initiating user gesture.
-    const dialog = document.getElementById("command-palette") as HTMLDialogElement | null;
-    if (dialog && dialog.open) dialog.close();
+    if (dialogRef.current) dialogRef.current.close();
     else onClose();
     item.run();
   };
@@ -91,7 +92,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
   };
 
   return (
-    <Dialog id="command-palette" labelledBy="command-palette-title" onClose={onClose}>
+    <Dialog id="command-palette" labelledBy="command-palette-title" onClose={onClose} handleRef={dialogRef}>
       <div class={"command-palette-shell " + mode} ref={shellRef} tabIndex={-1}
            onKeyDown={leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>

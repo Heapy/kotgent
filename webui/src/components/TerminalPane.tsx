@@ -4,8 +4,8 @@ import { SidebarToggle } from "./SidebarToggle.tsx";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { createContext } from "preact";
-import type { ComponentChildren, JSX } from "preact";
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import type { ComponentChildren, JSX, RefObject } from "preact";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
 import type { Command } from "../lib/commands.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -14,6 +14,7 @@ import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
 import { SessionActions, SessionDetails } from "./SessionMenus.tsx";
 import { Icon } from "./Icon.tsx";
 import { useVisiblePane } from "./useVisiblePane.ts";
+import { HeaderPopoverLayoutContext } from "./HeaderPopover.tsx";
 import { KeyBar } from "./KeyBar.tsx";
 import type { KeyBarProps } from "./KeyBar.tsx";
 import type { TerminalUnicodeModeValue } from "../lib/unicode.ts";
@@ -24,6 +25,7 @@ interface SessionContextProps {
 }
 
 export interface TerminalPaneProps extends SessionContextProps {
+  appRef: RefObject<HTMLElement>;
   attachedId: string | null;
   focusRequest: { sessionId: string } | null;
   terminalFontSize: number;
@@ -319,11 +321,13 @@ function installSwipeScroll(term: Terminal) {
 }
 
 export function TerminalPane({
-  session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
+  appRef, session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
   sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, commands, onCopyCwd, onTerminalClosed, workspace, workspaceToolbar,
 }: TerminalPaneProps) {
   const paneRef = useRef<HTMLElement>(null);
-  useVisiblePane(paneRef);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const popoverLayout = useMemo(() => ({ containerRef: paneRef, headerRef }), [paneRef, headerRef]);
+  useVisiblePane(paneRef, appRef);
   const hostRef = useRef<HTMLDivElement | null>(null);
   if (hostRef.current === null) {
     const created = document.createElement("div");
@@ -589,36 +593,38 @@ export function TerminalPane({
 
   return (
     <main id="terminal-pane" ref={paneRef}>
-      <div id="terminal-head">
-        <button
-          id="drawer-toggle"
-          class="icon-button icon-button-small drawer-toggle"
-          type="button"
-          aria-label="Show the session list"
-          aria-expanded={drawerOpen ? "true" : "false"}
-          aria-controls="sidebar"
-          title="Sessions"
-          onClick={onToggleDrawer}
-        ><Icon name="list" /></button>
-        <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
-        <div class="terminal-identity">
-          {session ? <SessionDetails key={session.id} session={session} tasks={tasks} commands={commands} />
-            : <span id="terminal-title">No session selected</span>}
-        </div>
-        {workspaceToolbar && <span class="header-separator" aria-hidden="true" />}
-        {workspaceToolbar}
-        {session ? <SessionActions key={session.id} session={session} commands={commands}
-          onOpenPalette={openPalette} onCopyCwd={onCopyCwd} /> : (
+      <HeaderPopoverLayoutContext.Provider value={popoverLayout}>
+        <div id="terminal-head" ref={headerRef}>
           <button
-            id="palette-button"
-            class="icon-button icon-button-small palette-button"
+            id="drawer-toggle"
+            class="icon-button icon-button-small drawer-toggle"
             type="button"
-            aria-label="Open command palette"
-            title="Commands"
-            onClick={openPalette}
-          ><Icon name="more" /></button>)}
+            aria-label="Show the session list"
+            aria-expanded={drawerOpen ? "true" : "false"}
+            aria-controls="sidebar"
+            title="Sessions"
+            onClick={onToggleDrawer}
+          ><Icon name="list" /></button>
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+          <div class="terminal-identity">
+            {session ? <SessionDetails key={session.id} session={session} tasks={tasks} commands={commands} />
+              : <span id="terminal-title">No session selected</span>}
+          </div>
+          {workspaceToolbar && <span class="header-separator" aria-hidden="true" />}
+          {workspaceToolbar}
+          {session ? <SessionActions key={session.id} session={session} commands={commands}
+            onOpenPalette={openPalette} onCopyCwd={onCopyCwd} /> : (
+            <button
+              id="palette-button"
+              class="icon-button icon-button-small palette-button"
+              type="button"
+              aria-label="Open command palette"
+              title="Commands"
+              onClick={openPalette}
+            ><Icon name="more" /></button>)}
 
-      </div>
+        </div>
+      </HeaderPopoverLayoutContext.Provider>
 
       <TerminalSlotContext.Provider value={slotPortRef.current}>
         {workspace ?? <TerminalSlot />}

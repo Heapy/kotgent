@@ -2,10 +2,10 @@ import type { RefObject } from "preact";
 import { useLayoutEffect } from "preact/hooks";
 
 /** Bound the whole flex stack, including its footer, when a keyboard covers the layout viewport. */
-export function useVisiblePane(paneRef: RefObject<HTMLElement>) {
+export function useVisiblePane(paneRef: RefObject<HTMLElement>, appRef: RefObject<HTMLElement>) {
   useLayoutEffect(() => {
     const pane = paneRef.current;
-    const app = pane?.closest("#app");
+    const app = appRef.current;
     const viewport = window.visualViewport;
     if (!pane || !app || !viewport) return undefined;
     const clear = () => {
@@ -40,5 +40,5 @@ export function useVisiblePane(paneRef: RefObject<HTMLElement>) {
       window.removeEventListener("resize", measure);
       clear();
     };
-  }, [paneRef]);
+  }, [paneRef, appRef]);
 }

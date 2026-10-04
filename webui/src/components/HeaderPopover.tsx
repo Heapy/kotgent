@@ -1,5 +1,13 @@
-import type { ComponentChildren } from "preact";
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { createContext } from "preact";
+import type { ComponentChildren, RefObject } from "preact";
+import { useContext, useLayoutEffect, useRef, useState } from "preact/hooks";
+
+interface HeaderPopoverLayout {
+  containerRef: RefObject<HTMLElement>;
+  headerRef: RefObject<HTMLElement>;
+}
+
+export const HeaderPopoverLayoutContext = createContext<HeaderPopoverLayout | null>(null);
 
 interface HeaderPopoverProps {
   id: string;
@@ -13,6 +21,8 @@ interface HeaderPopoverProps {
 
 /** Nonmodal header controls: light dismiss, Escape, and normal Tab navigation. */
 export function HeaderPopover({ id, label, trigger, className = "", panelClass = "", initialFocus, children }: HeaderPopoverProps) {
+  const layout = useContext(HeaderPopoverLayoutContext);
+  if (!layout) throw new Error("HeaderPopover requires a layout provider");
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -21,15 +31,15 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     setOpen(false);
   };
   const align = () => {
-    const pane = button.current?.closest<HTMLElement>("#terminal-pane");
-    if (!pane || !button.current || !panel.current) return;
+    const pane = layout.containerRef.current;
+    const header = layout.headerRef.current;
+    if (!pane || !header || !button.current || !panel.current) return;
     const paneBox = pane.getBoundingClientRect();
     const buttonBox = button.current.getBoundingClientRect();
     const left = Math.max(6, Math.min(buttonBox.left - paneBox.left,
       paneBox.width - panel.current.offsetWidth - 6));
     panel.current.style.left = left + "px";
-    const header = pane.querySelector("#terminal-head");
-    const top = header ? header.getBoundingClientRect().bottom - paneBox.top : 48;
+    const top = header.getBoundingClientRect().bottom - paneBox.top;
     panel.current.style.top = top + "px";
     panel.current.style.maxHeight = "calc(100% - " + (top + 8) + "px)";
   };
@@ -37,10 +47,10 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
   useLayoutEffect(() => { if (open) align(); });
   useLayoutEffect(() => {
     if (!open) return undefined;
-    const pane = button.current?.closest<HTMLElement>("#terminal-pane");
+    const pane = layout.containerRef.current;
+    const header = layout.headerRef.current;
     const observer = new ResizeObserver(align);
     if (pane) observer.observe(pane);
-    const header = pane?.querySelector("#terminal-head");
     if (header) observer.observe(header);
     if (panel.current) observer.observe(panel.current);
     const outside = (event: Event) => {
@@ -66,7 +76,7 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
       document.removeEventListener("keydown", escape, true);
       document.removeEventListener("scroll", align, true);
     };
-  }, [open, initialFocus]);
+  }, [open, initialFocus, layout]);
 
   return <>
     <button ref={button} id={id + "-toggle"} type="button" class={"header-control " + className}
