@@ -942,10 +942,28 @@ textarea:focus-visible {
   flex: 0 1 auto;
   min-width: 0;
 }
+.terminal-names {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
 #terminal-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#terminal-folder {
+  min-width: 0;
+  max-width: 50%;
+  font-size: 11px;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2616,6 +2634,37 @@ button.task-card-title:hover,
 @media (min-width: 721px) {
   html, body { background-color: #14171c; }
 
+  #terminal-head {
+    flex: 0 0 auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+  }
+
+  .terminal-identity {
+    max-width: 100%;
+  }
+
+  .session-details-toggle {
+    height: auto;
+    min-height: 34px;
+  }
+
+  .terminal-names {
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  #terminal-title,
+  #terminal-folder {
+    min-width: 0;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   #sidebar {
     background: color-mix(in srgb, var(--panel) 84%, transparent);
     -webkit-backdrop-filter: blur(20px);
@@ -2729,6 +2778,9 @@ button.task-card-title:hover,
   .workspace-switcher .ui-icon { width: 14px; height: 14px; flex-basis: 14px; }
   .workspace-switcher .workspace-switch[aria-pressed="true"] { box-shadow: inset 0 -2px var(--accent); color: var(--text); }
   #terminal-title { font-size: 12px; }
+  #terminal-folder {
+    display: none;
+  }
 
   #terminal-host .xterm { padding: 4px 6px; }
   .key-bar {
