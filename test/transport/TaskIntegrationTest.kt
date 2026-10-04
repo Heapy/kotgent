@@ -323,7 +323,7 @@ class TaskIntegrationTest {
             ).start()
             val client = HttpClient(CIO) {
                 install(WebSockets)
-                // Keep route tests out of native CIO's idle keep-alive teardown path.
+                // Work around the native CIO disconnect reproduced in scripts/repro-native-cio.
                 defaultRequest { header(HttpHeaders.Connection, "close") }
             }
             try {

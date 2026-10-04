@@ -332,7 +332,7 @@ class SessionRenameRoutesTest {
             }
             server.start(wait = false)
             val client = HttpClient(CIO) {
-                // Keep route tests out of native CIO's idle keep-alive teardown path.
+                // Work around the native CIO disconnect reproduced in scripts/repro-native-cio.
                 defaultRequest { header(HttpHeaders.Connection, "close") }
             }
             try {
