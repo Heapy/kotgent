@@ -431,6 +431,30 @@ class BoardTest {
         }
 
     @Test
+    fun nestedCardMarkupDoesNotBecomeAnInsertionTarget() =
+        onTheBoard("nestedCardMarkupDoesNotBecomeAnInsertionTarget") { _, page ->
+            val moves = page.recordMoveBodies()
+            val _ = page.card("local:6").evaluate("""card => {
+                const decoration = document.createElement('div');
+                decoration.className = 'task-card';
+                decoration.dataset.ref = 'decoration';
+                decoration.textContent = 'Card decoration';
+                Object.assign(decoration.style, {
+                    position: 'absolute', top: '10000px', height: '1px', width: '1px',
+                    pointerEvents: 'none',
+                });
+                card.appendChild(decoration);
+            }""")
+            page.pressHandleOf("local:2")
+            page.travelTo(page.card("local:6").bottomInside())
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+            page.mouse().up()
+            page.waitForCondition { moves.snapshot().isNotEmpty() }
+            assertEquals(listOf("{\"after\":\"local:6\"}"), moves.snapshot(),
+                "only registered task cards can be insertion neighbors")
+        }
+
+    @Test
     fun aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite() =
         onTheBoard("aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite") { _, page ->
             val writes = page.recordTaskWrites()

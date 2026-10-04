@@ -124,12 +124,11 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, handleRef
     if (event.isPrimary && event.button === 0) {
       outsidePress.current = isOutside ? { pointerId: event.pointerId, released: false } : null;
     }
-    if (isOutside || event.pointerType !== "touch") return;
-    // A second contact must not replace the swipe owner.
-    if (dragRef.current) return;
-    // Only the grabber reserves touch; the head and body must remain scrollable/interactable.
-    const from = event.target instanceof Element ? event.target : null;
-    if (!from || !from.closest(".dialog-grabber")) return;
+  };
+
+  // The grabber owns swipe initiation; other dialog content stays scrollable/interactable.
+  const grabberPointerDown = (event: TargetedEvent<HTMLDivElement, PointerEvent>) => {
+    if (!lightDismiss || event.pointerType !== "touch" || dragRef.current) return;
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -233,7 +232,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, handleRef
   return (
     <dialog id={id} ref={ref} aria-labelledby={labelledBy} onPointerDown={pointerDown}
       onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerCancel}
-      onClick={click}><div class="dialog-grabber" aria-hidden="true" />{children}</dialog>
+      onClick={click}><div class="dialog-grabber" aria-hidden="true" onPointerDown={grabberPointerDown} />{children}</dialog>
   );
 }
 

@@ -2,6 +2,8 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
+import com.microsoft.playwright.Route
+import com.google.gson.JsonParser
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -85,6 +87,38 @@ class FindingDecisionTest {
         }"""))
         page.navigate(harness.baseUrl + "/tasks/local%3A1")
         assertThat(page.locator("#task-detail-state")).hasValue("in_progress")
+    }
+
+    @Test fun earlierFindingsKeepTheirExpansionAcrossPlanUpdates() = onFindings("finding-history-state") { _, page ->
+        // Serve an earlier iteration in history while using the real API for settings writes.
+        val earlierReview: (Route) -> Unit = { route ->
+            val response = route.fetch()
+            val doc = JsonParser.parseString(response.text()).asJsonObject
+            val reviews = doc.getAsJsonObject("execution").getAsJsonArray("reviews")
+            val review = reviews[reviews.size() - 1].asJsonObject
+            review.addProperty("iteration", review.get("iteration").asInt + 1)
+            val plan = doc.getAsJsonObject("plan")
+            plan.addProperty("rev", plan.get("rev").asInt + 1)
+            route.fulfill(Route.FulfillOptions().setResponse(response).setBody(doc.toString()))
+        }
+        page.route("**/api/v1/tasks/*/plan", earlierReview)
+        page.route("**/plan/settings", earlierReview)
+        page.reload()
+        val history = page.locator(".finding-history")
+        assertEquals(false, history.evaluate("el => el.open"))
+        history.locator("summary").click()
+        assertThat(history).hasAttribute("open", "")
+        val mode = page.getByLabel("Execution mode", Page.GetByLabelOptions().setExact(true))
+        mode.selectOption("autonomous")
+        assertThat(mode).isEnabled()
+        assertThat(mode).hasValue("autonomous")
+        assertThat(history).hasAttribute("open", "")
+        history.locator("summary").click()
+        assertEquals(false, history.evaluate("el => el.open"))
+        mode.selectOption("supervised")
+        assertThat(mode).isEnabled()
+        assertThat(mode).hasValue("supervised")
+        assertEquals(false, history.evaluate("el => el.open"))
     }
 
     @Test fun changingModePreservesThisReviewAndAutonomousReviewsHideOperatorControls() {

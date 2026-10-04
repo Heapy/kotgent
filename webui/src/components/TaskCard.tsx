@@ -1,4 +1,4 @@
-import type { JSX, TargetedMouseEvent, TargetedPointerEvent } from "preact";
+import type { JSX, Ref, TargetedMouseEvent, TargetedPointerEvent } from "preact";
 import { sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -8,6 +8,7 @@ type DragPointerHandler = (event: TargetedPointerEvent<HTMLDivElement>, entry: T
 
 export interface TaskCardProps {
   entry: Task;
+  elementRef?: Ref<HTMLElement>;
   sessions?: readonly Session[];
   active?: boolean;
   dragging?: boolean;
@@ -30,6 +31,7 @@ function isPlainClick(event: TargetedMouseEvent<HTMLAnchorElement>) {
 
 export function TaskCard({
   entry,
+  elementRef,
   sessions = [],
   active = false,
   dragging = false,
@@ -61,6 +63,7 @@ export function TaskCard({
   // which puts keyboard focus somewhere assistive technology has been told not to describe.
   return (
     <article
+      ref={elementRef ?? null}
       class={"task-card" + (dragging ? " is-dragging" : "") + (lifted ? " is-lifted" : "")}
       data-ref={lifted ? null : entry.ref}
       data-state={entry.state}

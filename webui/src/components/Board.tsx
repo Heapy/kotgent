@@ -5,6 +5,7 @@ import { SidebarToggle } from "./SidebarToggle.tsx";
 import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
+import { registerElement } from "../lib/dom.ts";
 import { errorMessage } from "../lib/api.ts";
 import { joinPath, normalizePath } from "../lib/paths.ts";
 import { navigate, sessionPath, taskPath } from "../lib/router.ts";
@@ -52,6 +53,20 @@ interface BoardColumn {
 interface DropTarget {
   state: string;
   beforeRef: string | null;
+}
+
+interface BoardElements {
+  columns: Map<string, HTMLElement>;
+  heads: Map<string, HTMLElement>;
+  cards: Map<string, HTMLElement>;
+}
+
+/** Rendered nodes supply geometry; task data supplies identity and ordering. */
+function cardsInColumn(elements: BoardElements, entries: readonly Task[], state: string) {
+  return entries.filter(entry => entry.state === state).flatMap(entry => {
+    const element = elements.cards.get(entry.ref);
+    return element ? [{ ref: entry.ref, element }] : [];
+  });
 }
 
 interface DragLayout {
@@ -132,7 +147,8 @@ function phoneNow() {
 }
 
 /** Resolve column ownership by paint order, then card order from transform-free layout geometry. */
-function dropResolutionAt(root: HTMLElement | null, x: number, y: number, draggedRef: string): {
+function dropResolutionAt(root: HTMLElement | null, elements: BoardElements, entries: readonly Task[],
+  x: number, y: number, draggedRef: string): {
   column: HTMLElement | null;
   target: DropTarget | null;
 } {
@@ -140,17 +156,14 @@ function dropResolutionAt(root: HTMLElement | null, x: number, y: number, dragge
     return { column: null, target: null };
   }
   const hit = root.ownerDocument.elementFromPoint(x, y);
-  const column = hit && hit.closest ? hit.closest<HTMLElement>(".board-column") : null;
-  if (!column || !root.contains(column)) return { column: null, target: null };
-
-  const state = column.getAttribute("data-state");
-  if (!state) return { column: null, target: null };
+  if (!hit || !root.contains(hit)) return { column: null, target: null };
+  const owner = Array.from(elements.columns).find(([, column]) => column.contains(hit));
+  if (!owner) return { column: null, target: null };
+  const [state, column] = owner;
   const rect = column.getBoundingClientRect();
   const contentY = y - rect.top + column.scrollTop;
-  const cards = Array.from(column.querySelectorAll<HTMLElement>(".task-card"));
-  for (const card of cards) {
-    const ref = card.getAttribute("data-ref");
-    if (!ref || ref === draggedRef) continue;
+  for (const { ref, element: card } of cardsInColumn(elements, entries, state)) {
+    if (ref === draggedRef) continue;
     if (contentY < card.offsetTop + card.offsetHeight / 2) {
       return { column: column, target: { state: state, beforeRef: ref } };
     }
@@ -219,27 +232,25 @@ function previewShifts(
   return shifts;
 }
 
-function measureDragLayout(root: HTMLElement | null, draggedRef: string, target: DropTarget | null): DragLayout {
-  if (!root || !draggedRef || !target) return EMPTY_DRAG_LAYOUT;
+function measureDragLayout(elements: BoardElements, entries: readonly Task[],
+  draggedRef: string, target: DropTarget | null): DragLayout {
+  if (!draggedRef || !target) return EMPTY_DRAG_LAYOUT;
 
-  const columns = Array.from(root.querySelectorAll<HTMLElement>(".board-column"));
+  const columns = elements.columns;
   const cardsByState = new Map<string, string[]>();
   const elementsByState = new Map<string, HTMLElement[]>();
   let draggedCard: HTMLElement | null = null;
   let sourceState: string | null = null;
   let destinationColumn: HTMLElement | null = null;
 
-  for (const column of columns) {
-    const state = column.getAttribute("data-state");
-    if (!state) continue;
-    const cards = Array.from(column.querySelectorAll<HTMLElement>(".task-card"));
-    elementsByState.set(state, cards);
-    cardsByState.set(state, cards.map((card) => card.getAttribute("data-ref"))
-      .filter((ref): ref is string => Boolean(ref)));
+  for (const [state, column] of columns) {
+    const cards = cardsInColumn(elements, entries, state);
+    elementsByState.set(state, cards.map(card => card.element));
+    cardsByState.set(state, cards.map(card => card.ref));
     if (state === target.state) destinationColumn = column;
-    for (const card of cards) {
-      if (card.getAttribute("data-ref") !== draggedRef) continue;
-      draggedCard = card;
+    const source = cards.find(card => card.ref === draggedRef);
+    if (source) {
+      draggedCard = source.element;
       sourceState = state;
     }
   }
@@ -247,9 +258,8 @@ function measureDragLayout(root: HTMLElement | null, draggedRef: string, target:
 
   const allDestinationCards = elementsByState.get(target.state) || [];
   const rendered = allDestinationCards.filter((card) => card !== draggedCard);
-  const desiredIndex = target.beforeRef
-    ? rendered.findIndex((card) => card.getAttribute("data-ref") === target.beforeRef)
-    : rendered.length;
+  const destinationRefs = (cardsByState.get(target.state) || []).filter(ref => ref !== draggedRef);
+  const desiredIndex = target.beforeRef ? destinationRefs.indexOf(target.beforeRef) : rendered.length;
   if (desiredIndex < 0) return EMPTY_DRAG_LAYOUT;
 
   const height = draggedCard.offsetHeight;
@@ -264,13 +274,13 @@ function measureDragLayout(root: HTMLElement | null, draggedRef: string, target:
   let top;
   if (desiredIndex > 0) {
     const previous = rendered[desiredIndex - 1]!;
-    const ref = previous.getAttribute("data-ref");
-    top = previous.offsetTop + ((ref && shifts.get(ref)) || 0) + previous.offsetHeight + CARD_GAP_PX;
+    top = previous.offsetTop + (shifts.get(destinationRefs[desiredIndex - 1]!) || 0) +
+      previous.offsetHeight + CARD_GAP_PX;
   } else if (allDestinationCards.length > 0) {
     // The unfiltered first card is the source placeholder when it already owns the first slot.
     top = allDestinationCards[0]!.offsetTop;
   } else {
-    const head = destinationColumn.querySelector<HTMLElement>(".board-column-head");
+    const head = elements.heads.get(target.state);
     if (!head) return EMPTY_DRAG_LAYOUT;
     top = head.offsetTop + head.offsetHeight + CARD_GAP_PX;
   }
@@ -332,6 +342,11 @@ export function Board({
   onAnnounce,
 }: BoardProps) {
   const rootRef = useRef<HTMLElement>(null);
+  const elements = useMemo<BoardElements>(() => ({
+    columns: new Map(),
+    heads: new Map(),
+    cards: new Map(),
+  }), []);
   const [form, setForm] = useState<BoardForm | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
@@ -494,7 +509,7 @@ export function Board({
   const resolveGestureTarget = useCallback((gesture: DragGesture, x: number, y: number) => {
     gesture.lastX = x;
     gesture.lastY = y;
-    const resolution = dropResolutionAt(rootRef.current, x, y, gesture.ref);
+    const resolution = dropResolutionAt(rootRef.current, elements, entriesRef.current, x, y, gesture.ref);
     gesture.target = resolution.target;
     gesture.targetColumn = resolution.target ? resolution.column : null;
     setDropTarget((held) => sameDropTarget(held, resolution.target) ? held : resolution.target);
@@ -576,9 +591,7 @@ export function Board({
     if (!gesture.claimed) {
       if (Math.abs(event.clientX - gesture.startX) < DRAG_SLOP_PX &&
         Math.abs(event.clientY - gesture.startY) < DRAG_SLOP_PX) return;
-      const card = gesture.element && gesture.element.closest
-        ? gesture.element.closest(".task-card")
-        : null;
+      const card = elements.cards.get(gesture.ref);
       if (!card) return;
       const rect = card.getBoundingClientRect();
       gesture.claimed = true;
@@ -634,7 +647,7 @@ export function Board({
       setDragLayout(EMPTY_DRAG_LAYOUT);
       return;
     }
-    setDragLayout(measureDragLayout(rootRef.current, draggingRef, dropTarget));
+    setDragLayout(measureDragLayout(elements, entries, draggingRef, dropTarget));
   }, [draggingRef, dropTarget, entries, sessionsByTask, showAllDone, phone, activeColumn]);
 
   const draggedEntry = draggingRef
@@ -659,9 +672,10 @@ export function Board({
       ? dragLayout.slot
       : null;
     return (
-      <section key={column.state} class={"board-column" + (over ? " board-drop-target" : "")}
+      <section key={column.state} ref={element => registerElement(elements.columns, column.state, element)}
+               class={"board-column" + (over ? " board-drop-target" : "")}
                data-state={column.state} aria-label={column.label}>
-        <header class="board-column-head">
+        <header ref={element => registerElement(elements.heads, column.state, element)} class="board-column-head">
           <h2>{column.label}</h2>
           <span>{column.entries.length}</span>
         </header>
@@ -671,6 +685,7 @@ export function Board({
         {visible.map((entry) => (
             <TaskCard
               key={entry.ref}
+              elementRef={element => registerElement(elements.cards, entry.ref, element)}
               entry={entry}
               sessions={sessionsByTask.get(entry.ref) || []}
               active={routeId === entry.ref}

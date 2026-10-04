@@ -208,6 +208,7 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
   const tab = activeTabOf(ws);
   const phone = usePhone();
   const activeTabRef = useRef<HTMLDivElement>(null);
+  const activeTabButtonRef = useRef<HTMLButtonElement>(null);
   const candidates = candidatesOf(tab);
   const focused = candidates.find((entry) => entry.index === tab.focus) ?? candidates[0];
   const held = new Set(tab.columns.map((column) => column.type));
@@ -240,7 +241,7 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
         const icon = panels.length > 1 ? "columns" : type === "task" || type === "plan" ? type : "terminal";
         return <div key={entry.id} class={"workspace-tab" + (active ? " active" : "")}
                     role="presentation" ref={active ? activeTabRef : null}>
-          <button type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
+          <button ref={active ? activeTabButtonRef : null} type="button" role="tab" class="workspace-tab-label" id={"workspace-tab-" + entry.id}
                   aria-selected={active} aria-controls="workspace-panel"
                   onClick={() => { selectTab(sessionId, entry.id); close(); }}>
             <Icon name={icon} /><span>{label}</span>
@@ -262,7 +263,7 @@ export function WorkspaceToolbar({ sessionId }: { sessionId: string }) {
   return <div class="workspace-toolbar">
     {phone ? <div class="workspace-mobile-tab"><HeaderPopover key={sessionId} id="workspace-tab-picker" label="Workspace tabs"
       className="workspace-tab-picker" panelClass="workspace-tab-menu"
-      initialFocus=".workspace-tab.active .workspace-tab-label"
+      initialFocusRef={activeTabButtonRef}
       trigger={<><Icon name={focused?.type === "task" || focused?.type === "plan" ? focused.type : "terminal"} /><span>{tabLabel(tab)}</span><Icon name="caret" /></>}>
       {tabs}
     </HeaderPopover>{columnMenu}</div> : <div class="workspace-desktop-tabs">{tabs(() => {})}</div>}

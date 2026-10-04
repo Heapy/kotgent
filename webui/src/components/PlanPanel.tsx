@@ -1,5 +1,5 @@
-import type { JSX } from "preact";
-import { useEffect, useId, useRef, useState } from "preact/hooks";
+import type { JSX, Ref } from "preact";
+import { useCallback, useEffect, useId, useRef, useState } from "preact/hooks";
 import { errorMessage } from "../lib/api.ts";
 import { pendingMutation } from "../lib/mutation.ts";
 import { isPlanViewed, nextUnviewed, planBlocks } from "../lib/plans.ts";
@@ -7,6 +7,7 @@ import type { DisplayPlanBlock, PlanDocument, PlanThread } from "../lib/plans.ts
 import { changePlan, planEntry, refreshPlan, retainPlan } from "../state/plans.ts";
 import type { PlanFindingFocus } from "../state/layout.ts";
 import { navigate, sessionPath } from "../lib/router.ts";
+import { isEditingTarget, registerElement } from "../lib/dom.ts";
 import { FindingReview } from "./FindingCard.tsx";
 import { Markdown } from "./Markdown.tsx";
 
@@ -20,21 +21,15 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
   const [active, setActive] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmRound, setConfirmRound] = useState<number | null>(null);
-  const root = useRef<HTMLElement>(null);
+  const blockElements = useRef(new Map<string, HTMLElement>());
   const alive = useRef(true);
   const titleId = useId();
   const handledFocus = useRef<PlanFindingFocus | undefined>(undefined);
-  useEffect(() => {
-    if (!findingFocus || findingFocus.taskRef !== taskRef || handledFocus.current === findingFocus) return;
-    const target = root.current?.querySelector<HTMLElement>(`[data-finding="${findingFocus.findingId}"]`);
-    if (!target) return;
-    for (let parent = target.parentElement; parent; parent = parent.parentElement) {
-      if (parent.tagName === "DETAILS") (parent as HTMLDetailsElement).open = true;
-    }
-    target.scrollIntoView({ block: "nearest" });
-    target.focus({ preventScroll: true });
-    handledFocus.current = findingFocus;
-  }, [findingFocus, taskRef, document]);
+  const onFindingFocused = useCallback((request: PlanFindingFocus) => {
+    handledFocus.current = request;
+  }, []);
+  const pendingFocus = findingFocus?.taskRef === taskRef && handledFocus.current !== findingFocus
+    ? findingFocus : undefined;
   useEffect(() => {
     alive.current = true;
     const release = retainPlan(taskRef);
@@ -63,7 +58,7 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
   const jump = (id: string | null) => {
     if (!id) return;
     setActive(id);
-    const target = root.current?.querySelector<HTMLElement>(`[data-block="${id}"]`);
+    const target = blockElements.current.get(id);
     target?.scrollIntoView({ block: "nearest" });
     target?.focus({ preventScroll: true });
   };
@@ -74,7 +69,7 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
   };
   const shortcut: JSX.KeyboardEventHandler<HTMLElement> = event => {
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || busy || !document) return;
-    if ((event.target as HTMLElement).closest("input,textarea,select,[contenteditable=true],dialog")) return;
+    if (isEditingTarget(event.target)) return;
     if (event.key === "v" && selected) { event.preventDefault(); toggleViewed(selected); }
     if (event.key === "n") { event.preventDefault(); jump(nextUnviewed(document, selected?.id ?? null)); }
   };
@@ -82,7 +77,7 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
     await change("/review/approve", "POST", { round: n });
     if (alive.current) setConfirmRound(null);
   };
-  return <section ref={root} class={"plan-panel" + (onClose ? " plan-overlay" : "")}
+  return <section class={"plan-panel" + (onClose ? " plan-overlay" : "")}
                   aria-labelledby={titleId} tabIndex={0} onKeyDown={shortcut}>
     <header class="plan-head">
       <div><p class="field-hint">{taskRef} · {document?.plan.status.replaceAll("_", " ") ?? "Plan"}</p>
@@ -134,6 +129,8 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
         </nav>
         <div class="plan-blocks">{blocks.map(block => <PlanBlockView key={block.id} block={block}
           document={document} change={change} busy={busy} onActive={() => setActive(block.id)}
+          elementRef={element => registerElement(blockElements.current, block.id, element)}
+          findingFocus={pendingFocus} onFindingFocused={onFindingFocused}
           onViewed={() => toggleViewed(block)} />)}</div>
       </div>
     </>}
@@ -142,8 +139,10 @@ export function PlanPanel({ taskRef, onClose = null, findingFocus }: {
   </section>;
 }
 
-function PlanBlockView({ block, document, change, busy, onActive, onViewed }: {
+function PlanBlockView({ block, document, change, busy, onActive, onViewed, elementRef, findingFocus, onFindingFocused }: {
   block: DisplayPlanBlock; document: PlanDocument; change: Change; busy: boolean; onActive: () => void; onViewed: () => void;
+  elementRef: Ref<HTMLElement>; findingFocus?: PlanFindingFocus | undefined;
+  onFindingFocused: (request: PlanFindingFocus) => void;
 }) {
   const [edit, setEdit] = useState<{ rev: number; text: string } | null>(null);
   const [asking, setAsking] = useState(false);
@@ -157,7 +156,7 @@ function PlanBlockView({ block, document, change, busy, onActive, onViewed }: {
       if (alive.current) setEdit(null);
     }
   };
-  return <article class="plan-block" data-block={block.id} tabIndex={-1} onFocusIn={onActive} onClick={onActive}>
+  return <article ref={elementRef} class="plan-block" data-block={block.id} tabIndex={-1} onFocusIn={onActive} onClick={onActive}>
     <header><h3>{block.label}</h3><span class="field-hint">rev {block.rev}</span></header>
     <div class="plan-block-actions">
       <label><input type="checkbox" checked={marked} disabled={busy} onChange={onViewed} /> Viewed</label>
@@ -188,7 +187,7 @@ function PlanBlockView({ block, document, change, busy, onActive, onViewed }: {
       {block.task.dependsOn.length > 0 && <p>Depends on {block.task.dependsOn.join(", ")}</p>}
       {block.task.files.length > 0 && <ul>{block.task.files.map(file => <li>{file.action}: <code>{file.path}</code></li>)}</ul>}
     </div>}
-    {block.task && <FindingReview document={document} task={block.task} change={change} busy={busy} />}
+    {block.task && <FindingReview document={document} task={block.task} change={change} busy={busy} findingFocus={findingFocus} onFindingFocused={onFindingFocused} />}
     {asking && <MessageForm label="Question" action="Ask question" busy={busy} send={async body => {
       const ok = await change("/threads", "POST", { blockId: block.id, kind: "question", body });
       if (ok && alive.current) setAsking(false);

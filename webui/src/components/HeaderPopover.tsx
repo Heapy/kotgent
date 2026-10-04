@@ -15,12 +15,12 @@ interface HeaderPopoverProps {
   trigger: ComponentChildren;
   className?: string;
   panelClass?: string;
-  initialFocus?: string;
+  initialFocusRef?: RefObject<HTMLElement>;
   children: (close: () => void) => ComponentChildren;
 }
 
 /** Nonmodal header controls: light dismiss, Escape, and normal Tab navigation. */
-export function HeaderPopover({ id, label, trigger, className = "", panelClass = "", initialFocus, children }: HeaderPopoverProps) {
+export function HeaderPopover({ id, label, trigger, className = "", panelClass = "", initialFocusRef, children }: HeaderPopoverProps) {
   const layout = useContext(HeaderPopoverLayoutContext);
   if (!layout) throw new Error("HeaderPopover requires a layout provider");
   const [open, setOpen] = useState(false);
@@ -68,7 +68,7 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     document.addEventListener("focusin", outside);
     document.addEventListener("keydown", escape, true);
     document.addEventListener("scroll", align, true);
-    if (initialFocus) panel.current?.querySelector<HTMLElement>(initialFocus)?.focus();
+    initialFocusRef?.current?.focus();
     return () => {
       observer.disconnect();
       document.removeEventListener("pointerdown", outside);
@@ -76,7 +76,7 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
       document.removeEventListener("keydown", escape, true);
       document.removeEventListener("scroll", align, true);
     };
-  }, [open, initialFocus, layout]);
+  }, [open, initialFocusRef, layout]);
 
   return <>
     <button ref={button} id={id + "-toggle"} type="button" class={"header-control " + className}
