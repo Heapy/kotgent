@@ -63,6 +63,33 @@ class PlanReviewTest {
     }
 
     @Test
+    fun shortcutsLeaveNativeAndPlaintextEditingAloneAndJumpUsesTheMountedBlock() = onPlan("plan-editing-shortcuts", phone = true) { harness, page ->
+        page.navigate(harness.baseUrl + "/tasks/local%3A1/plan")
+        val block = page.locator("[data-block='s_2']")
+        assertThat(block).isVisible()
+        val _ = block.evaluate("""el => {
+            const editor = document.createElement('div');
+            editor.id = 'plaintext-editor';
+            editor.contentEditable = 'plaintext-only';
+            editor.textContent = 'Draft';
+            el.appendChild(editor);
+        }""")
+        val editor = page.locator("#plaintext-editor")
+        editor.press("v")
+        assertThat(page.locator(".plan-progress")).hasText("0/4 viewed")
+        assertThat(editor).isFocused()
+        assertThat(editor).containsText("v")
+        page.locator(".plan-toc-select select").selectOption("s_2")
+        assertThat(block).isFocused()
+        harness.send("plan-edit local:1 s_2 A newer block body")
+        assertThat(block.locator(".markdown")).containsText("A newer block body")
+        page.locator(".plan-toc-select select").selectOption("s_1")
+        assertThat(page.locator("[data-block='s_1']")).isFocused()
+        page.locator(".plan-toc-select select").selectOption("s_2")
+        assertThat(block).isFocused()
+    }
+
+    @Test
     fun rejectedWriteKeepsDraftAndLoadsTheNewVersion() = onPlan("plan-http-conflict") { harness, page ->
         page.navigate(harness.baseUrl + "/tasks/local%3A1/plan")
         val block = page.locator("[data-block='s_2']")

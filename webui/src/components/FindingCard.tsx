@@ -1,31 +1,46 @@
-import { useEffect, useId, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { Finding, FindingDecisionKind, PlanActor, PlanChange, PlanDocument, PlanTask } from "../lib/plans.ts";
 import { canDecideFindings, canSendFindings, currentFindings, findingDecisionPayload, taskReview } from "../lib/plans.ts";
 import { navigate, sessionPath } from "../lib/router.ts";
+import type { PlanFindingFocus } from "../state/layout.ts";
 import { openFinding } from "../state/layout.ts";
 import { planEntry } from "../state/plans.ts";
 import { Markdown } from "./Markdown.tsx";
 
-export function FindingReview({ document, task, change, busy }: {
-  document: PlanDocument; task: PlanTask; change: PlanChange; busy: boolean;
+export function FindingReview({ document, task, change, busy, findingFocus, onFindingFocused }: {
+  document: PlanDocument; task: PlanTask; change: PlanChange; busy: boolean; findingFocus?: PlanFindingFocus | undefined;
+  onFindingFocused: (request: PlanFindingFocus) => void;
 }) {
   const review = taskReview(document, task.id);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const revealedFocus = useRef<PlanFindingFocus | undefined>(undefined);
+  const history = document.execution.findings.filter(f => f.taskId === task.id && f.iteration !== review?.iteration);
+  useLayoutEffect(() => {
+    if (!findingFocus || revealedFocus.current === findingFocus ||
+        !history.some(f => f.id === findingFocus.findingId)) return;
+    revealedFocus.current = findingFocus;
+    setHistoryOpen(true);
+  }, [findingFocus, document]);
   if (!review) return null;
   const findings = currentFindings(document, task.id);
-  const history = document.execution.findings.filter(f => f.taskId === task.id && f.iteration !== review.iteration);
   const controls = canDecideFindings(document, task);
   return <section class="finding-review" aria-label={`Review of ${task.title}`}>
     <header><h4>Review · iteration {review.iteration}</h4><span class="finding-mode">{review.mode}</span></header>
     {review.nextMode !== review.mode && <p class="field-hint">Next review: {review.nextMode}. This review stays {review.mode}.</p>}
     {findings.length === 0 && <p class="field-hint">No findings in this review.</p>}
-    {findings.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding} editable={controls} change={change} busy={busy} />)}
+    {findings.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding}
+      editable={controls} change={change} busy={busy} findingFocus={findingFocus} onFindingFocused={onFindingFocused} />)}
     {controls && findings.length > 0 && <button type="button" class="button button-primary finding-send"
       disabled={busy || !canSendFindings(document, task)} onClick={() => void change("/findings/send", "POST", { taskId: task.id })}>
       Send to worker</button>}
     {!controls && findings.length > 0 && <p class="field-hint">{review.mode === "autonomous"
       ? "The assigned worker records each decision and its reason." : "Decisions have been sent to the worker."}</p>}
-    {history.length > 0 && <details class="finding-history"><summary>Earlier findings ({history.length})</summary>
-      {history.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding} editable={false} change={change} busy={busy} />)}
+    {history.length > 0 && <details class="finding-history" open={historyOpen}
+      onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+      <summary>Earlier findings ({history.length})</summary>
+      {history.map(finding => <FindingCard key={finding.id} taskRef={document.plan.taskRef} finding={finding}
+        editable={false} change={change} busy={busy} findingFocus={findingFocus}
+        onFindingFocused={onFindingFocused} focusReady={historyOpen} />)}
     </details>}
   </section>;
 }
@@ -33,9 +48,21 @@ export function FindingReview({ document, task, change, busy }: {
 function actorName(actor: PlanActor | null): string { return actor?.type === "session" ? actor.sessionId : actor ? "You" : "Agent"; }
 interface DecisionDraft { rev: number; kind: FindingDecisionKind; option: number; note: string }
 
-export function FindingCard({ taskRef, finding, editable, change, busy }: {
+export function FindingCard({ taskRef, finding, editable, change, busy, findingFocus, onFindingFocused, focusReady = true }: {
   taskRef: string; finding: Finding; editable: boolean; change: PlanChange; busy: boolean;
+  findingFocus?: PlanFindingFocus | undefined; focusReady?: boolean;
+  onFindingFocused: (request: PlanFindingFocus) => void;
 }) {
+  const element = useRef<HTMLElement>(null);
+  const handledFocus = useRef<PlanFindingFocus | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!focusReady || !findingFocus || findingFocus.findingId !== finding.id ||
+        findingFocus.taskRef !== taskRef || handledFocus.current === findingFocus || !element.current) return;
+    element.current.scrollIntoView({ block: "nearest" });
+    element.current.focus({ preventScroll: true });
+    handledFocus.current = findingFocus;
+    onFindingFocused(findingFocus);
+  }, [findingFocus, focusReady, finding.id, taskRef, onFindingFocused]);
   const [draft, setDraft] = useState<DecisionDraft | null>(null);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
@@ -45,7 +72,7 @@ export function FindingCard({ taskRef, finding, editable, change, busy }: {
     option: finding.decision?.optionIndex ?? finding.recommended, note: finding.decision?.note ?? "" };
   const stale = draft !== null && draft.rev !== finding.rev;
   const verifier = finding.verifier;
-  return <article class="finding-card" data-finding={finding.id} tabIndex={-1} aria-labelledby={titleId}>
+  return <article ref={element} class="finding-card" data-finding={finding.id} tabIndex={-1} aria-labelledby={titleId}>
     <header><h5 id={titleId}>{finding.id}{finding.location && <> · <code>{finding.location}</code></>}</h5>
       <span class="field-hint">rev {finding.rev}</span></header>
     <div class="finding-assessment"><strong>Condition</strong><Markdown text={finding.condition} />

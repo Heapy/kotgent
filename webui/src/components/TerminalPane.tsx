@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { createContext } from "preact";
 import type { ComponentChildren, JSX, RefObject } from "preact";
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { terminalScreenBounds } from "../lib/xterm-dom.ts";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
 import type { Command } from "../lib/commands.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -201,8 +202,11 @@ function installSwipeScroll(term: Terminal) {
       }
     }
 
-    const screen = element.querySelector(".xterm-screen") || element;
-    const bounds = screen.getBoundingClientRect();
+    const bounds = terminalScreenBounds(term);
+    if (!bounds) {
+      stopMotion();
+      return;
+    }
     const rowHeight = bounds.height / Math.max(term.rows, 1);
     if (!Number.isFinite(rowHeight) || rowHeight <= 0) {
       stopMotion();

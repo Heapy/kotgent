@@ -24,6 +24,7 @@ const localDate = (stamp: number | null) => stamp !== null && Number.isFinite(st
 function UsageWindow({ window, now, serverTimeOffset }: UsageWindowProps) {
   const [open, setOpen] = useState<boolean>(false);
   const root = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   const tooltipId = useId();
   const label = usageLabel(window);
   const time = usageWindowTime(window, Math.max(now, performance.now()), serverTimeOffset);
@@ -55,11 +56,11 @@ function UsageWindow({ window, now, serverTimeOffset }: UsageWindowProps) {
     <div ref={root} class="usage-window" data-window={window.windowKey}
          onPointerEnter={(event) => { if (event.pointerType === "mouse") setOpen(true); }}
          onPointerLeave={(event) => {
-           if (event.pointerType === "mouse" && !event.currentTarget.querySelector("button:focus-visible")) {
+           if (event.pointerType === "mouse" && !button.current?.matches(":focus-visible")) {
              setOpen(false);
            }
          }}>
-      <button type="button" class="usage-window-button"
+      <button ref={button} type="button" class="usage-window-button"
               aria-label={`${window.provider} ${label}: ${window.usedPercent}% used${elapsed}. Time left: ${timeLeft}`}
               aria-describedby={tooltipId}
               onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) setOpen(true); }}
