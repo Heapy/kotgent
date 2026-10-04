@@ -942,7 +942,7 @@ textarea:focus-visible {
   flex: 0 1 auto;
   min-width: 0;
 }
-.terminal-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.terminal-names { min-width: 0; font-size: 12px; line-height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 #terminal-title {
   font-size: 12px;
   font-weight: 600;
