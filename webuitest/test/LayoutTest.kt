@@ -917,13 +917,28 @@ private fun helperTextareaFontSize(page: Page): String = page.evaluate(
 ) as String
 
 private fun settleTerminal(page: Page, geometry: TerminalGeometry) {
-    // The sampler is page-global, so stale geometry must not satisfy the next settle wait.
-    page.evaluate(SETTLE_RESET)
-    page.waitForCondition { page.evaluate(TERMINAL_SETTLED, geometry.size) == true }
+    val _ = measureTerminal(page, geometry)
 }
 
 private fun measureTerminal(page: Page, geometry: TerminalGeometry): PageValues {
-    val values = page.values(MEASURE_TERMINAL, geometry.size)
+    // The sampler is page-global, so stale geometry must not satisfy the next settle wait.
+    page.evaluate(SETTLE_RESET)
+    val script = """
+        (size) => {
+          if (!($TERMINAL_SETTLED)(size)) return null;
+          return ($MEASURE_TERMINAL)(size);
+        }
+    """.trimIndent()
+    var measured: PageValues? = null
+    page.waitForCondition {
+        val result = page.evaluate(script, geometry.size)
+        if (result !is Map<*, *>) return@waitForCondition false
+        // Capture the rows and the resize frame together: a separate evaluate can cross the next fit.
+        @Suppress("UNCHECKED_CAST")
+        measured = PageValues(result as Map<String, Any?>, script)
+        true
+    }
+    val values = measured ?: fail("the terminal never produced settled geometry")
     assertEquals(
         1,
         values.int("ready"),

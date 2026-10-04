@@ -20,6 +20,7 @@ import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.store.FakeEventStore
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
@@ -330,7 +331,10 @@ class SessionRenameRoutesTest {
                 }
             }
             server.start(wait = false)
-            val client = HttpClient(CIO)
+            val client = HttpClient(CIO) {
+                // Keep route tests out of native CIO's idle keep-alive teardown path.
+                defaultRequest { header(HttpHeaders.Connection, "close") }
+            }
             try {
                 block(Env(server.engine.resolvedConnectors().first().port, client, store))
             } finally {

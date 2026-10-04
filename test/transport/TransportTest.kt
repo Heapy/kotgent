@@ -923,7 +923,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            val _ = incoming.receive()
+            val _ = receiveSnapshot()
             assertTrue(
                 ctx.store.sessionUpdateSubscribers > idle,
                 "the snapshot frame means this socket now holds a collector",

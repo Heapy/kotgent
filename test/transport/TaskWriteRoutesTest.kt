@@ -24,6 +24,7 @@ import io.kotgent.task.ProjectRecord
 import io.kotgent.task.TaskState
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.request
@@ -1387,7 +1388,10 @@ class TaskWriteRoutesTest {
             }
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
-            val client = HttpClient(CIO)
+            val client = HttpClient(CIO) {
+                // Keep route tests out of native CIO's idle keep-alive teardown path.
+                defaultRequest { header(HttpHeaders.Connection, "close") }
+            }
             try {
                 block(Env(port, client, tasks, sessions, fs, writer, panes))
             } finally {

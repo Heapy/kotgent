@@ -26,6 +26,7 @@ import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
@@ -320,7 +321,11 @@ class TaskIntegrationTest {
                 taskService = service,
                 port = 0,
             ).start()
-            val client = HttpClient(CIO) { install(WebSockets) }
+            val client = HttpClient(CIO) {
+                install(WebSockets)
+                // Keep route tests out of native CIO's idle keep-alive teardown path.
+                defaultRequest { header(HttpHeaders.Connection, "close") }
+            }
             try {
                 block(Ctx(server.port(), client))
             } finally {
