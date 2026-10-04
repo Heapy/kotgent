@@ -28,6 +28,10 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     const left = Math.max(6, Math.min(buttonBox.left - paneBox.left,
       paneBox.width - panel.current.offsetWidth - 6));
     panel.current.style.left = left + "px";
+    const header = pane.querySelector("#terminal-head");
+    const top = header ? header.getBoundingClientRect().bottom - paneBox.top : 48;
+    panel.current.style.top = top + "px";
+    panel.current.style.maxHeight = "calc(100% - " + (top + 8) + "px)";
   };
   // A tab label can change the trigger's position without changing the pane's width.
   useLayoutEffect(() => { if (open) align(); });
@@ -36,6 +40,8 @@ export function HeaderPopover({ id, label, trigger, className = "", panelClass =
     const pane = button.current?.closest<HTMLElement>("#terminal-pane");
     const observer = new ResizeObserver(align);
     if (pane) observer.observe(pane);
+    const header = pane?.querySelector("#terminal-head");
+    if (header) observer.observe(header);
     if (panel.current) observer.observe(panel.current);
     const outside = (event: Event) => {
       const target = event.target;

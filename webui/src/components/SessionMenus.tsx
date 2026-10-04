@@ -5,6 +5,7 @@ import type { Session } from "../lib/sessions.ts";
 import type { Task } from "../lib/tasks.ts";
 import { navigate, taskPath } from "../lib/router.ts";
 import { sessionMutexPills } from "../lib/mutexes.ts";
+import { basename } from "../lib/paths.ts";
 import { mutexes } from "../state/mutexes.ts";
 import { openPlanTab } from "../state/layout.ts";
 import { HeaderPopover } from "./HeaderPopover.tsx";
@@ -48,6 +49,7 @@ function CommandButton({ command, label, icon, shortcut, close, className = "ses
 export function SessionDetails({ session, tasks, commands }: SessionMenuProps & { tasks: readonly Task[] }) {
   const badge = stateBadge(session.state);
   const task = taskBadge(session, tasks);
+  const folder = basename(session.cwd) || session.cwd;
   const hasMutexes = sessionMutexPills(mutexes.value, session.id).length > 0;
   const technicalDetails: [string, string | null][] = [
     ["Provider ID", session.providerSessionId],
@@ -67,7 +69,11 @@ export function SessionDetails({ session, tasks, commands }: SessionMenuProps & 
   };
   return <HeaderPopover id="session-details" label="Session details"
     className="session-details-toggle" panelClass="session-details"
-    trigger={<><SessionStatus state={session.state} /><span id="terminal-title">{displayName(session)}</span>
+    trigger={<><SessionStatus state={session.state} />
+      <span class="terminal-names">
+        {folder && <><span id="terminal-folder" title={session.cwd}>{folder}:</span>{" "}</>}
+        <span id="terminal-title">{displayName(session)}</span>
+      </span>
       <MutexIndicator sessionId={session.id} /><Icon name="caret" /></>}>
     {(close) => <>
       <h2 class="session-details-name">{displayName(session)}</h2>
