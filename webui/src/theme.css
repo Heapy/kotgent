@@ -1,0 +1,29 @@
+:root {
+  color-scheme: dark;
+  --bg: #14171c;
+  --panel: #1b1f27;
+  --border: #2a2f3a;
+  --text: #e6e9ef;
+  --muted: #8a93a2;
+  --accent: #8b62ff;
+  --accent-fill: #7a4ff5;
+  --accent-hover: #6e43df;
+  --attn: #ff6b6b;
+  --attn-bg: #3a1f22;
+  --status-running: #5c9dff;
+  --status-ready: #4cdb85;
+  --status-attention: #ffb547;
+  --status-stopped: #7c879a;
+  --status-crashed: #ff5c67;
+  --status-lost: #000000;
+  --status-resumable: #ab83ff;
+  --row-hover: #232833;
+  --row-active: #2a3242;
+  --term-bg: #000000;
+  --input-bg: #14171c;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  --list-inset: 6px;
+  --pill-active: color-mix(in srgb, var(--accent) 16%, transparent);
+  --pill-active-border: color-mix(in srgb, var(--accent) 38%, transparent);
+}

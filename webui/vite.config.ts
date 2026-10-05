@@ -84,5 +84,11 @@ export default defineConfig({
     outDir: "../resources/webui",
     emptyOutDir: true,
     sourcemap: true,
+    rolldownOptions: {
+      input: {
+        index: resolve(import.meta.dirname, "index.html"),
+        auth: resolve(import.meta.dirname, "auth.html"),
+      },
+    },
   },
 });
