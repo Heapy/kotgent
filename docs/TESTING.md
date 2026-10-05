@@ -383,6 +383,10 @@ notification permission prompts.
 
 Real-device release checklist:
 
+- On a phone in Safari and the installed PWA, swipe vertically over the header and past both ends
+  of the terminal, drawer and workspace panels. The header must stay on screen while inner content
+  scrolls. Repeat with the software keyboard open and after dismissal, and check that dialog inputs
+  remain visible above the keyboard.
 - On iOS 27, cold-launch the installed PWA and check that the terminal title, status badge and
   header buttons stay sharp below the status bar. When changing `apple-mobile-web-app-status-bar-style`,
   check both an existing Home Screen installation and one removed and re-added from a freshly loaded
