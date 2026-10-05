@@ -16,8 +16,6 @@ import io.kotgent.store.SqliteEventStore
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.restoreDefaultShutdownSignals
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
@@ -73,7 +71,7 @@ class ShutdownSignalsTest {
                 webUiDir = null,
                 port = 0,
             ).start()
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 val port = server.port()
                 suspend fun sessionsStatus() = client

@@ -21,6 +21,8 @@ import io.kotgent.transport.TICKET_TTL_MILLIS
 import io.kotgent.transport.TRANSPORT_JSON
 import io.kotgent.transport.TicketResponse
 import io.kotgent.transport.normalizeTicketCode
+import io.kotgent.transport.routeTestClient
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -1131,7 +1133,10 @@ class CliTest {
             val stub = Stub()
             stub.server.start(wait = false)
             val port = stub.server.engine.resolvedConnectors().first().port
-            val api = ApiClient(baseUrl = "http://127.0.0.1:$port", token = token)
+            val api = ApiClient(
+                baseUrl = "http://127.0.0.1:$port", token = token,
+                client = routeTestClient { install(HttpTimeout) },
+            )
             try {
                 block(stub, api)
             } finally {

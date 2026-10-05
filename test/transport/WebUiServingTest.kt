@@ -14,7 +14,6 @@ import io.kotgent.daemon.listDir
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -567,7 +566,7 @@ class WebUiServingTest {
                 webUiDir = webUiDir,
                 port = 0,
             ).start()
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 block(Ctx(server.port(), client))
             } finally {

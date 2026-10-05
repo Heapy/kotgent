@@ -166,6 +166,7 @@ class MutexRoutesTest {
     @Test
     fun aDisconnectedLongPollStartsTheLeaseCountdown() = withServer { f ->
         val _ = f.acquire(pane = ALICE_PANE)
+        // Keep this client on keep-alive: the test must exercise CancelOnDisconnect.
         val impatient = HttpClient(CIO) { install(HttpTimeout) { requestTimeoutMillis = 300 } }
         try {
             val _ = assertFailsWith<Throwable> {
@@ -245,7 +246,7 @@ class MutexRoutesTest {
             install(ServerWebSockets)
             routing { eventsWs(FakeEventStore(), FakePreferencesStore(), mutexStore = store, usageClock = { 7L }) }
         }
-        val client = HttpClient(CIO) { install(ClientWebSockets) }
+        val client = routeTestClient { install(ClientWebSockets) }
         try {
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
@@ -325,7 +326,7 @@ class MutexRoutesTest {
             }
             val background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val mutexes = FakeMutexStore(background, now = { clock[0] })
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             var server: KotgentServer? = null
             try {
                 val registry = PaneRegistry()

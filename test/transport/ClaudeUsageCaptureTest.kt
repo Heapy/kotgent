@@ -6,7 +6,6 @@ import io.kotgent.core.UsageSource
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.store.SqliteUsageStore
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -281,7 +280,7 @@ class ClaudeUsageCaptureTest {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing { val _ = claudeUsageRoutes({ token }, store) }
             }
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 server.start(wait = false)
                 block(Context(server.engine.resolvedConnectors().first().port, client, store))

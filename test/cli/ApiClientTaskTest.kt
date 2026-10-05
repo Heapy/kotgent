@@ -21,8 +21,7 @@ import io.kotgent.transport.TASK_PANE_HEADER
 import io.kotgent.transport.TRANSPORT_JSON
 import io.kotgent.transport.TaskDetailDto
 import io.kotgent.transport.WhoamiDto
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO as ClientCIO
+import io.kotgent.transport.routeTestClient
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.ContentType
@@ -370,7 +369,7 @@ class ApiClientTaskTest {
             }
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
-            val impatient = HttpClient(ClientCIO) {
+            val impatient = routeTestClient {
                 install(HttpTimeout) {
                     connectTimeoutMillis = 3_000
                     requestTimeoutMillis = 300
@@ -509,7 +508,10 @@ class ApiClientTaskTest {
             val stub = Stub()
             stub.server.start(wait = false)
             val port = stub.server.engine.resolvedConnectors().first().port
-            val api = ApiClient(baseUrl = "http://127.0.0.1:$port", token = token, paneId = paneId)
+            val api = ApiClient(
+                baseUrl = "http://127.0.0.1:$port", token = token, paneId = paneId,
+                client = routeTestClient { install(HttpTimeout) },
+            )
             try {
                 block(stub, api)
             } finally {

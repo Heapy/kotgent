@@ -46,7 +46,6 @@ import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.UiPreferences
 import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
@@ -923,7 +922,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            val _ = incoming.receive()
+            val _ = receiveSnapshot()
             assertTrue(
                 ctx.store.sessionUpdateSubscribers > idle,
                 "the snapshot frame means this socket now holds a collector",
@@ -2012,7 +2011,7 @@ class TransportTest {
                     port = 0,
                 ).start()
             }
-            val client = HttpClient(CIO) { install(WebSockets) }
+            val client = routeTestClient { install(WebSockets) }
             try {
                 block(Ctx(server.port(), client, eventStore, ptyFactory, tmux))
             } finally {

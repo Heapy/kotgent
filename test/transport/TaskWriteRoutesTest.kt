@@ -23,7 +23,6 @@ import io.kotgent.task.PROJECT_FILE_NAME
 import io.kotgent.task.ProjectRecord
 import io.kotgent.task.TaskState
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.request
@@ -1387,7 +1386,7 @@ class TaskWriteRoutesTest {
             }
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 block(Env(port, client, tasks, sessions, fs, writer, panes))
             } finally {
