@@ -107,6 +107,7 @@ class WebUiServingTest {
     fun authWithoutABuildIsUnavailableRatherThanTheSpaShell() = withServer(webUiDir = null) { ctx ->
         val response = ctx.get(AUTH_PAGE_PATH)
         assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+        assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
         assertEquals("Web UI build unavailable", response.bodyAsText())
     }
 
@@ -120,6 +121,7 @@ class WebUiServingTest {
                 for (path in listOf(AUTH_PAGE_PATH, "/auth.html")) {
                     val response = ctx.get(path)
                     assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl])
                     assertEquals("Web UI build unavailable", response.bodyAsText())
                 }
             }
@@ -271,7 +273,7 @@ class WebUiServingTest {
                 assertTrue(hashedName.matches(original.substringAfterLast('/')), "$path belongs to a hashed original")
                 val response = ctx.get(path) { header(HttpHeaders.AcceptEncoding, "br, gzip") }
                 assertEquals(HttpStatusCode.NotFound, response.status, "$path is an internal representation")
-                assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), path)
+                assertEquals("no-store", response.headers[HttpHeaders.CacheControl], path)
                 assertNull(response.headers[HttpHeaders.Vary], path)
                 continue
             }
@@ -392,14 +394,14 @@ class WebUiServingTest {
                     val label = "$path with Accept-Encoding: $acceptEncoding"
                     assertEquals(HttpStatusCode.NotAcceptable, response.status, label)
                     assertEquals(HttpHeaders.AcceptEncoding, response.headers[HttpHeaders.Vary], label)
-                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), label)
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl], label)
                     assertNull(response.headers[HttpHeaders.ContentEncoding], label)
                     assertEquals("not acceptable", response.bodyAsText(), label)
                 }
                 for (file in files.keys.filter { it.endsWith(".br") || it.endsWith(".gz") }) {
                     val response = ctx.get("/$file") { header(HttpHeaders.AcceptEncoding, "br, gzip") }
                     assertEquals(HttpStatusCode.NotFound, response.status, file)
-                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), file)
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl], file)
                     assertNull(response.headers[HttpHeaders.Vary], file)
                 }
             }
@@ -449,6 +451,7 @@ class WebUiServingTest {
 
                 val traversal = ctx.get("/assets/../index.html")
                 assertEquals(HttpStatusCode.Forbidden, traversal.status)
+                assertEquals("no-store", traversal.headers[HttpHeaders.CacheControl])
                 assertEquals("bad path", traversal.bodyAsText())
 
                 for (path in listOf(
@@ -458,6 +461,7 @@ class WebUiServingTest {
                 )) {
                     val response = ctx.get(path)
                     assertEquals(HttpStatusCode.Forbidden, response.status, "GET $path contains a NUL")
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl], path)
                     assertEquals("bad path", response.bodyAsText(), path)
                 }
 
@@ -468,7 +472,7 @@ class WebUiServingTest {
                     val response = ctx.get(path)
                     assertEquals(HttpStatusCode.NotFound, response.status, "GET $path names no file")
                     assertEquals("not found", response.bodyAsText(), path)
-                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), path)
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl], path)
                     assertNull(response.headers[HttpHeaders.Vary], path)
                 }
             }

@@ -319,7 +319,7 @@ class ServerBindException(message: String, cause: Throwable?) :
 fun Route.staticWebUi(dir: String?) {
     get(AUTH_PAGE_PATH) {
         if (dir == null) {
-            call.respondText("Web UI build unavailable", status = HttpStatusCode.ServiceUnavailable)
+            respondStaticError("Web UI build unavailable", HttpStatusCode.ServiceUnavailable)
         } else {
             serveStaticFile(dir, "auth.html")
         }
@@ -337,18 +337,18 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
     rel: String,
 ) {
     if (rel.contains("..") || rel.startsWith("/") || '\u0000' in rel) {
-        call.respondText("bad path", status = HttpStatusCode.Forbidden)
+        respondStaticError("bad path", HttpStatusCode.Forbidden)
         return
     }
     if (rel.startsWith(HASHED_ASSETS_DIR) && (rel.endsWith(".br") || rel.endsWith(".gz"))) {
-        call.respondText("not found", status = HttpStatusCode.NotFound)
+        respondStaticError("not found", HttpStatusCode.NotFound)
         return
     }
     val direct = readFileBytesOrNull("$dir/$rel")
     val path = if (direct == null && isSpaRoute(rel)) "index.html" else rel
     val bytes = direct ?: if (path != rel) readFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
-        call.respondText(
+        respondStaticError(
             if (path == "auth.html") "Web UI build unavailable" else "not found",
             status = if (path == "auth.html") HttpStatusCode.ServiceUnavailable else HttpStatusCode.NotFound,
         )
@@ -374,7 +374,7 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
             ContentEncodingSelection.Identity -> break
             ContentEncodingSelection.NotAcceptable -> {
                 if (!immutable) call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
-                call.respondText("not acceptable", status = HttpStatusCode.NotAcceptable)
+                respondStaticError("not acceptable", HttpStatusCode.NotAcceptable)
                 return
             }
             is ContentEncodingSelection.Encoded -> {
@@ -395,6 +395,11 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
         if (immutable) IMMUTABLE_CACHE_CONTROL else "no-cache",
     )
     call.respondBytes(representation, contentTypeFor(path))
+}
+
+private suspend fun io.ktor.server.routing.RoutingContext.respondStaticError(message: String, status: HttpStatusCode) {
+    call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+    call.respondText(message, status = status)
 }
 
 private fun contentTypeFor(path: String): ContentType = when (path.substringAfterLast('.', "")) {
