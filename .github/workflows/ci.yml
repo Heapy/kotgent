@@ -76,17 +76,10 @@ jobs:
       - name: Install Web UI test dependencies
         if: matrix.platform != 'linuxArm64'
         run: npm ci --prefix webui
-      - name: Cache the Kotlin toolchain
-        uses: actions/cache@v6
+      - name: Set up the Kotlin toolchain
+        uses: Heapy/setup-ktc@e0a603c477110083db0b44f302deb188d4991ea0 # v1.1.0
         with:
-          path: |
-            ~/.kotlin
-            .kotlin
-            ~/.konan
-            ~/.cache/JetBrains/Kotlin
-            ~/Library/Caches/JetBrains/Kotlin
-          key: kotlin-${{ runner.os }}-${{ matrix.platform }}-${{ hashFiles('kotlin', 'project.yaml', '**/module.yaml', '*.module-template.yaml', 'gradle/libs.versions.toml') }}
-          restore-keys: kotlin-${{ runner.os }}-${{ matrix.platform }}-
+          version: auto
       # Keep this literal in sync with gradle/libs.versions.toml.
       - name: Cache the Playwright browsers
         if: matrix.platform != 'linuxArm64'
@@ -104,15 +97,20 @@ jobs:
         if: matrix.platform != 'linuxArm64'
         # Match the Java Playwright version; this creates no npm project or repository dependencies.
         run: npm exec --yes --package=playwright@1.62.0 -- playwright install chromium
-      # Build first: browser tests execute the separately linked webuicheck binary.
-      - name: Build
+      - name: Cross-build ARM64
+        if: matrix.platform == 'linuxArm64'
         run: ./kotlin build -p '${{ matrix.platform }}' -p jvm
-      - name: Test on the compiler host
+      # ktc-check builds first: browser tests execute the separately linked webuicheck binary.
+      - name: Build and test on the compiler host
         if: matrix.platform != 'linuxArm64'
+        uses: Heapy/ktc-check@4575484d8e2596bde65d671991e72fadc42ad47b # v1.1.0
+        with:
+          checks: tests
+          platforms: ${{ matrix.platform }}, jvm
+          artifact-name: kotlin-reports-${{ matrix.platform }}
         env:
           # The suite uses Chromium only; do not auto-download unused Firefox/WebKit bundles.
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-        run: ./kotlin test -p '${{ matrix.platform }}' -p jvm
       - name: Test systemd lifecycle with a disposable helper
         if: matrix.platform == 'linuxX64'
         run: |
