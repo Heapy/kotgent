@@ -19,8 +19,6 @@ import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.store.FakeEventStore
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
@@ -331,10 +329,7 @@ class SessionRenameRoutesTest {
                 }
             }
             server.start(wait = false)
-            val client = HttpClient(CIO) {
-                // Work around the native CIO disconnect reproduced in scripts/repro-native-cio.
-                defaultRequest { header(HttpHeaders.Connection, "close") }
-            }
+            val client = routeTestClient()
             try {
                 block(Env(server.engine.resolvedConnectors().first().port, client, store))
             } finally {

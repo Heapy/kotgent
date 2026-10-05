@@ -26,11 +26,10 @@ import io.kotgent.store.SqliteUsageStore
 import io.kotgent.store.UsageStore
 import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
+import io.kotgent.transport.routeTestClient
 import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.TRANSPORT_JSON
 import io.kotgent.transport.TokenHolder
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -240,7 +239,7 @@ class DaemonUsageStartupTest {
         val inbox = SqliteNotificationStore(driver) { now }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val events = FakeEventStore()
-        private val client = HttpClient(CIO)
+        private val client = routeTestClient()
         private val servers = mutableListOf<KotgentServer>()
         private val manager = SessionManager(
             tmux = FakeTmux(), store = events, registry = PaneRegistry(),

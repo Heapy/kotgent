@@ -30,7 +30,6 @@ import io.kotgent.task.ProjectFs
 import io.kotgent.task.TaskState
 import io.kotgent.task.UnknownProjectException
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
@@ -736,7 +735,7 @@ class TaskLinkRoutesTest {
             }
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 block(Env(port, client, tasks, store, registry, tmux, scope))
             } finally {

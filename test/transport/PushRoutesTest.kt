@@ -3,7 +3,6 @@ package io.kotgent.transport
 import io.kotgent.push.FakePushStore
 import io.kotgent.push.PushSubscription
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.request
@@ -306,7 +305,7 @@ class PushRoutesTest {
             }
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 block(Env(port, client, store))
             } finally {

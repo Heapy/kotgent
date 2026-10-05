@@ -20,7 +20,6 @@ import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.StoredEvent
 import io.kotgent.tmux.TmuxHookConfig
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -69,7 +68,7 @@ class HookRoutesTest {
             withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
-                val client = HttpClient(CIO)
+                val client = routeTestClient()
                 try {
                     block(port, client)
                 } finally {
@@ -112,7 +111,7 @@ class HookRoutesTest {
             withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
-                val client = HttpClient(CIO)
+                val client = routeTestClient()
                 try {
                     block(port, client)
                 } finally {
@@ -431,7 +430,7 @@ class HookRoutesTest {
             withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
-                val client = HttpClient(CIO)
+                val client = routeTestClient()
                 try {
                     block(port, client)
                 } finally {
@@ -660,7 +659,7 @@ class HookRoutesTest {
             withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
-                val client = HttpClient(CIO)
+                val client = routeTestClient()
                 try {
                     block(port, client)
                 } finally {

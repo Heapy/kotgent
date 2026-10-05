@@ -29,7 +29,6 @@ import io.kotgent.store.MutexAcquireResult
 import io.kotgent.store.SqliteMutexStore
 import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocket
@@ -248,7 +247,7 @@ class PlanRoutesTest {
             val background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val plans = FakePlanStore(now = { clock[0] })
             val wakes = mutableListOf<String>()
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             var server: KotgentServer? = null
             try {
                 val registry = PaneRegistry()

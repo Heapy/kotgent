@@ -1,7 +1,6 @@
 package io.kotgent.transport
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -144,7 +143,7 @@ class TokenHolderTest {
             withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
-                val client = HttpClient(CIO)
+                val client = routeTestClient()
                 try {
                     block(port, client)
                 } finally {

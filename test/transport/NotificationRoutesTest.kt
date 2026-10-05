@@ -26,7 +26,6 @@ import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.SqliteNotificationStore
 import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -210,7 +209,7 @@ class NotificationRoutesTest {
             val events = FakeEventStore(now = { now })
             val inbox = SqliteNotificationStore(driver) { now }
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             var server: KotgentServer? = null
             try {
                 val manager = SessionManager(

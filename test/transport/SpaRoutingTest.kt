@@ -21,7 +21,6 @@ import io.kotgent.task.ProjectFile
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -229,7 +228,7 @@ class SpaRoutingTest {
                 taskService = TaskService(tasks, eventStore, UnusedProjectFs(), UnusedProjectFileWriter()),
                 port = 0,
             ).start()
-            val client = HttpClient(CIO)
+            val client = routeTestClient()
             try {
                 block(Ctx(server.port(), client))
             } finally {

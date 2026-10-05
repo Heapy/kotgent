@@ -10,8 +10,6 @@ import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.store.SqliteEventStore
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineScope
@@ -34,8 +32,8 @@ class ServerLifecycleTest {
     fun stoppedServerCanImmediatelyRebindItsPortAfterServingAClient() = runBlocking {
         withTimeout(40.seconds) {
             val fixture = Fixture()
-            val firstClient = HttpClient(CIO)
-            val secondClient = HttpClient(CIO)
+            val firstClient = routeTestClient()
+            val secondClient = routeTestClient()
             var first: KotgentServer? = null
             var second: KotgentServer? = null
             try {
