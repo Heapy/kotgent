@@ -2,11 +2,11 @@
 product: jvm/amper-plugin
 
 dependencies:
-  - $libs.sqldelight.core
+  - app.cash.sqldelight:core:2.3.2
   # ServiceLoader needs a concrete dialect on the build-plugin classpath.
-  - $libs.sqldelight.sqlite.dialect
-  - $libs.sql.psi.environment
-  - $libs.sqldelight.compiler.env
+  - app.cash.sqldelight:sqlite-3-38-dialect:2.3.2
+  - app.cash.sql-psi:environment:0.7.3
+  - app.cash.sqldelight:compiler-env:2.3.2
 
 settings:
   kotlin:

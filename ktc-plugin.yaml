@@ -1,0 +1,5 @@
+schemaVersion: 1
+plugins:
+  sqldelight:
+    module: plugins/sqldelight-gen
+    licenseFiles: [LICENSE]
