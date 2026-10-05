@@ -21,7 +21,7 @@ private val CloseRouteTestConnections = createClientPlugin("CloseRouteTestConnec
 
 /**
  * Ordinary route tests finish each HTTP connection with its response to avoid the native CIO
- * disconnect reproduced in scripts/repro-native-cio. Explicit Connection headers are preserved;
+ * premature HTTP disconnect. Explicit Connection headers are preserved;
  * WebSocket handshakes stay on their upgrade path.
  */
 internal fun routeTestClient(config: HttpClientConfig<CIOEngineConfig>.() -> Unit = {}): HttpClient =
