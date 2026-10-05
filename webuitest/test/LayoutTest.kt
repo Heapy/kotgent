@@ -16,6 +16,29 @@ import kotlin.test.fail
 class LayoutTest {
 
     @Test
+    fun thePhoneHeaderCannotBeScrolledOutOfTheViewport() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onPhone(harness, "layout-phone-root-scroll") { page, _ ->
+                val header = page.locator("#terminal-head")
+                val top = header.number("el => el.getBoundingClientRect().top")
+                // Escaping content must not turn the application shell into a page scroller.
+                page.evaluate("""
+                    () => {
+                      const overflow = document.createElement("div");
+                      overflow.style.height = "200vh";
+                      document.body.append(overflow);
+                      window.scrollTo(0, 200);
+                    }
+                """.trimIndent())
+                assertEquals(0.0, (page.evaluate("window.scrollY") as Number).toDouble(),
+                    "only inner panels may scroll on a phone")
+                assertTrue(abs(top - header.number("el => el.getBoundingClientRect().top")) <= EDGE_EPS,
+                    "the phone header stays on screen")
+            }
+        }
+    }
+
+    @Test
     fun theFittedGridFillsTheHostMinusItsGutterAndClipsNoRow() {
         Harness(TERMINAL_SCENARIO).use { harness ->
             onDesktop(harness, "layout-fit") { page, geometry ->
