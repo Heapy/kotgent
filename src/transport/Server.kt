@@ -5,6 +5,7 @@ import io.kotgent.currentUiVersion
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.exe.NativeExe
+import io.kotgent.host.readRegularFileBytesOrNull
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
@@ -344,9 +345,9 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
         respondStaticError("not found", HttpStatusCode.NotFound)
         return
     }
-    val direct = readFileBytesOrNull("$dir/$rel")
+    val direct = readRegularFileBytesOrNull("$dir/$rel")
     val path = if (direct == null && isSpaRoute(rel)) "index.html" else rel
-    val bytes = direct ?: if (path != rel) readFileBytesOrNull("$dir/$path") else null
+    val bytes = direct ?: if (path != rel) readRegularFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
         respondStaticError(
             if (path == "auth.html") "Web UI build unavailable" else "not found",
@@ -380,7 +381,7 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
             is ContentEncodingSelection.Encoded -> {
                 val coding = selection.coding
                 val extension = if (coding == "br") "br" else "gz"
-                val compressed = readFileBytesOrNull("$dir/$path.$extension")
+                val compressed = readRegularFileBytesOrNull("$dir/$path.$extension")
                 if (compressed != null) {
                     call.response.headers.append(HttpHeaders.ContentEncoding, coding)
                     representation = compressed

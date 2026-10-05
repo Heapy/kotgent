@@ -236,7 +236,9 @@ the common workflow and links to those guides; implementation invariants belong 
   `Vary` and no `immutable`; direct sibling URLs are 404. Watch builds do not precompress. Source maps
   stay uncompressed and revalidate because their names follow the chunk, not their own bytes; all other
   static files revalidate too.
-  Static errors carry `no-store`.
+  Static errors carry `no-store`. Read originals and compressed siblings only through the regular-file
+  reader: nonblocking open and a check of the opened descriptor reject directories and special files
+  without a path-check/open race or a FIFO blocking the request.
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
   one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
   previous builds' assets are deliberately not kept. An old shell requesting its entry after the directory

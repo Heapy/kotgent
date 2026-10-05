@@ -43,6 +43,12 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import platform.posix.F_OK
+import platform.posix.O_NONBLOCK
+import platform.posix.O_RDWR
+import platform.posix.close
+import platform.posix.mkfifo
+import platform.posix.open
+import platform.posix.symlink
 import platform.posix.access
 import platform.posix.fclose
 import platform.posix.fopen
@@ -479,6 +485,89 @@ class WebUiServingTest {
         } finally {
             for (path in files.keys) unlink("$dir/$path")
             for (path in directories.asReversed()) rmdir("$dir/$path")
+            rmdir(dir)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun directoriesAreNotStaticFilesOrCompressedRepresentations() {
+        val dir = makeTempDir()
+        val directories = listOf("assets", "assets/nested", "assets/app-abcdefgh.js.br", "assets/app-abcdefgh.js.gz")
+        try {
+            for (path in directories) assertEquals(0, mkdir("$dir/$path", MODE_0700.convert()))
+            writeFile("$dir/assets/app-abcdefgh.js", "export const app = 1;\n")
+            withServer(webUiDir = dir) { ctx ->
+                for (path in listOf("/assets/nested", "/assets/nested/")) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.NotFound, response.status, path)
+                    assertEquals("no-store", response.headers[HttpHeaders.CacheControl], path)
+                    assertEquals("not found", response.bodyAsText(), path)
+                }
+                val identity = ctx.get("/assets/app-abcdefgh.js") { header(HttpHeaders.AcceptEncoding, "br, gzip") }
+                assertEquals(HttpStatusCode.OK, identity.status)
+                assertNull(identity.headers[HttpHeaders.ContentEncoding])
+                assertEquals("export const app = 1;\n", identity.bodyAsText())
+                val rejected = ctx.get("/assets/app-abcdefgh.js") {
+                    header(HttpHeaders.AcceptEncoding, "br, gzip, identity;q=0")
+                }
+                assertEquals(HttpStatusCode.NotAcceptable, rejected.status)
+                assertEquals("no-store", rejected.headers[HttpHeaders.CacheControl])
+            }
+        } finally {
+            unlink("$dir/assets/app-abcdefgh.js")
+            for (path in directories.asReversed()) rmdir("$dir/$path")
+            rmdir(dir)
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun specialFilesAreRejectedWithoutBlockingEvenAsCompressedSiblings() {
+        val dir = makeTempDir()
+        val fifoPaths = listOf("assets/fifo-abcdefgh.js", "assets/app-abcdefgh.js.br", "assets/app-abcdefgh.js.gz")
+        val guards = mutableListOf<Int>()
+        try {
+            assertEquals(0, mkdir("$dir/assets", MODE_0700.convert()))
+            writeFile("$dir/assets/app-abcdefgh.js", "export const app = 1;\n")
+            assertEquals(0, symlink("/dev/null", "$dir/assets/device-abcdefgh.js"))
+            for (path in fifoPaths) {
+                assertEquals(0, mkfifo("$dir/$path", MODE_0700.convert()))
+                // Keep a writer open for the first pass: the old blocking fopen can then fail with
+                // a wrong response rather than hanging the test. Only repeat without writers after
+                // proving that neither the original nor its compressed siblings are read.
+                val guard = open("$dir/$path", O_RDWR or O_NONBLOCK)
+                assertTrue(guard >= 0, "could not guard FIFO $path")
+                guards.add(guard)
+            }
+            withServer(webUiDir = dir) { ctx ->
+                repeat(2) { pass ->
+                    withTimeout(5.seconds) {
+                        for (path in listOf("/assets/fifo-abcdefgh.js", "/assets/device-abcdefgh.js")) {
+                            val response = ctx.get(path)
+                            assertEquals(HttpStatusCode.NotFound, response.status, path)
+                            assertEquals("no-store", response.headers[HttpHeaders.CacheControl], path)
+                        }
+                        val identity = ctx.get("/assets/app-abcdefgh.js") { header(HttpHeaders.AcceptEncoding, "br, gzip") }
+                        assertEquals(HttpStatusCode.OK, identity.status)
+                        assertNull(identity.headers[HttpHeaders.ContentEncoding])
+                        assertEquals("export const app = 1;\n", identity.bodyAsText())
+                        val rejected = ctx.get("/assets/app-abcdefgh.js") {
+                            header(HttpHeaders.AcceptEncoding, "br, gzip, identity;q=0")
+                        }
+                        assertEquals(HttpStatusCode.NotAcceptable, rejected.status)
+                        assertEquals("no-store", rejected.headers[HttpHeaders.CacheControl])
+                    }
+                    if (pass == 0) {
+                        for (fd in guards) close(fd)
+                        guards.clear()
+                    }
+                }
+            }
+        } finally {
+            for (fd in guards) close(fd)
+            for (path in fifoPaths + listOf("assets/app-abcdefgh.js", "assets/device-abcdefgh.js")) unlink("$dir/$path")
+            rmdir("$dir/assets")
             rmdir(dir)
         }
     }
