@@ -317,6 +317,13 @@ class ServerBindException(message: String, cause: Throwable?) :
     RuntimeException("failed to bind the kotgent server: $message", cause)
 
 fun Route.staticWebUi(dir: String?) {
+    get(AUTH_PAGE_PATH) {
+        if (dir == null) {
+            call.respondText("Web UI build unavailable", status = HttpStatusCode.ServiceUnavailable)
+        } else {
+            serveStaticFile(dir, "auth.html")
+        }
+    }
     if (dir == null) return
     get("/") { serveStaticFile(dir, "index.html") }
     get("/{path...}") {
@@ -341,16 +348,27 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
     val path = if (direct == null && isSpaRoute(rel)) "index.html" else rel
     val bytes = direct ?: if (path != rel) readFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
-        call.respondText("not found", status = HttpStatusCode.NotFound)
+        call.respondText(
+            if (path == "auth.html") "Web UI build unavailable" else "not found",
+            status = if (path == "auth.html") HttpStatusCode.ServiceUnavailable else HttpStatusCode.NotFound,
+        )
         return
     }
+    val servedBytes = if (path == "auth.html") {
+        // Only public, server-owned constants enter HTML attributes; tickets remain in the fragment.
+        bytes.decodeToString()
+            .replace("__KOTGENT_AUTH_EXCHANGE_PATH__", AUTH_EXCHANGE_PATH)
+            .replace("__KOTGENT_AUTH_CODE_LENGTH__", TICKET_CODE_LENGTH.toString())
+            .replace("__KOTGENT_AUTH_TTL_MINUTES__", (TICKET_TTL_MILLIS / 60_000).toString())
+            .encodeToByteArray()
+    } else bytes
     val immutable = path.startsWith(HASHED_ASSETS_DIR) && !path.endsWith(".map")
     if (immutable) {
         call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
     }
     val acceptEncoding = call.request.headers.getAll(HttpHeaders.AcceptEncoding)?.joinToString(",")
     val available = if (immutable) mutableSetOf("br", "gzip") else mutableSetOf()
-    var representation: ByteArray = bytes
+    var representation: ByteArray = servedBytes
     while (true) {
         when (val selection = negotiateContentEncoding(acceptEncoding, available)) {
             ContentEncodingSelection.Identity -> break

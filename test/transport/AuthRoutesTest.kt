@@ -217,25 +217,21 @@ class AuthRoutesTest {
     }
 
     @Test
-    fun getAuthRendersTheTypedCodeFormForAnAppThatHasNoLink() = withAuthServer { env ->
-        val page = env.client.req(env.port, AUTH_PAGE_PATH).bodyAsText()
-        assertTrue(page.contains("""id="code-form""""), "the page carries the code form")
-        assertTrue(page.contains("""id="code""""), "with an input to type the code into")
-        assertTrue(page.contains(AUTH_EXCHANGE_PATH), "posting to the same exchange the link path uses")
-        assertTrue(
-            page.contains("""rel="manifest" href="/manifest.webmanifest"""") &&
-                page.contains("""rel="apple-touch-icon"""") &&
-                page.contains("""name="apple-mobile-web-app-capable""""),
-            "the credential-free QR landing page remains installable before the code is spent",
-        )
-        assertTrue(page.contains("$TICKET_CODE_LENGTH characters"), "and states the code's length")
-        assertTrue(
-            page.contains("${TICKET_TTL_MILLIS / 60_000} minutes"),
-            "and its life, derived from the constant so the copy cannot drift from the TTL",
-        )
-        assertTrue(page.contains("429"), "the throttle is told apart from a wrong code — waiting is the remedy")
+    fun getAuthServesTheBuiltEntryWithServerOwnedConfiguration() = withAuthServer { env ->
+        val response = env.client.req(env.port, AUTH_PAGE_PATH)
+        val page = response.bodyAsText()
+        assertTrue(page.contains("""id="auth-root""""))
+        assertTrue(page.contains("""data-exchange-path="$AUTH_EXCHANGE_PATH""""))
+        assertTrue(page.contains("""data-code-length="$TICKET_CODE_LENGTH""""))
+        assertTrue(page.contains("""data-ttl-minutes="${TICKET_TTL_MILLIS / 60_000}""""))
+        assertFalse(page.contains("__KOTGENT_AUTH_"), "all template values are resolved")
+        assertFalse(page.contains("<style>"), "styles belong to the Web UI build")
+        assertEquals("no-cache", response.headers[HttpHeaders.CacheControl])
+        assertEquals(page, env.client.req(env.port, "/auth.html").bodyAsText())
+        for (path in shellReferences(page)) {
+            assertEquals(HttpStatusCode.OK, env.client.req(env.port, path).status, "$path is public before login")
+        }
     }
-
 
     @Test
     fun exchangeSpendsTheTicketAndSetsAVerifiableCookie() = withAuthServer { env ->
@@ -841,6 +837,7 @@ class AuthRoutesTest {
                             exchangeBodyTimeoutMillis = exchangeBodyTimeoutMillis,
                         )
                     }
+                    staticWebUi(locateWebUiDir())
                     val _ = authenticated(tokens::current, publicUrl) {
                         get("/sessions") { call.respondText("[]") }
                     }

@@ -80,6 +80,7 @@ test("watch builds emit no compressed siblings on any rebuild", { timeout: 60_00
   try {
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "index.html"), '<script type="module" src="/src/main.js"></script>');
+    writeFileSync(join(root, "auth.html"), '<script type="module" src="/src/main.js"></script>');
     writeFileSync(join(root, "src/sw.ts"), 'self.addEventListener("fetch", () => {});');
     writeFileSync(join(root, "src/main.css"), "body { color: red; }");
     const entry = join(root, "src/main.js");
@@ -88,7 +89,13 @@ test("watch builds emit no compressed siblings on any rebuild", { timeout: 60_00
       configFile: join(repoRoot, "webui/vite.config.ts"),
       root,
       logLevel: "silent",
-      build: { outDir, watch: {} },
+      build: {
+        outDir,
+        watch: {},
+        rolldownOptions: {
+          input: { index: join(root, "index.html"), auth: join(root, "auth.html") },
+        },
+      },
     });
     await nextBuild(watcher);
     const firstAssets = assertUncompressedAssets(outDir);

@@ -111,8 +111,8 @@ ln -sfn ~/.local/opt/"$name"/kotgent ~/.local/bin/kotgent
 ```
 
 The daemon finds the Web UI next to the executable's real path, so link `kotgent`, never copy it: a copy
-without its adjacent `resources/webui` directory serves the sign-in form but answers `not found` for the
-Web UI. `~/.local/bin` must be on your PATH; the default Debian and Ubuntu `~/.profile` adds it when the
+without its adjacent `resources/webui` directory cannot serve the Web UI, and `/auth` answers 503.
+`~/.local/bin` must be on your PATH; the default Debian and Ubuntu `~/.profile` adds it when the
 directory exists at login. Run from your normal login shell:
 
 ```shell
@@ -315,7 +315,11 @@ npm run build --prefix webui
 ```
 
 The Web UI sources are strict TypeScript/TSX in `webui/`. Vite writes the served files to the gitignored
-`resources/webui/`; it strips types, so `typecheck` is a separate gate. Content hashes give changed assets
+`resources/webui/`; it strips types, so `typecheck` is a separate gate. The main application and `/auth`
+are separate Preact entry points in the same build. Sign-in loads only the auth component, Preact and its
+styles; it starts no application API reads or WebSockets before login. The server injects the exchange
+path, code length and lifetime into the built auth shell and retains ownership of ticket redemption and
+session cookies. Both entry points require the built assets. Content hashes give changed assets
 new URLs and make cache invalidation automatic: hashed files under `assets/` are immutable; source maps
 revalidate because their names follow the chunk, not their own bytes. All other static files revalidate,
 and the daemon needs no asset revision bookkeeping. The build uses Vite 8's default browser target,

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Kotgent — sign in</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Kotgent" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#14171c" />
+</head>
+<body>
+  <div id="auth-root"
+       data-exchange-path="__KOTGENT_AUTH_EXCHANGE_PATH__"
+       data-code-length="__KOTGENT_AUTH_CODE_LENGTH__"
+       data-ttl-minutes="__KOTGENT_AUTH_TTL_MINUTES__"></div>
+  <noscript>Enable JavaScript to sign in to Kotgent.</noscript>
+  <script type="module" src="/src/auth.tsx"></script>
+</body>
+</html>

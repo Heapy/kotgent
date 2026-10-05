@@ -105,6 +105,32 @@ class WebUiServingTest {
     }
 
     @Test
+    fun authWithoutABuildIsUnavailableRatherThanTheSpaShell() = withServer(webUiDir = null) { ctx ->
+        val response = ctx.get(AUTH_PAGE_PATH)
+        assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+        assertEquals("Web UI build unavailable", response.bodyAsText())
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun aBuildMissingTheAuthEntryIsUnavailableRatherThanTheSpaShell() {
+        val dir = makeTempDir()
+        try {
+            writeFile("$dir/index.html", "SPA shell")
+            withServer(webUiDir = dir) { ctx ->
+                for (path in listOf(AUTH_PAGE_PATH, "/auth.html")) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+                    assertEquals("Web UI build unavailable", response.bodyAsText())
+                }
+            }
+        } finally {
+            unlink("$dir/index.html")
+            rmdir(dir)
+        }
+    }
+
+    @Test
     fun daemonServesIndexHtmlAtRoot() = withServer { ctx ->
         val resp = ctx.get("/")
         assertEquals(HttpStatusCode.OK, resp.status, "GET / serves the SPA index")
@@ -509,7 +535,7 @@ class WebUiServingTest {
             client.get("http://127.0.0.1:$port$path", block)
     }
 
-    private fun withServer(webUiDir: String = locateWebUiDir(), block: suspend (Ctx) -> Unit) = runBlocking {
+    private fun withServer(webUiDir: String? = locateWebUiDir(), block: suspend (Ctx) -> Unit) = runBlocking {
         withTimeout(40.seconds) {
             val eventStore = FakeEventStore()
             val preferencesStore = FakePreferencesStore()

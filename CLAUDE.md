@@ -221,6 +221,10 @@ the common workflow and links to those guides; implementation invariants belong 
 ## Transport and Web UI
 
 - Client APIs live under `/api/v1`.
+- `/auth` serves the separate `webui/auth.html` Preact entry point. Keep its dependency graph free of
+  application state, sockets and xterm. Auth HTML/assets are public; exchange authorization and cookies
+  remain server-owned. The server injects public exchange-path/code-length/TTL constants into the built
+  shell. Missing auth build output answers 503; there is no inline fallback page.
 - Authorization decisions belong in the shared authorization function. Never put the master token in a
   URL; browser access uses one-time tickets and the stateless session cookie.
 - Drain `incoming` in every WebSocket handler, including handlers that only send frames.

@@ -8,7 +8,6 @@ import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
-import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
@@ -153,10 +152,6 @@ fun Route.authRoutes(
         }
     }
 
-    get(AUTH_PAGE_PATH) {
-        call.respondText(AUTH_PAGE_HTML, ContentType.Text.Html)
-    }
-
     for (path in AUTH_EXCHANGE_PATHS) post(path) {
         val facts = call.requestFacts()
         val decision = authorizeTicketExchange(facts, publicUrl)
@@ -270,132 +265,3 @@ private fun authEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
 const val AUTH_EXCHANGE_MAX_BODY_BYTES: Int = 1_024
 
 const val AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS: Long = 5_000L
-
-const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/icons/logo.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Kotgent">
-<meta name="theme-color" content="#14171c">
-<title>Kotgent — sign in</title>
-<style>
-  /* Dark in the app's own shade rather than adaptive: an installed PWA launches straight here on its
-     first run (its own cookie jar is empty), so a light — or merely UA-grey — first screen is a flash of
-     a different application. The colours are the app's `--bg` / `--text` / `--attn` spelled literally:
-     this page is served from Kotlin and shares no stylesheet with the SPA. It deliberately carries no
-     breakpoint — a phone gets the desktop shade for the seconds a sign-in lasts, rather than this page
-     growing a second palette to maintain. */
-  :root { color-scheme: dark; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-         background: #14171c; color: #e6e9ef;
-         font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 30rem; padding: 2rem; text-align: center; }
-  h1 { margin: 0 0 1rem; font-size: .85rem; letter-spacing: .18em; text-transform: uppercase; opacity: .6; }
-  p { margin: .4rem 0; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em;
-         padding: .1em .4em; border-radius: 4px; background: rgba(127, 127, 127, .18); }
-  .error { color: #ff6b6b; }
-  .hint { opacity: .7; font-size: .9em; }
-  form { margin: 1.4rem 0 .6rem; }
-  input { font: 1.6rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em;
-          text-align: center; text-transform: uppercase; width: 100%; box-sizing: border-box;
-          padding: .6rem .4rem; border: 1px solid rgba(127, 127, 127, .5); border-radius: 8px;
-          background: transparent; color: inherit; }
-  button { font: inherit; margin-top: .8rem; width: 100%; padding: .7rem 1rem; border: 0;
-           border-radius: 8px; background: #2f6feb; color: #fff; cursor: pointer; }
-  button[disabled] { opacity: .6; cursor: default; }
-</style>
-</head>
-<body>
-<main>
-  <h1>Kotgent</h1>
-  <p id="status">Signing in…</p>
-  <form id="code-form" hidden>
-    <label for="code" class="hint">Sign-in code</label>
-    <input id="code" name="code" type="text" required autocomplete="one-time-code"
-           autocapitalize="characters" autocorrect="off" spellcheck="false" inputmode="latin"
-           enterkeyhint="go" aria-describedby="code-help">
-    <button id="code-submit" type="submit">Sign in</button>
-    <p id="code-help" class="hint">$TICKET_CODE_LENGTH characters, one-time, good for
-      ${TICKET_TTL_MILLIS / 60_000} minutes.</p>
-  </form>
-  <p id="hint" class="hint" hidden>Get a code with <code>kotgent web</code>.</p>
-</main>
-<script>
-(function () {
-  var status = document.getElementById("status");
-  var hint = document.getElementById("hint");
-  var form = document.getElementById("code-form");
-  var input = document.getElementById("code");
-  var submit = document.getElementById("code-submit");
-
-  function say(text, isError) {
-    status.textContent = text;
-    status.className = isError ? "error" : "";
-  }
-
-  function reveal() {
-    form.hidden = false;
-    hint.hidden = false;
-    try { input.focus(); } catch (e) { /* a browser that refuses focus is not a failure */ }
-  }
-
-  // One message for every way a code can be wrong (expired, spent, never existed) — the remedy is the
-  // same and the difference is not the operator's business. The throttle IS told apart: retyping a good
-  // code cannot help there, waiting can.
-  function refusal(code) {
-    if (code === 429) return "Too many attempts. Wait a minute, then try again.";
-    if (code === 0) return "Could not reach kotgent. Check the connection and try again.";
-    return "That code is not valid. It may have expired or already been used.";
-  }
-
-  function exchange(value) {
-    return fetch("$AUTH_EXCHANGE_PATH", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket: value })
-    }).then(function (response) {
-      if (response.ok) { window.location.replace("/"); return true; }
-      say(refusal(response.status), true);
-      return false;
-    }).catch(function () {
-      say(refusal(0), true);
-      return false;
-    });
-  }
-
-  form.addEventListener("submit", function (event) {
-    event.preventDefault();
-    var typed = input.value.trim();
-    if (!typed) { input.focus(); return; }
-    submit.disabled = true;
-    say("Signing in…", false);
-    exchange(typed).then(function (ok) {
-      if (ok) return;               // navigating away; leave the button disabled
-      submit.disabled = false;
-      input.select();
-    });
-  });
-
-  var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-  var ticket = params.get("ticket");
-  if (!ticket) {
-    // No link — an installed home-screen app opening at its start_url with an empty cookie jar, or a
-    // browser sent here by the SPA's 401 routing. Typing the code is the whole way in.
-    say("Enter your sign-in code.", false);
-    reveal();
-    return;
-  }
-  exchange(ticket).then(function (ok) { if (!ok) reveal(); });
-})();
-</script>
-</body>
-</html>
-"""

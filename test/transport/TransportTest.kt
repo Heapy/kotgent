@@ -1816,7 +1816,7 @@ class TransportTest {
     }
 
     @Test
-    fun theAuthPageStaysAtRootAndTheTicketApiKeepsItsLegacyAlias() = withServer { ctx ->
+    fun theAuthPageStaysAtRootAndTheTicketApiKeepsItsLegacyAlias() = withServer(webUiDir = locateWebUiDir()) { ctx ->
         assertEquals(
             HttpStatusCode.OK,
             ctx.client.get("http://127.0.0.1:${ctx.port}$AUTH_PAGE_PATH").status,
@@ -1950,6 +1950,7 @@ class TransportTest {
         probe: VendorStoreProbe = VendorStoreProbe { _, _, _ -> false },
         locator: VendorSessionLocator = VendorSessionLocator { _, _ -> null },
         productionFactory: Boolean = false,
+        webUiDir: String? = null,
         pushAssembler: (suspend (EventStore, CoroutineScope) -> DaemonPush?)? = null,
         promptFiles: PromptFiles? = null,
         block: suspend (Ctx) -> Unit,
@@ -1989,7 +1990,7 @@ class TransportTest {
                             tmux = Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
                             ptyFactory = ptyFactory,
                             fileUploader = fileUploader,
-                            webUiDir = null,
+                            webUiDir = webUiDir,
                             publicUrl = publicUrl,
                             pushStore = assembled?.store,
                             vapidPublicKey = assembled?.publicKey,
@@ -2006,7 +2007,7 @@ class TransportTest {
                     terminalBridgeFactory = bridgeFactory,
                     directoryCompleter = directoryCompleter,
                     fileUploader = fileUploader,
-                    webUiDir = null,
+                    webUiDir = webUiDir,
                     publicUrl = publicUrl,
                     port = 0,
                 ).start()
