@@ -2,11 +2,11 @@ modules:
   - apps/*
   - ./fakes
   - ./plugins/build-info
-  - ./plugins/sqldelight-gen
+  - plugins/sqldelight
   - ./sysnative
   - ./webuicheck
   - ./webuitest
 
 plugins:
   - ./plugins/build-info
-  - ./plugins/sqldelight-gen
+  - //plugins/sqldelight

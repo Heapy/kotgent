@@ -10,3 +10,5 @@ test-results/
 docs/plans
 resources/webui/
 webui/node_modules/
+# ktc-plugins managed entries
+/.ktc-plugins/
