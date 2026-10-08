@@ -58,6 +58,8 @@ the common workflow and links to those guides; implementation invariants belong 
   version it runs through `setCliVersion`, which advances `rev` without changing activity order.
 - The daemon owns one upstream `tmux attach` per session and fans it out to subscribers. Runtime identity
   comes from the live pane id, never an inherited environment variable.
+- `Tmux.newSession` checks that cwd is an absolute, existing, searchable directory before calling tmux.
+  tmux's `-c` silently falls back to home on failure; keep this check shared by start, resume and relaunch.
 - Keep raw POSIX/cinterop in `sysnative`. Toolchain 0.12 links custom cinterop into test binaries, so
   real-PTY checks are ordinary tests under `test/pty/`; platform-independent behavior still needs an
   interface and fake.

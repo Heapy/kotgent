@@ -78,6 +78,63 @@ class TmuxTest {
     }
 
     @Test
+    fun newSessionRejectsInvalidWorkingDirectoriesWithoutCreatingAPane() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(20.seconds) {
+            val dir = makeTempDir()
+            try {
+                val file = "$dir/file"
+                writeFile(file, "not a directory")
+                for (cwd in listOf("$dir/missing", file, "", ".", "/tmp\u0000/ignored")) {
+                    val error = assertFailsWith<TmuxException> {
+                        tmux.newSession("badcwd", cwd, "cat", 80, 24)
+                    }
+                    assertTrue("working directory" in error.message.orEmpty(), "actionable error: $error")
+                    assertTrue(tmux.listPanes().isEmpty(), "invalid cwd must not open a fallback pane")
+                }
+                val blocked = "$dir/blocked"
+                assertTrue(ProcessRunner.run(listOf("mkdir", blocked)).isSuccess)
+                assertTrue(ProcessRunner.run(listOf("chmod", "0600", blocked)).isSuccess)
+                try {
+                    // Root can still enter such directories; only assert denial when the host denies it.
+                    if (!ProcessRunner.run(listOf("/bin/sh", "-c", "cd ${shq(blocked)}")).isSuccess) {
+                        val error = assertFailsWith<TmuxException> {
+                            tmux.newSession("badcwd", blocked, "cat", 80, 24)
+                        }
+                        assertTrue(blocked in error.message.orEmpty())
+                        assertTrue(tmux.listPanes().isEmpty())
+                    }
+                } finally {
+                    assertTrue(ProcessRunner.run(listOf("chmod", "0700", blocked)).isSuccess)
+                }
+            } finally {
+                removeTempDir(dir)
+            }
+        }
+    }
+
+    @Test
+    fun newSessionUsesAnExistingDirectoryThroughASymlinkWithSpacesAndQuotes() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(20.seconds) {
+            val dir = makeTempDir()
+            try {
+                val target = "$dir/real project"
+                val link = "$dir/project's link"
+                assertTrue(ProcessRunner.run(listOf("mkdir", target)).isSuccess)
+                assertTrue(ProcessRunner.run(listOf("ln", "-s", target, link)).isSuccess)
+                val _ = tmux.newSession("goodcwd", link, "pwd -P; exec cat", 240, 24)
+                val expected = ProcessRunner.run(listOf("/bin/sh", "-c", "cd ${shq(target)} && pwd -P"))
+                assertTrue(expected.isSuccess)
+                assertTrue(expected.stdout.trim() in captureUntil("goodcwd", expected.stdout.trim()))
+            } finally {
+                val _ = tmux.killSession("goodcwd")
+                removeTempDir(dir)
+            }
+        }
+    }
+
+    @Test
     fun listPanesParse() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {

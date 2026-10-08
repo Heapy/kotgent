@@ -1,6 +1,7 @@
 package io.kotgent.tmux
 
 import io.kotgent.core.PaneId
+import io.kotgent.host.workingDirectoryError
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.X_OK
 import platform.posix.access
@@ -77,6 +78,8 @@ class Tmux(
      * `KOTGENT_SESSION_ID` is only a debug label and is never trusted as identity.
      */
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
+        // tmux reports success and falls back to home when it cannot chdir to -c.
+        workingDirectoryError(cwd)?.let { throw TmuxException(it) }
         val argv = newSessionArgv(serverOptions, hookScriptPath, id, cwd, cmd, cols, rows)
         val r = tmux(*argv.toTypedArray())
         if (!r.isSuccess) throw TmuxException("tmux new-session for '$id' failed: ${r.stderr.trim()}")
