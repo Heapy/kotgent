@@ -1,0 +1,7 @@
+schemaVersion: 1
+plugins:
+  'sqldelight':
+    repository: 'Heapy/ktc-sqldelight'
+    ref:
+      commit: '0686ee58431b6477fa92fa380b5d321f21e1a8b8'
+    mode: vendored

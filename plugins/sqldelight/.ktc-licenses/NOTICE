@@ -1,0 +1,9 @@
+ktc-sqldelight
+
+Extracted from Heapy/kotgent (Apache License 2.0), commit
+7095623e2d8f0d7e17c9a9031b95f2518eb1adbd
+
+plugins/sqldelight/src/SqlDelightEnvironment.kt is adapted from the SQLDelight
+2.3.2 Gradle plugin, Copyright (C) 2017 Square, Inc., Apache License 2.0.
+Its upstream copyright/license header and adaptation note are retained.
+https://github.com/sqldelight/sqldelight/tree/2.3.2

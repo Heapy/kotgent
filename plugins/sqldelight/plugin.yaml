@@ -1,0 +1,13 @@
+tasks:
+  generate:
+    action: !io.github.ktcplugins.sqldelight.generateDatabase
+      sqDir: ${module.rootDir}/${pluginSettings.sourceDirectory}
+      generatedSourceDir: ${taskOutputDir}
+      packageName: ${pluginSettings.packageName}
+      className: ${pluginSettings.className}
+      moduleName: ${module.name}
+
+generated:
+  sources:
+    - language: kotlin
+      directory: ${tasks.generate.action.generatedSourceDir}

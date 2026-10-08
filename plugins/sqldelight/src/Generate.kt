@@ -1,4 +1,4 @@
-package io.kotgent.sqldelight
+package io.github.ktcplugins.sqldelight
 
 import app.cash.sqldelight.core.SqlDelightCompilationUnit
 import app.cash.sqldelight.core.SqlDelightDatabaseName
@@ -19,6 +19,9 @@ import java.util.ServiceLoader
 fun generateDatabase(
     @Input sqDir: Path,
     @Output generatedSourceDir: Path,
+    packageName: String,
+    className: String,
+    moduleName: String,
 ) {
     // The task output is reused, so deleted or renamed queries must not leave generated sources behind.
     val outDir = generatedSourceDir.toFile()
@@ -36,9 +39,9 @@ fun generateDatabase(
         outputDirectoryFile = outDir,
     )
     val properties = DatabaseProperties(
-        packageName = DATABASE_PACKAGE,
+        packageName = packageName,
         compilationUnits = listOf(compilationUnit),
-        className = DATABASE_CLASS_NAME,
+        className = className,
         dependencies = emptyList(),
         deriveSchemaFromMigrations = false,
         treatNullAsUnknownForEquality = false,
@@ -58,7 +61,7 @@ fun generateDatabase(
         compilationUnit = compilationUnit,
         verifyMigrations = false,
         dialect = dialect,
-        moduleName = MODULE_NAME,
+        moduleName = moduleName,
     )
 
     when (val status = environment.generateSqlDelightFiles { line -> println("[sqldelight-gen] $line") }) {
@@ -67,12 +70,6 @@ fun generateDatabase(
         SqlDelightEnvironment.CompilationStatus.Success -> Unit
     }
 }
-
-private const val DATABASE_PACKAGE = "io.kotgent.db"
-
-private const val DATABASE_CLASS_NAME = "KotgentDatabase"
-
-private const val MODULE_NAME = "kotgent"
 
 private data class SourceFolder(
     override val folder: File,

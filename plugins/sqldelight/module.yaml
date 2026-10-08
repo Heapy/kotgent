@@ -1,0 +1,15 @@
+product: jvm/amper-plugin
+
+pluginInfo:
+  id: sqldelight
+  settingsClass: io.github.ktcplugins.sqldelight.SqlDelightSettings
+
+dependencies:
+  - 'app.cash.sqldelight:core:2.3.2'
+  - 'app.cash.sqldelight:compiler-env:2.3.2'
+  - 'app.cash.sqldelight:sqlite-3-38-dialect:2.3.2'
+  - 'app.cash.sql-psi:environment:0.7.3'
+
+settings:
+  kotlin:
+    version: 2.4.20
