@@ -2101,6 +2101,46 @@ class SessionManagerTest {
 
 
     @Test
+    fun missingWorkingDirectoryCannotCreateOrResumeASession() = runBlocking {
+        val realTmux = Tmux(socket = "kotgent-test")
+        if (!realTmux.isAvailable()) return@runBlocking
+        val _ = ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
+        val dir = makeClosedSessionTestDirectory()
+        val id = SessionId("cwd00001")
+        try {
+            withTimeout(30.seconds) {
+                val store = SqliteEventStore.inMemory()
+                val registry = PaneRegistry()
+                val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+                val mgr = SessionManager(
+                    realTmux, store, registry,
+                    StubAgentFactory(cat, preallocated = provider),
+                    ProviderIdCapture(store, this),
+                    liveTranscriptProbe, importLocator, importKinds,
+                    newSessionId = { id },
+                )
+
+                assertFailsWith<TmuxException> { mgr.start("claude", "$dir/missing") }
+                assertNull(store.getSession(id), "a refused launch leaves no running session row")
+                assertTrue(registry.snapshot().isEmpty())
+                assertTrue(realTmux.listPanes().isEmpty())
+
+                val _ = mgr.start("claude", dir)
+                mgr.stop(id)
+                assertEquals(0, rmdir(dir))
+                assertFailsWith<TmuxException> { mgr.resume(id) }
+                assertEquals(SessionState.stopped, store.getSession(id)?.state, "failed resume stays stopped")
+                assertTrue(registry.snapshot().isEmpty())
+                assertTrue(realTmux.listPanes().isEmpty(), "a transcript does not make a missing cwd safe")
+            }
+        } finally {
+            val _ = realTmux.killSession(id.value)
+            val _ = ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
+            rmdir(dir)
+        }
+    }
+
+    @Test
     fun startCreatesARealTmuxSessionThenAReconcilerRestoresItAndRebuildsTheRegistry() = runBlocking {
         val realTmux = Tmux(socket = "kotgent-test")
         if (!realTmux.isAvailable()) return@runBlocking

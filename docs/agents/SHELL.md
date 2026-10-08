@@ -14,6 +14,8 @@ kotgent resume <kotgent-session-id>
 
 Kotgent selects the login shell from `$SHELL`, then the user's passwd entry, with `/bin/zsh` on macOS
 or `/bin/sh` on Linux as the fallback. It launches the shell with `-l` in the selected working directory.
+As with agent sessions, Kotgent checks that the directory exists and can be entered before launching.
+A missing directory or a file path is an error; create the directory or choose an existing one and retry.
 
 Closing a terminal or browser detaches that viewer and leaves the shell running. Stop ends the process.
 **Resume starts a new login shell in the same working directory.** It does not restore jobs, environment
