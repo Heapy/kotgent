@@ -1,6 +1,6 @@
 tasks:
   generate:
-    action: !io.github.ktcplugins.sqldelight.generateDatabase
+    action: !io.heapy.ktc.plugins.sqldelight.generateDatabase
       sqDir: ${module.rootDir}/${pluginSettings.sourceDirectory}
       generatedSourceDir: ${taskOutputDir}
       packageName: ${pluginSettings.packageName}

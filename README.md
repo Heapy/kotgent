@@ -305,9 +305,10 @@ then coordinate workers and verified findings through execution. The Kotgent plu
 ## Build & test
 
 SQLDelight generation comes from [ktc-sqldelight](https://github.com/Heapy/ktc-sqldelight), installed
-with the committed ktc-plugins 0.2.0 wrappers. Its sources are vendored under `plugins/sqldelight`, so
+with the committed ktc-plugins 0.3.0 wrappers. Its sources are vendored under `plugins/sqldelight`, so
 a fresh checkout already contains the generator. The lockfile pins the upstream commit and exported
-runtime catalog entries. Run `./ktc-plugins verify` to check them; update with
+runtime catalog entries, whose `version.ref` shares the producer's SQLDelight version.
+Run `./ktc-plugins verify` to check them; update with
 `./ktc-plugins update sqldelight --commit <full-sha>` and commit the resulting source/catalog/lock changes.
 Make generator changes upstream rather than editing the installed copy.
 

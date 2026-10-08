@@ -1,4 +1,4 @@
-package io.github.ktcplugins.sqldelight
+package io.heapy.ktc.plugins.sqldelight
 
 import org.jetbrains.amper.plugins.Configurable
 

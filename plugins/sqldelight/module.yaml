@@ -2,7 +2,7 @@ product: jvm/amper-plugin
 
 pluginInfo:
   id: sqldelight
-  settingsClass: io.github.ktcplugins.sqldelight.SqlDelightSettings
+  settingsClass: io.heapy.ktc.plugins.sqldelight.SqlDelightSettings
 
 dependencies:
   - 'app.cash.sqldelight:core:2.3.2'

@@ -1,4 +1,7 @@
 [versions]
+# ktc-plugins begin sqldelight versions
+ktc-sqldelight-sqldelight = "2.3.2"
+# ktc-plugins end sqldelight versions
 coroutines = "1.11.0"
 komok = "1.2.0"
 ktor = "3.6.0"
@@ -7,10 +10,10 @@ playwright = "1.62.0"
 
 [libraries]
 # ktc-plugins begin sqldelight
-ktc-sqldelight-coroutines-extensions = { module = "app.cash.sqldelight:coroutines-extensions", version = "2.3.2" }
-ktc-sqldelight-native-driver = { module = "app.cash.sqldelight:native-driver", version = "2.3.2" }
-ktc-sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version = "2.3.2" }
-ktc-sqldelight-sqlite-driver = { module = "app.cash.sqldelight:sqlite-driver", version = "2.3.2" }
+ktc-sqldelight-coroutines-extensions = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "ktc-sqldelight-sqldelight" }
+ktc-sqldelight-native-driver = { module = "app.cash.sqldelight:native-driver", version.ref = "ktc-sqldelight-sqldelight" }
+ktc-sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "ktc-sqldelight-sqldelight" }
+ktc-sqldelight-sqlite-driver = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "ktc-sqldelight-sqldelight" }
 # ktc-plugins end sqldelight
 komok-tech-to-be-injected = { module = "io.heapy.komok:komok-tech-to-be-injected", version.ref = "komok" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

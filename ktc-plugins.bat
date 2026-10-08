@@ -1,6 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
-set "ktc_version=0.2.0"
+set "ktc_version=0.3.0"
 if defined KTC_PLUGINS_BINARY goto run
 if not defined KTC_PLUGINS_BINARY_CACHE set "KTC_PLUGINS_BINARY_CACHE=%LOCALAPPDATA%\ktc-plugins\binaries"
 set "KTC_PLUGINS_BINARY=%KTC_PLUGINS_BINARY_CACHE%\%ktc_version%\windows-x64\ktc-plugins-%ktc_version%-windows-x64.exe"
@@ -12,7 +12,7 @@ if errorlevel 1 exit /b 1
 exit /b %errorlevel%
 # POWERSHELL
 $ErrorActionPreference = 'Stop'
-$sha = 'e565c670f3915c7ec8aedcfbaab466c804c3397a1317d6c59b490b156487fca1' # SHA_WINDOWS_X64
+$sha = '9716207715a544c84daa603f9e387a7862756d8358bc93f69b0efcad0e19647c' # SHA_WINDOWS_X64
 try {
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     if ($arch -ne 'AMD64') { throw "Unsupported Windows architecture: $arch" }

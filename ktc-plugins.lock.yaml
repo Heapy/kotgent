@@ -2,13 +2,13 @@ schemaVersion: 1
 plugins:
   'sqldelight':
     repository: 'Heapy/ktc-sqldelight'
-    declarationSha256: 'ae93ff8c6a9cd150665b786591f04fa36dd89926eb16b457b73652ba1d56794b'
-    commit: '0686ee58431b6477fa92fa380b5d321f21e1a8b8'
+    declarationSha256: '6ac8aac89b36b72187cdccbdd78802e76c1cc9af00ba1c5d1e75355b77bc34d8'
+    commit: '6b016567802f6db11981dd80f1f6298cfb737499'
     sourcePath: 'plugins/sqldelight'
     destination: 'plugins/sqldelight'
     mode: 'vendored'
     pluginId: 'sqldelight'
-    treeSha256: 'e7ec8a8c89949a10e2320c94740a59b2a3046d42c1f4e4da8014e2a18cf29ae6'
+    treeSha256: '1c7c62418e1a95d1d1821709172f0fa5672c242af33848c989dceb718add2ff9'
     producer:
       path: ktc-plugin.yaml
       sha256: '7ec5518c10adeca06fd42f7234e36c3d41c628ef22f25d87e95e4f9fe3e82efc'
@@ -22,6 +22,11 @@ plugins:
         'ktc-sqldelight-native-driver': 'app.cash.sqldelight:native-driver:2.3.2'
         'ktc-sqldelight-runtime': 'app.cash.sqldelight:runtime:2.3.2'
         'ktc-sqldelight-sqlite-driver': 'app.cash.sqldelight:sqlite-driver:2.3.2'
+      versionRefs:
+        'ktc-sqldelight-coroutines-extensions': 'ktc-sqldelight-sqldelight'
+        'ktc-sqldelight-native-driver': 'ktc-sqldelight-sqldelight'
+        'ktc-sqldelight-runtime': 'ktc-sqldelight-sqldelight'
+        'ktc-sqldelight-sqlite-driver': 'ktc-sqldelight-sqldelight'
     files:
       '.ktc-licenses/LICENSE':
         sha256: '03e1312cde2e203bdedf9b95049c5ff1c7853cb32b5a8dffdd61bdc65c22b13b'
@@ -30,20 +35,20 @@ plugins:
         sha256: 'c51097c0941555ba47affd6c916fef3391561494d5a1431dfff6f414addbaffc'
         executable: false
       'module.yaml':
-        sha256: 'f781c3f581a71c23162aa18513729f0cb010accf084abac4920473c2460c64a3'
+        sha256: '84de0df75773ed79b54b6d80005de9e793a51a64aa2314de52ac78eda990766f'
         executable: false
       'plugin.yaml':
-        sha256: 'fc120d02d52304a1426194ef4f5d7a20247eb9945cae2f693626d18c1153c6df'
+        sha256: 'bb1642b44d39e5e5e2b9c0b5411c125183a7f4f16a99748fa6f3a697346bacfc'
         executable: false
       'src/Generate.kt':
-        sha256: 'c849471f4268e49f3675c15c38dc6ade9744b9c9f1b7184386fee3f09c15ff84'
+        sha256: '11403e3ec0457bd07d14a626b81a302cdefad07897f7bed93047f453056b54da'
         executable: false
       'src/SqlDelightEnvironment.kt':
         sha256: '82eb5e27064ecb539093214576072f4fb73a10612cb504a956c9ea3196778ac6'
         executable: false
       'src/SqlDelightSettings.kt':
-        sha256: 'ba09c2d993392970b1584ec7338802c3cedb704c7f242c61fd6a3c3ff76f7493'
+        sha256: 'c36dfe7d27111282fef50ad93eb23edf7daaf77432b7d2cd253ba9bc1e73ee2f'
         executable: false
       'test/GenerateTest.kt':
-        sha256: '78537ab39555443f2e62d4d11af65153fffe639b67c44442aaca50a61f52f611'
+        sha256: '712c7891cba175ae09e75d49771c32e91398dbae8ebe9e3a73356663742eec4f'
         executable: false

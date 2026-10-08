@@ -3,5 +3,5 @@ plugins:
   'sqldelight':
     repository: 'Heapy/ktc-sqldelight'
     ref:
-      commit: '0686ee58431b6477fa92fa380b5d321f21e1a8b8'
+      commit: '6b016567802f6db11981dd80f1f6298cfb737499'
     mode: vendored
