@@ -105,7 +105,7 @@ jobs:
       # ktc-check builds first: browser tests execute the separately linked webuicheck binary.
       - name: Build and test on the compiler host
         if: matrix.platform != 'linuxArm64'
-        uses: Heapy/ktc-check@4575484d8e2596bde65d671991e72fadc42ad47b # v1.1.0
+        uses: Heapy/ktc-check@2f2dea35c8738d5c14446c56fe23da2d37aa1796 # v1.1.1
         with:
           checks: tests
           platforms: ${{ matrix.platform }}, jvm
