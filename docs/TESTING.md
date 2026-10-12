@@ -738,7 +738,10 @@ commit IDs, results and any remaining blockers when performing this check:
 `GitDiffReaderTest` exercises real disposable Git repositories; `DiffRoutesTest` exercises authenticated
 HTTP reads, service admission, snapshot/session binding and failures. The real-Git shallow regression
 uses a depth-one clone plus a local feature commit: endpoint ancestry produces a patch (or an empty
-reverse comparison), while missing commit parents and uncertain ancestry remain unavailable. TypeScript Diff tests cover selection,
+reverse comparison), while missing commit parents and uncertain ancestry remain unavailable. A local
+inventory exceeding 10 MiB verifies that unrelated binary/text files do not block the list or selected
+patches, per-file limits stay explicit, and same-size binary edits with restored mtime invalidate snapshots.
+TypeScript Diff tests cover selection,
 Refresh, cancellation and history paging races. `DiffTest` drives the assembled Vite UI and real Git reader
 through the `diff` harness scenario. The scenario creates one private temporary directory containing all
 repositories/worktrees, uses fake session stores and a deterministic PTY, and removes only that directory

@@ -144,8 +144,11 @@ the client cannot present it as complete; partial patches contain only complete 
 
 Budgets: 10 seconds per process, 8 MiB stdout and 256 KiB stderr; 5,000 file entries; 100 commits/page;
 2 MiB or 20,000 lines per patch. The service admits 4 active reads and 16 queued reads, with a 30-second
-deadline including queue time. Local content observation reads at most 2 MiB per file and 8 MiB total;
-oversized files or observations are explicitly limited. Server history cursors stop beyond offset 100,000.
+deadline including queue time. Local content observation reads at most 2 MiB per file, sequentially,
+retaining only content fingerprints between entries. There is no aggregate local-content byte cap:
+unrelated text or binary files do not block the file list or another file's patch. An oversized file
+is listed with its own explicit limit. File-count and request-deadline limits still apply, with
+cancellation checked between entries. Server history cursors stop beyond offset 100,000.
 Snapshot metadata is capped at 64 snapshots and 20,000 files total, with a two-minute TTL.
 The browser uses an eight-session cache, evicting only unmounted entries (mounted consumers can exceed
 that cap), one selected patch per session and at most 2,000 loaded history commits; Refresh restarts paging. Propagate

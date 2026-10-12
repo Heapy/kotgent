@@ -291,7 +291,8 @@ class GitDiffReader(
             if (observedHead != comparison.headOid) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
             identities += observedHead.orEmpty()
             identities += digest(read(tree.path, listOf("ls-files", "--stage", "-z")))
-            var contentBytes = 0
+            // Hash each bounded file independently; unrelated files must not consume a shared
+            // patch budget. Retain identities, not content bytes, and check cancellation per entry.
             for (i in files.indices.take(DIFF_MAX_FILES)) {
                 currentCoroutineContext().ensureActive()
                 val file = files[i]
@@ -301,8 +302,6 @@ class GitDiffReader(
                     continue
                 }
                 val content = localContent(tree.path, file.newPath)
-                contentBytes += content.bytes?.size ?: 0
-                if (contentBytes > DIFF_PROCESS_STDOUT_BYTES) gitFailure(DiffReason.output_limit, "Local content budget reached", DiffErrorCode.limited)
                 identities += file.newPath + ":" + content.identity
                 if (file.kind == DiffFileKind.text || file.change == DiffChange.untracked) {
                     files[i] = file.copy(kind = content.kind, problem = content.problem,

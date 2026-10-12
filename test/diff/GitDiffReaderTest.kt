@@ -296,6 +296,43 @@ class GitDiffReaderTest {
         assertEquals(emptyList(), files().files)
     }
 
+    @Test fun largeLocalInventoryKeepsFilesAndSelectedPatchesAvailable() = fixture {
+        write("tracked", "before\n"); commit()
+        write("tracked", "after!\n")
+        // Screenshot-heavy untracked directories must not consume a shared patch budget.
+        val binary = ByteArray(1024 * 1024) { 1 }.also { it[0] = 0 }
+        val text = "x".repeat(1024 * 1024)
+        repeat(5) {
+            writeBytes("image-$it", binary)
+            write("text-$it", text)
+        }
+        write("small", "readable\n")
+        write("oversize", "x".repeat(DIFF_MAX_PATCH_BYTES + 1))
+        for (scope in listOf(DiffLocalScope.all, DiffLocalScope.unstaged)) {
+            val list = files(DiffSelection(scope = scope))
+            assertNull(list.limited)
+            assertEquals(13, list.files.size)
+            assertEquals(5, list.files.count { it.kind == DiffFileKind.binary })
+            assertEquals(DiffFileKind.limited, list.files.single { it.newPath == "oversize" }.kind)
+            assertTrue(patch(list, list.files.single { it.newPath == "tracked" }).ok().hunks.isNotEmpty())
+            assertEquals("readable", patch(list, list.files.single { it.newPath == "small" }).ok()
+                .hunks.single().lines.single().text)
+            assertEquals(DiffReason.patch_limit,
+                patch(list, list.files.single { it.newPath == "oversize" }).ok().limited?.reason)
+        }
+        val original = files()
+        assertEquals(0, CapturedProcess.run(listOf("/bin/cp", "-p", "$root/image-0", "$directory/stamp"), env).exitCode)
+        binary[binary.lastIndex] = 2
+        writeBytes("image-0", binary)
+        assertEquals(0, CapturedProcess.run(listOf("/usr/bin/touch", "-r", "$directory/stamp", "$root/image-0"), env).exitCode)
+        assertEquals(DiffReason.snapshot_changed,
+            patch(original, original.files.single { it.newPath == "small" }).error?.reason)
+        val refreshed = files()
+        assertNotEquals(original.snapshot.id, refreshed.snapshot.id)
+        assertEquals("readable", patch(refreshed, refreshed.files.single { it.newPath == "small" }).ok()
+            .hunks.single().lines.single().text)
+    }
+
     @Test fun aRenamePatchCannotIncludeAnAdditionUnderItsOldPath() = fixture {
         write("old", "original\n"); commit()
         git("mv", "old", "new")
