@@ -208,6 +208,29 @@ class GitDiffReaderTest {
         assertEquals(before + 2, diffs)
     }
 
+    @Test fun cacheInsideASiblingWorktreeIsBypassedBeforeAnyAccess() = fixture {
+        write("a", "one\n"); val tip = commit()
+        git("worktree", "add", "--detach", "$directory/linked", "HEAD")
+        val inventory = inventory()
+        val main = inventory.worktrees.single { it.current }
+        val linked = inventory.worktrees.single { !it.current }
+        // Exercise both directions: main-hosted cache while reading linked, and vice versa.
+        for ([host, selected] in listOf(main to linked, linked to main)) {
+            val cacheRoot = "${host.path}/cache"
+            val counts = mutableMapOf<String, Long>()
+            val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles(cacheRoot)),
+                measure = { name, value -> counts[name] = (counts[name] ?: 0) + value })
+            repeat(2) {
+                assertEquals(1, cached.commits(inventory.repository, selected).ok().commits.size)
+                val files = cached.files(inventory.repository, selected, DiffSelection(DiffMode.commit, commitOid = tip)).ok()
+                assertTrue(cached.patch(inventory.repository, selected, files.snapshot, files.files.single()).ok().hunks.isNotEmpty())
+                assertNull(io.kotgent.host.canonicalWorktreePath(cacheRoot))
+            }
+            assertEquals(2L, counts["logCommands"])
+            assertEquals(8L, counts["diffCommands"])
+        }
+    }
+
     @Test fun cacheMustStayOutsideTheCheckoutAndGitDirectory() = fixture {
         write("a", "one\n"); val tip = commit()
         val inventory = inventory(); val tree = inventory.worktrees.single()
