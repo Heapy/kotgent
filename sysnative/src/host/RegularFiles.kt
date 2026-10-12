@@ -30,7 +30,7 @@ fun readRegularFileBytesOrNull(path: String): ByteArray? {
         val size = memScoped {
             val metadata = alloc<stat>()
             if (fstat(fd, metadata.ptr) != 0 ||
-                (metadata.st_mode.toInt() and S_IFMT.toInt()) != S_IFREG.toInt()
+                (metadata.st_mode.toInt() and S_IFMT) != S_IFREG
             ) return null
             metadata.st_size
         }

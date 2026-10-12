@@ -74,10 +74,10 @@ fun readWorktreeFile(root: String, relativePath: String, maxBytes: Int): Worktre
             if (fd < 0) return@memScoped WorktreeFileRead(WorktreeFileKind.unreadable)
             try {
                 if (fstat(fd, metadata.ptr) != 0) return@memScoped WorktreeFileRead(WorktreeFileKind.unreadable)
-                if ((metadata.st_mode.toInt() and S_IFMT.toInt()) != S_IFREG.toInt())
+                if ((metadata.st_mode.toInt() and S_IFMT) != S_IFREG)
                     return@memScoped WorktreeFileRead(WorktreeFileKind.special)
                 if (metadata.st_size > maxBytes) return@memScoped WorktreeFileRead(WorktreeFileKind.limited)
-                val executable = (metadata.st_mode.toInt() and S_IXUSR.toInt()) != 0
+                val executable = (metadata.st_mode.toInt() and S_IXUSR) != 0
                 val bytes = ByteArray(minOf(maxBytes.toLong(), metadata.st_size.coerceAtLeast(0)).toInt() + 1)
                 var size = 0
                 while (size < bytes.size) {
