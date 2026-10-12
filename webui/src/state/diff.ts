@@ -23,7 +23,8 @@ export const MAX_DIFF_COMMITS = 2000;
 
 /** A store is a page-memory owner. Components retain it; they never own requests or patch bytes. */
 export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SESSIONS) {
-  interface Entry { state: Signal<DiffState>; generation: number; controllers: Map<Resource, AbortController>; retained: number; dirty: boolean; resume: Set<Resource>; historyIntent: "first" | "more" | null; bases: Map<string, string> }
+  type HistoryIntent = "first" | "more" | null;
+  interface Entry { state: Signal<DiffState>; generation: number; controllers: Map<Resource, AbortController>; retained: number; dirty: boolean; resume: Set<Resource>; historyIntent: HistoryIntent; refreshIntent: { preserve: boolean; history: HistoryIntent } | null; bases: Map<string, string> }
   const entries = new Map<string, Entry>();
   let visible = true;
   function entry(session: string): Entry {
@@ -35,7 +36,7 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       if (!victim) break;
       cancel(victim[1]); entries.delete(victim[0]);
     }
-    const e: Entry = { state: signal(initial()), generation: 0, controllers: new Map(), retained: 0, dirty: false, resume: new Set(), historyIntent: null, bases: new Map() };
+    const e: Entry = { state: signal(initial()), generation: 0, controllers: new Map(), retained: 0, dirty: false, resume: new Set(), historyIntent: null, refreshIntent: null, bases: new Map() };
     entries.set(session, e); return e;
   }
   function update(e: Entry, change: Partial<DiffState>) { e.state.value = { ...e.state.value, ...change }; }
@@ -161,6 +162,8 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
   }
   async function refresh(session: string, preserve = false, resumeHistory: "first" | "more" | null = null) {
     const e = entry(session); cancel(e); e.dirty = false; e.resume.clear(); e.historyIntent = null;
+    const generation = e.generation;
+    e.refreshIntent = { preserve, history: resumeHistory };
     update(e, { ...(preserve ? {} : { viewed: new Set() }), files: { ...e.state.value.files, stale: !!e.state.value.files.data }, patch: { ...e.state.value.patch, stale: !!e.state.value.patch.data } });
     const ok = await read(e, "inventory", a => port.worktrees(session, a), data => {
       const s = e.state.value;
@@ -170,11 +173,12 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       update(e, { inventory: ready(data), worktree });
     });
     if (ok) await loadSource(session, e, preserve, resumeHistory);
+    if (e.generation === generation) e.refreshIntent = null;
   }
   function choose(session: string, change: Partial<Pick<DiffState, "worktree" | "mode" | "scope" | "baseRef" | "commitOid" | "parent">>) {
     const e = entry(session), before = e.state.value;
     if (change.commitOid && !before.history.data?.commits.some(c => c.oid === change.commitOid)) return;
-    cancel(e); e.historyIntent = null;
+    cancel(e); e.historyIntent = null; e.refreshIntent = null;
     const historyChanged = (change.worktree !== undefined && change.worktree !== before.worktree) || (change.mode !== undefined && change.mode !== before.mode) || (change.baseRef !== undefined && change.baseRef !== before.baseRef);
     update(e, { ...change, files: empty(), patch: empty(), selected: null, viewed: new Set(), page: "files", scrollTop: 0, filesScrollTop: 0,
       ...(historyChanged ? { history: empty(), commitOid: "", commit: null, parent: 1 } : {}),
@@ -223,8 +227,12 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
   function retain(session: string) {
     const e = entry(session); e.retained++;
     if (visible && e.retained === 1) {
-      const reset = e.dirty || e.state.value.inventory.state === "idle" || [...e.resume].some(k => k === "inventory" || k === "refs" || k === "files");
-      void refresh(session, !reset, e.resume.has("history") ? e.historyIntent : null);
+      const reset = e.dirty || e.state.value.inventory.state === "idle";
+      // Cancellation retains the operation's intent, including repeated remounts during discovery.
+      // The pending resource alone cannot distinguish explicit Refresh from preserving revalidation.
+      const preserve = !reset && (e.refreshIntent?.preserve ?? true);
+      const history = e.resume.has("history") ? e.historyIntent : e.refreshIntent?.history ?? null;
+      void refresh(session, preserve, history);
     }
     e.resume.clear();
     let released = false;
