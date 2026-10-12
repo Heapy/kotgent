@@ -35,7 +35,15 @@ shallow history are distinct unavailable states. A shallow repository is readabl
 one endpoint is the unique merge base; unproven ancestry stays unavailable. Equal base/HEAD is a valid
 empty comparison.
 
-The viewer loads a file list and only the selected patch. Unified/Split, wrap, path filtering, Viewed,
+The viewer loads a file list and only the selected patch. The file sidebar offers **List** and **Tree**.
+Tree groups paths into expandable folders (click or Left/Right); Up/Down and Home/End move focus,
+and Enter/Space opens a file. Folders do not change the selected patch. Search matches both rename
+paths and expands matching ancestors; next-unviewed reveals its file even inside a collapsed folder.
+List/Tree and folder expansion survive workspace-tab remounts in page memory; changing worktree
+resets folder expansion. The list retains separate entries that share a Git path.
+Loading uses the refresh icon and a permanent footer without moving the file list or patch. The
+footer keeps stale/error status visible; **Details** expands full errors. File-list and patch snapshot
+identities open from the footer without reducing the reading area. Unified/Split, wrap, path filtering, Viewed,
 and next-unviewed operate on this one comparison. The filter, layout and wrap controls are local to
 the viewer. File-list and patch comparison details show their own resolved OIDs, including a retained
 stale patch whose identity differs from a refreshed file list. On phones, Files → Patch → Back replaces

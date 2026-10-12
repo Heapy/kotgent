@@ -272,3 +272,21 @@ test("repeated remount does not turn an explicit resetting Refresh into preservi
   release(); f.store.retain("s"); await tick(); assert.equal(fileReads, 2); assert.equal(f.state().viewed.size, 0);
   pending.resolve(inventory()); await refresh; assert.equal(f.state().viewed.size, 0);
 });
+
+test("tree reading state survives remount/refresh, search and Next reveal ancestors, worktree changes reset folders", async () => {
+  const nested = files();
+  nested.files = nested.files.map((f, i) => ({...f, newPath: `src/nested/${i}.ts`, oldPath: `src/nested/${i}.ts`}));
+  const f = fixture({files: async () => nested, patch: async (_, _w, _s, id) => patch(nested, id)});
+  const release = f.store.retain("s"); await tick();
+  f.store.reading("s", {fileView: "tree", collapsedFolders: new Set(["src", "src/nested", "other"])});
+  release(); const again = f.store.retain("s"); await tick();
+  assert.equal(f.state().fileView, "tree"); assert.equal(f.state().collapsedFolders.has("src"), true);
+  await f.store.refresh("s"); assert.equal(f.state().collapsedFolders.has("src/nested"), true);
+  f.store.next("s"); await tick();
+  assert.equal(f.state().selected, "f2"); assert.deepEqual([...f.state().collapsedFolders], ["other"]);
+  f.store.reading("s", {collapsedFolders: new Set(["src", "src/nested", "other"])});
+  f.store.reading("s", {query: "0.ts"});
+  assert.deepEqual([...f.state().collapsedFolders], ["other"]);
+  f.store.choose("s", {worktree: "/b"});
+  assert.equal(f.state().collapsedFolders.size, 0); assert.equal(f.state().fileView, "tree"); again();
+});
