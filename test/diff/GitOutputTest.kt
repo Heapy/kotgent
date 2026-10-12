@@ -7,6 +7,34 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class GitOutputTest {
+    @Test fun combinedRawAndNumstatConsumePathsBeforeDetectingRecordBoundaries() {
+        for (length in listOf(40, 64)) {
+            val oid = "a".repeat(length)
+            val raw = ":100644 100644 $oid $oid R100\u0000:old\t\n\u0000:new\n\t\u0000" +
+                ":100644 100644 $oid $oid C100\u00001\t2\tlooks-like-stat\u0000:copy\u0000" +
+                ":000000 000000 $oid $oid U\u0000conflict\u0000"
+            val stats = "0\t0\t\u0000:old\t\n\u0000:new\n\t\u0000" +
+                "-\t-\t\u00001\t2\tlooks-like-stat\u0000:copy\u0000" + "0\t0\tconflict\u0000"
+            val combined = parseGitRawNumstat((raw + stats).encodeToByteArray())
+            assertEquals(parseGitRaw(raw.encodeToByteArray()), combined.raw)
+            assertEquals(parseGitNumstat(stats.encodeToByteArray()), combined.stats)
+            assertEquals(DiffChange.copied, combined.raw[1].file.change)
+        }
+        assertEquals(GitRawNumstat(emptyList(), emptyList()), parseGitRawNumstat(byteArrayOf()))
+    }
+
+    @Test fun combinedMetadataRejectsTruncationAndMalformedRecords() {
+        val oid = "a".repeat(40)
+        for (text in listOf(
+            ":100644 100644 $oid $oid R100\u0000old\u0000",
+            ":100644 100644 $oid $oid M\u0000",
+            ":100644 100644 $oid $oid M\u0000a\u00001\t2\t\u0000old\u0000",
+            ":100644 100644 $oid $oid M\u0000a\u00001\t2\ta",
+            ":100644 100644 $oid $oid M\u0000../escape\u00000\t0\ta\u0000",
+            "1\t2\ta\u0000:100644 100644 $oid $oid M\u0000a\u0000",
+        )) assertFailsWith<GitReadFailure> { parseGitRawNumstat(text.encodeToByteArray()) }
+    }
+
     @Test fun nulDelimitedNamesAndVariableOidLengths() {
         for (length in listOf(40, 64)) {
             val raw = ":100644 100755 ${"a".repeat(length)} ${"b".repeat(length)} R100\u0000old\tline\n.kt\u0000new\nline.kt\u0000"

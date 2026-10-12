@@ -87,10 +87,17 @@ class GitDiffReader(
 
     override suspend fun worktrees(cwd: String): DiffResponse<DiffWorktrees> = response {
         val root = canonicalWorktreePath(cwd) ?: gitFailure(DiffReason.missing_worktree, "Checkout is missing")
-        val commonResult = command(root, listOf("rev-parse", "--path-format=absolute", "--git-common-dir"))
+        val commonResult = command(root, listOf("rev-parse", "--path-format=absolute", "--git-common-dir", "--is-bare-repository"))
         if (commonResult.exitCode != 0) gitFailure(DiffReason.not_repository, "Not an accessible Git repository")
-        val common = canonicalWorktreePath(line(commonResult.stdout)) ?: gitFailure(DiffReason.not_repository, "Missing common directory")
-        val bare = line(read(root, listOf("rev-parse", "--is-bare-repository"))) == "true"
+        // Split from the fixed boolean suffix, never on every LF: common-dir paths may contain LF.
+        val discovery = line(commonResult.stdout)
+        val bare = when (discovery.substringAfterLast('\n')) {
+            "true" -> true
+            "false" -> false
+            else -> gitFailure(DiffReason.git_failed, "Malformed repository discovery")
+        }
+        if ('\n' !in discovery) gitFailure(DiffReason.git_failed, "Missing common directory")
+        val common = canonicalWorktreePath(discovery.substringBeforeLast('\n')) ?: gitFailure(DiffReason.not_repository, "Missing common directory")
         val current = canonicalWorktreePath(line(read(root, listOf("rev-parse", if (bare) "--absolute-git-dir" else "--show-toplevel"))))
             ?: gitFailure(DiffReason.missing_worktree, "Checkout is missing")
         val trees = parseGitWorktrees(read(root, listOf("worktree", "list", "--porcelain", "-z"))).map { tree ->
@@ -179,7 +186,9 @@ class GitDiffReader(
             val tip = head(tree.path) ?: return@response DiffCommits(repository, tree.id, null, emptyList(), readAt = now())
             DiffCommitCursor(tip, baseRef?.let { ref(repository, tree, it).oid })
         }
-        val _ = commitObject(tree.path, pinned.headOid)
+        // head() already validated the first page's exact OID in this request. Supplied cursors
+        // still require fresh membership/type validation, including after refs move or objects vanish.
+        if (cursor != null) { val _ = commitObject(tree.path, pinned.headOid) }
         pinned.baseOid?.let { commitObject(tree.path, it) }
         val args = listOf("log", "--topo-order", "--max-count=${DIFF_COMMIT_PAGE_SIZE + 1}", "--skip=${pinned.offset}",
             "-z", "--format=%H%x00%P%x00%an%x00%at%x00%s", "--encoding=UTF-8", pinned.headOid) +
@@ -263,16 +272,16 @@ class GitDiffReader(
         val local = comparison.mode == DiffMode.local
         val filterFlags = if (local) noFilters(tree.path) else emptyMap()
         val args = diffArgs(tree.path, comparison)
-        val raw = read(tree.path, args + listOf("--raw", "--no-abbrev", "-z", "--"), filterFlags)
-        val statsBytes = read(tree.path, args + listOf("--numstat", "-z", "--"), filterFlags)
-        val stats = parseGitNumstat(statsBytes).associateBy { it.newPath }
+        val metadata = read(tree.path, args + listOf("--raw", "--numstat", "--no-abbrev", "-z", "--"), filterFlags)
+        val parsed = parseGitRawNumstat(metadata)
+        val stats = parsed.stats.associateBy { it.newPath }
         val statusBytes = if (local) read(tree.path, listOf("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"), filterFlags) else byteArrayOf()
         val statuses = parseGitStatus(statusBytes)
         val trackedStatuses = statuses.filter { it.index != "?" }
         val statusByPath = trackedStatuses.associateBy { it.path }
         // Raw worktree diff can report stat-dirty entries whose bytes cancel the staged edit.
         // Numstat runs content comparison (and includes 0/0 mode-only records).
-        val files = parseGitRaw(raw).filter { rawFile ->
+        val files = parsed.raw.filter { rawFile ->
             rawFile.file.kind == DiffFileKind.conflict || (rawFile.file.newPath ?: rawFile.file.oldPath) in stats
         }.map { rawFile ->
             val file = rawFile.file
@@ -290,7 +299,7 @@ class GitDiffReader(
                 files += DiffFile("", newPath = it.path, change = DiffChange.untracked, indexStatus = "?", worktreeStatus = "?")
             }
         }
-        val identities = mutableListOf(digest(raw), digest(statsBytes), digest(statusBytes))
+        val identities = mutableListOf(digest(metadata), digest(statusBytes))
         if (local) {
             val observedHead = head(tree.path)
             if (observedHead != comparison.headOid) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)

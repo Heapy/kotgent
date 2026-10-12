@@ -223,6 +223,37 @@ class DiffRoutesTest {
         assertTrue(files().files.isEmpty())
     }
 
+    @Test fun unrelatedBinaryBytesAndIndexModesInvalidateSelectedPatchOverHttp() = fixture {
+        write("a", "other\n")
+        write("unrelated.bin", "\u0000first")
+        val first = files()
+        val selected = first.files.single { it.newPath == "a" }.fileId
+        patch(first, selected).data<DiffPatch>()
+        assertEquals(0, CapturedProcess.run(listOf("/bin/cp", "-p", "$root/unrelated.bin", "$dir/stamp"), env).exitCode)
+        write("unrelated.bin", "\u0000other")
+        assertEquals(0, CapturedProcess.run(listOf("/usr/bin/touch", "-r", "$dir/stamp", "$root/unrelated.bin"), env).exitCode)
+        patch(first, selected).problem(HttpStatusCode.Conflict, DiffReason.snapshot_changed)
+        val refreshed = files()
+        assertNotEquals(first.snapshot.id, refreshed.snapshot.id)
+        patch(refreshed, refreshed.files.single { it.newPath == "a" }.fileId).data<DiffPatch>()
+        git("update-index", "--chmod=+x", "a")
+        patch(refreshed, refreshed.files.single { it.newPath == "a" }.fileId)
+            .problem(HttpStatusCode.Conflict, DiffReason.snapshot_changed)
+    }
+
+    @Test fun movedLinkedWorktreeCannotReuseOldSnapshot() = fixture {
+        git("worktree", "add", "-b", "topic", "$dir/linked")
+        val original = get("worktrees").data<DiffWorktrees>().worktrees.single { !it.current }
+        val old = get("files", "worktreeId" to original.id, "mode" to "commit", "commitOid" to git("rev-parse", "HEAD")).data<DiffFiles>()
+        git("worktree", "move", original.path, "$dir/moved\nworktree")
+        get("patch", "worktreeId" to original.id, "snapshot" to old.snapshot.id, "fileId" to old.files.first().fileId)
+            .problem(HttpStatusCode.BadRequest, DiffReason.foreign_worktree)
+        val moved = get("worktrees").data<DiffWorktrees>().worktrees.single { !it.current }
+        get("patch", "worktreeId" to moved.id, "snapshot" to old.snapshot.id, "fileId" to old.files.first().fileId)
+            .problem(HttpStatusCode.Conflict, DiffReason.snapshot_expired)
+        get("files", "worktreeId" to moved.id).data<DiffFiles>()
+    }
+
     @Test fun refsAndCommitPagesRemainPinnedAndMissingCwdHasNoFallback() = fixture {
         val old = git("rev-parse", "HEAD")
         val history = get("commits", "worktreeId" to root).data<DiffCommits>()
