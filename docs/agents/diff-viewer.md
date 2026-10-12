@@ -178,7 +178,9 @@ configuration, shallow/graft bytes and the available object inventory. Diff keys
 entries and the bytes of applicable checkout, info and global attributes. This intentionally invalidates
 more broadly than necessary (even an unrelated object addition can cause a miss). Context reads are
 bounded; an unprovable, unsafe or oversized dependency bypasses caching without reducing the ordinary
-reader's limits. Worktrees and clones do not share entries. The session-bound snapshot and response
+reader's limits. Configured `diff.orderFile` also bypasses diff payload caching because Git reads an
+external ordering file; edits/removal must take effect through ordinary Git. History caching remains
+independent of ordering-file contents. Worktrees and clones do not share entries. The session-bound snapshot and response
 timestamps come from the current request, not a stored authorization envelope.
 
 The disk budget is 256 MiB, at most 1,024 records, at most 8 MiB per record, retained for at most seven
@@ -197,3 +199,11 @@ Warm hits skip the expensive `log`/`diff` command, but still perform bounded dep
 That validation can dominate small repositories; a disk hit is not a promise of lower latency for every
 fixture. The opt-in benchmark reports disk-cold and restart-warm history/files/patch separately from
 its original cache-disabled scenarios, with Git command counts and uncontrolled OS page-cache state.
+
+Benchmark accounting preserves `gitBytes`, `fileBytes` (returned local content) and `hashBytes`
+(reader SHA inputs). Additive `dependencyReadBytes` counts successful dependency read/readlink syscall
+bytes; `cacheReadBytes` and `cacheWriteBytes` count successful cache syscall bytes, including timestamp
+and record headers, collision probes and eviction scans. `cacheHashBytes` counts cache key/checksum
+SHA inputs. `totalReadBytes` sums captured Git output, returned local content and the two new read
+counters; `totalHashBytes` sums reader and cache SHA inputs. These are application byte counts, excluding
+Git's internal filesystem I/O and metadata syscalls. Counters are optional scalars and retain no payloads.

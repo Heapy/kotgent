@@ -46,8 +46,13 @@ class DiffReadBenchmark {
             val result = block()
             val nanos = start.elapsedNow().inWholeNanoseconds
             samples.getOrPut(label) { mutableListOf() }.add(nanos)
+            val totalReadBytes = listOf("gitBytes", "fileBytes", "dependencyReadBytes", "cacheReadBytes").sumOf { counters[it] ?: 0 }
+            val totalHashBytes = (counters["hashBytes"] ?: 0) + (counters["cacheHashBytes"] ?: 0)
             println("DIFF_BENCH run=$run scenario=$label ns=$nanos " +
-                listOf("gitCommands", "gitBytes", "fileBytes", "hashBytes", "logCommands", "diffCommands").joinToString(" ") { "$it=" + (counters[it] ?: 0) })
+                listOf("gitCommands", "gitBytes", "fileBytes", "hashBytes", "logCommands", "diffCommands",
+                    "dependencyReadBytes", "cacheReadBytes", "cacheWriteBytes", "cacheHashBytes")
+                    .joinToString(" ") { "$it=" + (counters[it] ?: 0) } +
+                " totalReadBytes=$totalReadBytes totalHashBytes=$totalHashBytes")
             return result
         }
         fun <T> DiffResponse<T>.ok(): T = assertNotNull(data, error.toString())
@@ -110,8 +115,9 @@ class DiffReadBenchmark {
             // Application disk cold/warm, separate from all original v1 cache-disabled scenarios.
             repeat(runs) { run ->
                 val cacheRoot = "$directory/cache-$run"
-                fun cached() = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles(cacheRoot)),
-                    measure = { name, value -> counters[name] = (counters[name] ?: 0) + value })
+                val report: (String, Long) -> Unit = { name, value -> counters[name] = (counters[name] ?: 0) + value }
+                fun cached() = GitDiffReader(diskCache = DiffDiskCache(
+                    io.kotgent.host.DiskCacheFiles(cacheRoot, measure = report), measure = report), measure = report)
                 val cold = cached()
                 val _ = measure("disk-cold-history", run) { cold.commits(inventory.repository, tree).ok() }
                 val list = measure("disk-cold-root-files", run) {

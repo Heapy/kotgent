@@ -431,12 +431,18 @@ class GitDiffReader(
     private suspend fun cacheContext(repository: DiffRepository, tree: DiffWorktree, pins: List<String>, endpoints: List<String>? = null): String? {
         if (diskCache == null || !diskCache.isOutside(repository.commonDir, tree.path)) return null
         return try {
+            val config = read(tree.path, listOf("config", "--null", "--list"))
+            // Git also reads this external file when producing a selected patch. Its path alone
+            // cannot establish equivalence; leave ordering and its failures to ordinary Git.
+            if (endpoints != null && gitFields(config).any {
+                gitText(it).substringBefore('\n').lowercase() == "diff.orderfile"
+            }) return null
             val parts = mutableListOf("reader-v1", repository.commonDir, tree.path, executable,
-                digest(read(tree.path, listOf("--version"))),
-                digest(read(tree.path, listOf("config", "--null", "--list"))))
+                digest(read(tree.path, listOf("--version"))), digest(config))
             var dependencyBytes = 0L
             fun dependency(root: String, path: String): Boolean {
-                val value = readWorktreeFile(root, path, DIFF_PROCESS_STDOUT_BYTES)
+                val value = readWorktreeFile(root, path, DIFF_PROCESS_STDOUT_BYTES,
+                    onRead = measure?.let { report -> { bytes: Long -> report("dependencyReadBytes", bytes) } })
                 if (value.kind !in listOf(WorktreeFileKind.regular, WorktreeFileKind.missing)) return false
                 dependencyBytes += value.bytes.size
                 if (dependencyBytes > DIFF_PROCESS_STDOUT_BYTES) return false

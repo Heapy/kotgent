@@ -7,7 +7,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 
 /** Disk-only payload storage. Neither this adapter nor its file store retains payloads between calls. */
-class DiffDiskCache(private val files: DiskCacheFiles) {
+class DiffDiskCache(
+    private val files: DiskCacheFiles,
+    private val measure: ((String, Long) -> Unit)? = null,
+) {
     internal fun isOutside(vararg paths: String): Boolean = files.isOutside(*paths)
 
     internal suspend inline fun <reified T> get(key: String, now: Long): T? {
@@ -54,7 +57,10 @@ class DiffDiskCache(private val files: DiskCacheFiles) {
         files.put(matching ?: empty ?: base, "v1\n$hash\n${hash(bytes)}\n".encodeToByteArray() + bytes, now)
     }
 
-    private fun hash(bytes: ByteArray): String = sha256(bytes).toHexString()
+    private fun hash(bytes: ByteArray): String {
+        measure?.invoke("cacheHashBytes", bytes.size.toLong())
+        return sha256(bytes).toHexString()
+    }
     private fun slot(hash: String): Int = hash.take(8).toUInt(16).rem((DiskCacheFiles.SLOTS / WAYS).toUInt()).toInt() * WAYS
 
     private companion object {

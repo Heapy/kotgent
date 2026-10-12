@@ -35,4 +35,37 @@ class DiffDiskCacheTest {
             for (collision in collisions) assertEquals(listOf(collision), cache.get<List<String>>(collision, 2001))
         } finally { assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", root), emptyMap()).exitCode) }
     }
+    @Test fun byteAccountingIncludesPayloadsCollisionProbesAndEvictionHeaders() = runBlocking {
+        val temp = CapturedProcess.run(listOf("/usr/bin/mktemp", "-d", "/tmp/kotgent-cache-counts.XXXXXX"), emptyMap())
+        assertEquals(0, temp.exitCode)
+        val root = temp.stdout.decodeToString().trim()
+        try {
+            val counters = mutableMapOf<String, Long>()
+            val report: (String, Long) -> Unit = { name, value -> counters[name] = (counters[name] ?: 0) + value }
+            val cache = DiffDiskCache(DiskCacheFiles("$root/direct", measure = report), measure = report)
+            val payload = ByteArray(4096) { 1 }
+            cache.putBytes("test-key", payload, 1000)
+            assertContentEquals(payload, cache.getBytes("test-key", 1001))
+            assertEquals(8208L, counters["cacheHashBytes"]) // Two 8-byte keys and two 4096-byte payloads.
+            assertEquals(4234L, counters["cacheWriteBytes"]) // Five timestamp bytes + 133 header + payload.
+            assertEquals(4234L, counters["cacheReadBytes"])
+            counters.clear()
+            val collision = DiffDiskCache(DiskCacheFiles("$root/collisions", maxEntries = 2, measure = report), measure = report)
+            collision.putBytes("collision-441", payload, 1000)
+            counters.clear()
+            collision.putBytes("collision-538", payload, 1001)
+            assertEquals(4266L, counters["cacheReadBytes"]) // One full collision probe and one 32-byte scan header.
+            assertEquals(4234L, counters["cacheWriteBytes"])
+            counters.clear()
+            assertContentEquals(payload, collision.getBytes("collision-538", 1001))
+            assertEquals(8468L, counters["cacheReadBytes"]) // Both complete records are read during lookup.
+            assertEquals(4109L, counters["cacheHashBytes"])
+            counters.clear()
+            collision.putBytes("test-key", payload, 1002)
+            assertEquals(64L, counters["cacheReadBytes"]) // Both occupied slots are scanned before oldest eviction.
+            assertEquals(4234L, counters["cacheWriteBytes"])
+            assertNull(collision.getBytes("collision-441", 1003))
+        } finally { assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", root), emptyMap()).exitCode) }
+    }
+
 }
