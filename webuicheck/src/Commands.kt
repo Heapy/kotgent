@@ -18,6 +18,7 @@ private val WORDS = Regex("\\s+")
 
 fun handleCommand(line: String, ctx: HarnessContext): Boolean {
     val words = line.trim().split(WORDS).filter { it.isNotEmpty() }
+    runBlocking { ctx.scenarioCommand(words) }?.let { return it }
     return when (words.firstOrNull()) {
         "restart" -> handleRestart(words, ctx)
         "emit" -> handleEmit(words, ctx)

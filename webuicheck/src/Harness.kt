@@ -57,6 +57,8 @@ class Scenario(
     val name: String,
     val seed: suspend (HarnessFakes) -> Unit,
     val terminalUpstream: List<String>? = null,
+    val command: suspend (List<String>, HarnessFakes) -> Boolean? = { _, _ -> null },
+    val cleanup: suspend () -> Unit = {},
 )
 
 class HarnessContext(
@@ -65,6 +67,7 @@ class HarnessContext(
     val taskService: TaskService,
     val mutexes: MutexStore,
     val background: CoroutineScope,
+    val scenarioCommand: suspend (List<String>) -> Boolean? = { null },
     private val onRestart: suspend () -> Unit,
 ) {
     suspend fun restart() {
@@ -135,12 +138,18 @@ class Harness(
     private var boundPort: Int = 0
 
     suspend fun start(): HarnessContext {
-        scenario.seed(fakes)
-        // Server start/stop nest runBlocking internally; move them off the caller's event loop.
-        val started = withContext(Dispatchers.Default) { buildServer(port = 0).start() }
-        server = started
-        boundPort = started.port()
-        return HarnessContext(fakes, boundPort, taskService, mutexes, background) { restart() }
+        try {
+            scenario.seed(fakes)
+            // Server start/stop nest runBlocking internally; move them off the caller's event loop.
+            val started = withContext(Dispatchers.Default) { buildServer(port = 0).start() }
+            server = started
+            boundPort = started.port()
+            return HarnessContext(fakes, boundPort, taskService, mutexes, background,
+                scenarioCommand = { scenario.command(it, fakes) }) { restart() }
+        } catch (failure: Throwable) {
+            stop()
+            throw failure
+        }
     }
 
     suspend fun issueTicket(): String = tickets.issue(tokens.current()).value
@@ -166,6 +175,7 @@ class Harness(
             } finally {
                 background.coroutineContext[Job]?.cancelAndJoin()
                 fakes.usage.close()
+                scenario.cleanup()
             }
         }
     }
