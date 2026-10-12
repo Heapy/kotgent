@@ -222,7 +222,11 @@ class GitDiffReader(
                 val result = command(tree.path, listOf("merge-base", "--all", base.oid, tip))
                 if (result.exitCode !in 0..1) gitFailure(DiffReason.git_failed, "Cannot read merge base")
                 val shallow = line(read(tree.path, listOf("rev-parse", "--is-shallow-repository"))) == "true"
-                branchDiffComparison(repository, tree.id, tip, base, gitFields(result.stdout, 10).map(::gitText), shallow && tip != base.oid).value()
+                val mergeBases = gitFields(result.stdout, 10).map(::gitText)
+                // An endpoint that is a merge base proves ancestry; omitted ancestors cannot improve it.
+                val provenEndpoint = mergeBases.singleOrNull().let { it == base.oid || it == tip }
+                branchDiffComparison(repository, tree.id, tip, base, mergeBases,
+                    historyIncomplete = shallow && !provenEndpoint).value()
             }
         }
     }

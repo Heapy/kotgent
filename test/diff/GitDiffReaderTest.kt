@@ -227,6 +227,43 @@ class GitDiffReaderTest {
         assertEquals(DiffReason.shallow_history, outcome.error?.reason)
     }
 
+    @Test fun shallowBranchComparisonAcceptsProvenAncestorEndpointsButRejectsMissingHistory() = fixture {
+        write("a", "initial\n"); val initial = commit()
+        write("a", "base\n"); val base = commit("base")
+        git("checkout", "-b", "unseen", initial)
+        write("other", "divergent\n"); commit("other branch")
+        git("checkout", "main")
+        val clone = "$directory/shallow"
+        git("clone", "--depth=1", "--no-single-branch", "file://$root", clone)
+        assertEquals("true", git("rev-parse", "--is-shallow-repository", path = clone))
+        git("checkout", "-b", "feature", path = clone)
+        write("../shallow/feature.txt", "feature content\n")
+        git("add", "feature.txt", path = clone)
+        git("commit", "-m", "feature", path = clone)
+        val feature = git("rev-parse", "HEAD", path = clone)
+        val inventory = reader.worktrees(clone).ok()
+        val tree = inventory.worktrees.single()
+        fun branch(ref: String) = DiffSelection(DiffMode.branch, baseRef = ref)
+
+        val files = reader.files(inventory.repository, tree, branch("refs/heads/main")).ok()
+        assertEquals(base, files.snapshot.comparison.mergeBaseOid)
+        assertEquals(feature, files.snapshot.comparison.rightOid)
+        assertEquals("feature.txt", files.files.single().newPath)
+        val patch = reader.patch(inventory.repository, tree, files.snapshot, files.files.single()).ok()
+        assertEquals("feature content", patch.hunks.single().lines.single().text)
+        assertEquals(DiffReason.shallow_history, reader.files(inventory.repository, tree,
+            branch("refs/remotes/origin/unseen")).error?.reason)
+        // The shallow boundary still has a missing parent, so it must not become a root commit.
+        assertEquals(DiffReason.shallow_history, reader.files(inventory.repository, tree,
+            DiffSelection(DiffMode.commit, commitOid = base)).error?.reason)
+        // Reverse ancestry is also proven: HEAD is itself the unique merge base, yielding no changes.
+        git("checkout", "main", path = clone)
+        val reverseTree = reader.worktrees(clone).ok().worktrees.single()
+        val reverse = reader.files(inventory.repository, reverseTree, branch("refs/heads/feature")).ok()
+        assertEquals(base, reverse.snapshot.comparison.mergeBaseOid)
+        assertTrue(reverse.files.isEmpty())
+    }
+
     @Test fun sha256ObjectIdsAndSubmodulesAreExplicit() = fixture("sha256") {
         write("a", "one\n"); val initial = commit()
         assertEquals(64, initial.length)
