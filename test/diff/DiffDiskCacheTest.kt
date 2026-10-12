@@ -7,6 +7,35 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 class DiffDiskCacheTest {
+    private fun corruptRecordCase(multibyteHeader: Boolean) = runBlocking {
+        val temp = CapturedProcess.run(listOf("/usr/bin/mktemp", "-d", "/tmp/kotgent-corrupt-cache.XXXXXX"), emptyMap())
+        assertEquals(0, temp.exitCode)
+        val root = temp.stdout.decodeToString().trim()
+        try {
+            val files = DiskCacheFiles(root)
+            val cache = DiffDiskCache(files)
+            val key = "corrupt-record"
+            val hash = sha256(key.encodeToByteArray()).toHexString()
+            val slot = hash.take(8).toUInt(16).rem((DiskCacheFiles.SLOTS / 4).toUInt()).toInt() * 4
+            if (multibyteHeader) {
+                cache.put(key, listOf("valid"), 1000)
+                val record = assertNotNull(files.get(slot, 1001))
+                // Keep the valid key prefix and terminal newline, but shorten decoded character count.
+                record[68] = 0xe2.toByte(); record[69] = 0x82.toByte(); record[70] = 0xac.toByte()
+                files.put(slot, record, 1000)
+            } else {
+                // putBytes supplies a valid checksum for a payload that strict UTF-8 must reject.
+                cache.putBytes(key, byteArrayOf(0xc0.toByte(), 0xaf.toByte()), 1000)
+            }
+            assertNull(cache.get<List<String>>(key, 1001))
+            cache.put(key, listOf("recovered"), 1002)
+            assertEquals(listOf("recovered"), cache.get<List<String>>(key, 1003))
+        } finally { assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", root), emptyMap()).exitCode) }
+    }
+
+    @Test fun multibyteChecksumHeaderIsAMiss() = corruptRecordCase(multibyteHeader = true)
+    @Test fun invalidUtf8PayloadWithValidChecksumIsAMiss() = corruptRecordCase(multibyteHeader = false)
+
     @Test fun checksumSchemaKeyAndSerializationCorruptionAreMisses() = runBlocking {
         val temp = CapturedProcess.run(listOf("/usr/bin/mktemp", "-d", "/tmp/kotgent-payload-cache.XXXXXX"), emptyMap())
         assertEquals(0, temp.exitCode)

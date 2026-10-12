@@ -944,7 +944,7 @@ writer through its byte-accounting callback after a successful staging write. It
 escapes, the target is not published, staging is removed, and a fresh instance can acquire the lock and
 publish. This complements cancellation before admission and during Git dependency validation.
 
-### Integrated measurements (2026-10-12, local:522)
+### First-pass integrated measurements (2026-10-12, local:522)
 
 The v2 matrix compares baseline `1ac6703ed7838dbc0a68baa728e5c2513f86c473` with the integrated
 implementation at `9d4045131a6ac1337b065d2f4bf83ec44e27e6f3` plus the reusable matrix and active
@@ -1019,3 +1019,46 @@ seven unchanged `PlanFindings` harness unused returns. The unchanged Web UI emit
 notice; npm audit reports the existing `source-map-js` advisory GHSA-68fv-2mgg-jv7q. Dependency updates
 were outside this optimization scope. Raw samples, baseline instrumentation, exact commands, warning
 logs and the complete two-worktree matrix accompany the review handoff.
+
+### Cache corruption and sibling placement regressions
+
+Independent review of `dbc92cabeeff1684e9a471b2b5e9f49e9157e551` identified two additional cases.
+`DiffDiskCacheTest.multibyteChecksumHeaderIsAMiss` writes a real record whose 133-byte header decodes
+to only 131 characters; it reproduced an out-of-bounds checksum slice. The companion
+`invalidUtf8PayloadWithValidChecksumIsAMiss` reproduced an uncaught Native `CharacterCodingException`.
+Both now assert a miss and successful replacement. Fixed headers are checked as ASCII before string
+offsets are used, and strict payload decoding failure is caught narrowly; cancellation still escapes.
+
+`GitDiffReaderTest.cacheInsideASiblingWorktreeIsBypassedBeforeAnyAccess` reproduced cache creation
+inside the main checkout while a linked sibling was selected. It now exercises both selection directions
+through history, files and patches twice, asserting successful ordinary Git reads, computation counters,
+and no cache-directory creation. The reader carries all roots from its existing fresh verification into
+request-local cache context; it adds no discovery command or persistent placement decision. The placement
+guard runs before reads because even cache lookup can create its private directory and lock.
+
+After these fixes, the required ordered host/JVM gates passed again: 1,951 Native method passes and
+275 JVM passes. All 65 focused release Diff/HTTP tests passed, including the three new regressions.
+The unchanged `sysnative` cross-compilation and release checks above remain applicable. No new
+compiler warnings appeared. Both corrected variants repeated all 540 samples, retaining the original
+baseline and first-pass logs separately. First-worktree p50/p95 milliseconds after correction:
+
+| Variant / operation | Uncached | Empty application cache | Warm application cache |
+|---|---:|---:|---:|
+| debug / history | 98 / 165 | 185 / 203 | 145 / 148 |
+| debug / local-all-files | 557 / 715 | 555 / 681 | 569 / 759 |
+| debug / local-all-patch | 1199 / 1650 | 1032 / 1073 | 1018 / 1138 |
+| debug / root-files | 193 / 239 | 406 / 614 | 154 / 290 |
+| debug / root-patch | 127 / 258 | 324 / 729 | 182 / 372 |
+| release / history | 131 / 215 | 283 / 478 | 148 / 256 |
+| release / local-all-files | 228 / 386 | 274 / 793 | 233 / 339 |
+| release / local-all-patch | 440 / 472 | 493 / 706 | 424 / 529 |
+| release / root-files | 169 / 219 | 315 / 424 | 248 / 330 |
+| release / root-patch | 116 / 258 | 437 / 481 | 280 / 398 |
+
+Corrected debug empty-cache p50 improvement across both worktrees: local-all-files: 4.5–5.0×; local-all-patch: 3.7–4.2×.
+Corrected release empty-cache p50 improvement across both worktrees: local-all-files: 8.6–12.2×; local-all-patch: 7.3–10.1×.
+
+All 1,440 baseline/corrected samples passed the evidence checks: five per scenario/state/variant,
+identical fixture OIDs, preserved local read bytes and command reductions, and zero `log`/`diff`/write
+calls on every warm immutable sample. Cache read/hash work is still included. The timing limitations
+and small-comparison cache tradeoffs above also apply to this corrected run.

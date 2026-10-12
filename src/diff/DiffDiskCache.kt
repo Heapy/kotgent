@@ -5,6 +5,7 @@ import io.kotgent.host.DiskCacheFiles
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import kotlin.text.CharacterCodingException
 
 /** Disk-only payload storage. Neither this adapter nor its file store retains payloads between calls. */
 class DiffDiskCache(
@@ -17,6 +18,7 @@ class DiffDiskCache(
         val bytes = getBytes(key, now) ?: return null
         return try { Json.decodeFromString(serializer<T>(), bytes.decodeToString(throwOnInvalidSequence = true)) }
         catch (_: SerializationException) { null }
+        catch (_: CharacterCodingException) { null }
         catch (_: IllegalArgumentException) { null }
     }
 
@@ -30,7 +32,10 @@ class DiffDiskCache(
             val record = files.get(slot(hash) + offset, now) ?: continue
             // Fixed-size schema/key/checksum header makes malformed and cross-slot records a miss.
             if (record.size < HEADER_BYTES) continue
-            val header = record.copyOfRange(0, HEADER_BYTES).decodeToString()
+            val headerBytes = record.copyOfRange(0, HEADER_BYTES)
+            // Offsets below are byte offsets: multibyte or malformed UTF-8 must never shorten them.
+            if (headerBytes.any { it < 0 }) continue
+            val header = headerBytes.decodeToString()
             if (!header.startsWith("v1\n$hash\n") || header.last() != '\n') continue
             val payload = record.copyOfRange(HEADER_BYTES, record.size)
             if (header.substring(68, 132) == hash(payload)) return payload

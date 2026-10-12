@@ -165,8 +165,10 @@ Real-device Safari and installed-PWA checks remain separate from Chromium automa
 ## Immutable disk payload cache
 
 Production uses a private `~/.kotgent/diff-cache-v1` directory outside the checkout and `.git`.
-A configured root inside the selected checkout or Git directory is bypassed, including home-directory
-repositories. Tests inject a temporary directory. Only successful, complete immutable history, file metadata and
+A configured root inside any freshly discovered worktree or the common Git directory is bypassed,
+including home-directory repositories while reading a linked sibling. This check precedes cache reads
+as well as writes and reuses the current request's validated inventory. Tests inject a temporary directory.
+Only successful, complete immutable history, file metadata and
 selected patch payloads are stored. Local comparisons continue to read and fingerprint all relevant
 bytes before and after the selected patch. No new memory payload cache is used; the existing snapshot
 registry budgets are unchanged.
@@ -192,7 +194,8 @@ the new record (including staging bytes) fits. Failed cleanup stops publication.
 and are replaced by the next successful read. A private temporary record is atomically renamed;
 crash leftovers have one fixed staging name, reclaimed by the next writer. Lock files are never
 unlinked. Descriptor-relative no-follow access rejects symlinks, hard links, special files and unsafe
-permissions. Missing/unwritable storage, malformed records and old schemas fall back to Git; coroutine
+permissions. Non-ASCII fixed headers and invalid UTF-8 payloads are misses, including checksum-valid
+invalid payloads. Missing/unwritable storage, malformed records and old schemas fall back to Git; coroutine
 cancellation still propagates. There is no background cleanup process or watcher.
 
 Warm hits skip the expensive `log`/`diff` command, but still perform bounded dependency validation.

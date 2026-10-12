@@ -114,18 +114,19 @@ class GitDiffReader(
         DiffWorktrees(DiffRepository(common), current, trees, now())
     }
 
-    private suspend fun verify(repository: DiffRepository, worktree: DiffWorktree): DiffWorktree {
+    private data class VerifiedWorktree(val tree: DiffWorktree, val roots: List<String>)
+
+    private suspend fun verify(repository: DiffRepository, worktree: DiffWorktree): VerifiedWorktree {
         val inventory = worktrees(worktree.path).value()
         if (inventory.repository != repository) gitFailure(DiffReason.foreign_worktree, "Repository changed", DiffErrorCode.invalid)
         val fresh = inventory.worktrees.singleOrNull { it.id == worktree.id && it.path == worktree.path }
             ?: gitFailure(DiffReason.foreign_worktree, "Unknown worktree", DiffErrorCode.invalid)
         fresh.unavailable?.let { throw GitReadFailure(it) }
-        return fresh
+        return VerifiedWorktree(fresh, inventory.worktrees.map { it.path })
     }
 
     override suspend fun refs(repository: DiffRepository, worktree: DiffWorktree): DiffResponse<DiffRefs> = response {
-        val tree = verify(repository, worktree)
-        refsAt(repository, tree)
+        refsAt(repository, verify(repository, worktree).tree)
     }
 
     private suspend fun refsAt(repository: DiffRepository, tree: DiffWorktree): DiffRefs {
@@ -181,7 +182,8 @@ class GitDiffReader(
     }
 
     override suspend fun commits(repository: DiffRepository, worktree: DiffWorktree, baseRef: String?, cursor: DiffCommitCursor?): DiffResponse<DiffCommits> = response {
-        val tree = verify(repository, worktree)
+        val source = verify(repository, worktree)
+        val tree = source.tree
         if (cursor != null && baseRef != null) gitFailure(DiffReason.invalid_request, "Cursor and baseRef are exclusive", DiffErrorCode.invalid)
         cursor?.let { validateDiffCursor(it)?.let { problem -> throw GitReadFailure(problem) } }
         // --skip still walks history: explicitly bound caller-controlled paging work.
@@ -197,7 +199,7 @@ class GitDiffReader(
         val args = listOf("log", "--topo-order", "--max-count=${DIFF_COMMIT_PAGE_SIZE + 1}", "--skip=${pinned.offset}",
             "-z", "--format=%H%x00%P%x00%an%x00%at%x00%s", "--encoding=UTF-8", pinned.headOid) +
             listOfNotNull(pinned.baseOid?.let { "^$it" }) + "--"
-        val context = cacheContext(repository, tree, listOfNotNull(pinned.headOid, pinned.baseOid))
+        val context = cacheContext(repository, source, listOfNotNull(pinned.headOid, pinned.baseOid))
         val key = context?.let { "history-v1:$it:" + Json.encodeToString(pinned) }
         key?.let { diskCache?.get<HistoryPage>(it, now()) }?.let { page ->
             return@response DiffCommits(repository, tree.id, pinned, page.commits,
@@ -216,7 +218,7 @@ class GitDiffReader(
             else DiffCommit(oid, parents, gitText(record[2]), authored * 1000, gitText(record[4]))
         }
         val more = records.size / 5 > DIFF_COMMIT_PAGE_SIZE
-        if (key != null && context == cacheContext(repository, tree, listOfNotNull(pinned.headOid, pinned.baseOid)))
+        if (key != null && context == cacheContext(repository, source, listOfNotNull(pinned.headOid, pinned.baseOid)))
             diskCache?.put(key, HistoryPage(commits, more), now())
         DiffCommits(repository, tree.id, pinned, commits,
             if (more) pinned.copy(offset = pinned.offset + DIFF_COMMIT_PAGE_SIZE) else null, now())
@@ -283,12 +285,13 @@ class GitDiffReader(
     @Serializable private data class PatchPayload(val hunks: List<DiffHunk>)
     @Serializable private data class Observation(val files: List<DiffFile>, val digest: String, val limited: DiffProblem?)
 
-    private suspend fun observe(tree: DiffWorktree, comparison: DiffComparison, context: String?): Observation {
+    private suspend fun observe(source: VerifiedWorktree, comparison: DiffComparison, context: String?): Observation {
+        val tree = source.tree
         val key = context?.let { "files-v1:$it:" + Json.encodeToString(comparison) }
         key?.let { diskCache?.get<Observation>(it, now()) }?.let { return it }
         val result = observeUncached(tree, comparison)
         if (key != null && result.limited == null && result.files.none { it.problem != null } &&
-            context == comparisonContext(tree, comparison)) diskCache?.put(key, result, now())
+            context == comparisonContext(source, comparison)) diskCache?.put(key, result, now())
         return result
     }
 
@@ -366,19 +369,21 @@ class GitDiffReader(
     }
 
     override suspend fun files(repository: DiffRepository, worktree: DiffWorktree, selection: DiffSelection): DiffResponse<DiffFiles> = response {
-        val tree = verify(repository, worktree)
+        val source = verify(repository, worktree)
+        val tree = source.tree
         val comparison = comparison(repository, tree, selection)
-        val observation = observe(tree, comparison, comparisonContext(tree, comparison))
+        val observation = observe(source, comparison, comparisonContext(source, comparison))
         DiffFiles(DiffSnapshot(observation.digest, comparison, now()), observation.files, observation.limited)
     }
 
     override suspend fun patch(repository: DiffRepository, worktree: DiffWorktree, snapshot: DiffSnapshot, file: DiffFile): DiffResponse<DiffPatch> = response {
-        val tree = verify(repository, worktree)
+        val source = verify(repository, worktree)
+        val tree = source.tree
         val comparison = snapshot.comparison
         if (comparison.repository != repository || comparison.worktreeId != tree.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
         suspend fun check(): String? {
-            val context = comparisonContext(tree, comparison)
-            val observation = observe(tree, comparison, context)
+            val context = comparisonContext(source, comparison)
+            val observation = observe(source, comparison, context)
             if (observation.digest != snapshot.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
             if (file !in observation.files) gitFailure(DiffReason.unknown_file, "Unknown snapshot file", DiffErrorCode.invalid)
             return context
@@ -415,9 +420,9 @@ class GitDiffReader(
         result
     }
 
-    private suspend fun comparisonContext(tree: DiffWorktree, comparison: DiffComparison): String? {
+    private suspend fun comparisonContext(source: VerifiedWorktree, comparison: DiffComparison): String? {
         if (comparison.mode == DiffMode.local) return null
-        return cacheContext(comparison.repository, tree,
+        return cacheContext(comparison.repository, source,
             listOfNotNull(comparison.headOid, comparison.baseOid, comparison.mergeBaseOid,
                 comparison.commitOid, comparison.leftOid, comparison.rightOid).distinct(),
             listOfNotNull(comparison.leftOid, comparison.rightOid))
@@ -428,8 +433,11 @@ class GitDiffReader(
      * Object inventory includes unreachable objects and alternates, so deletion cannot keep an old hit.
      * Large or unreadable contexts bypass storage; they do not narrow ordinary reader limits.
      */
-    private suspend fun cacheContext(repository: DiffRepository, tree: DiffWorktree, pins: List<String>, endpoints: List<String>? = null): String? {
-        if (diskCache == null || !diskCache.isOutside(repository.commonDir, tree.path)) return null
+    private suspend fun cacheContext(repository: DiffRepository, source: VerifiedWorktree, pins: List<String>, endpoints: List<String>? = null): String? {
+        // The fresh inventory belongs only to this request; reject every sibling before even get()
+        // can create a directory/lock. Reuse verification rather than spawning another discovery.
+        if (diskCache == null || !diskCache.isOutside(repository.commonDir, *source.roots.toTypedArray())) return null
+        val tree = source.tree
         return try {
             val config = read(tree.path, listOf("config", "--null", "--list"))
             // Git also reads this external file when producing a selected patch. Its path alone
