@@ -96,7 +96,7 @@ class DiffRoutesTest {
         val error = assertNotNull(TRANSPORT_JSON.decodeFromString<DiffResponse<DiffFiles>>(text).error)
         if (reason != null) assertEquals(reason, error.reason)
     }
-    private fun fixture(reader: DiffReader = GitDiffReader(), limits: DiffServiceLimits = DiffServiceLimits(), production: Boolean = false, block: suspend Fixture.() -> Unit) = runBlocking {
+    private fun fixture(reader: DiffReader = GitDiffReader(), limits: DiffServiceLimits = DiffServiceLimits(), production: Boolean = false, diskCache: Boolean = false, block: suspend Fixture.() -> Unit) = runBlocking {
         withTimeout(60_000) {
             val temp = CapturedProcess.run(listOf("/usr/bin/mktemp", "-d", "/tmp/kotgent-diff-http.XXXXXX"), env)
             assertEquals(0, temp.exitCode)
@@ -104,7 +104,8 @@ class DiffRoutesTest {
             val store = FakeEventStore()
             store.upsertSession(SessionMeta(SessionId("diff"), name = "", agent = "shell", cwd = "$dir/repo", tmuxSession = "unused",
                 state = SessionState.running, createdAt = 0, updatedAt = 0))
-            val service = DiffService(store, reader, limits)
+            val effectiveReader = if (diskCache) GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$dir/cache"))) else reader
+            val service = DiffService(store, effectiveReader, limits)
             val server = if (production) null else embeddedServer(ServerCIO, host = "127.0.0.1", port = 0) {
                 routing { val _ = authenticated({ token }) { route(API_PREFIX) { diffRoutes(service) } } }
             }
@@ -115,7 +116,7 @@ class DiffRoutesTest {
                     ProviderIdCapture(store, scope), { _, _, _ -> false }, { _, _ -> null }, setOf("shell")),
                 eventStore = store, preferencesStore = FakePreferencesStore(), tokens = TokenHolder(token),
                 tmux = io.kotgent.tmux.Tmux(socket = "kotgent-diff-routes-unused", tmuxPath = "/usr/bin/false"),
-                webUiDir = null, diffReader = reader,
+                webUiDir = null, diffReader = effectiveReader,
             ) else null
             val client = routeTestClient()
             try {
@@ -138,6 +139,29 @@ class DiffRoutesTest {
                 assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", dir), env).exitCode)
             }
         }
+    }
+
+    @Test fun populatedDiskCacheStillRequiresAuthenticationAndCurrentSessionSource() = fixture(diskCache = true, production = true) {
+        write("a", "second\n"); git("add", "."); git("commit", "-m", "second")
+        val oid = git("rev-parse", "HEAD")
+        val files = files("mode" to "commit", "commitOid" to oid)
+        patch(files).data<DiffPatch>()
+        val _ = files("mode" to "commit", "commitOid" to oid)
+        patch(files).data<DiffPatch>()
+        assertEquals(HttpStatusCode.Unauthorized, get("files", "worktreeId" to root, "mode" to "commit", "commitOid" to oid, bearer = false).status)
+        assertEquals(HttpStatusCode.Forbidden, get("files", "worktreeId" to root, "mode" to "commit", "commitOid" to oid,
+            bearer = false, cookie = true, origin = "https://evil.example").status)
+        val original = assertNotNull(store.getSession(SessionId("diff")))
+        store.upsertSession(original.copy(id = SessionId("other")))
+        get("patch", "worktreeId" to root, "snapshot" to files.snapshot.id, "fileId" to files.files.single().fileId,
+            session = "other").problem(HttpStatusCode.Conflict, DiffReason.snapshot_expired)
+        get("files", "worktreeId" to root, "mode" to "commit", "commitOid" to oid, session = "other").data<DiffFiles>()
+        get("patch", "worktreeId" to root, "snapshot" to files.snapshot.id, "fileId" to files.files.single().fileId,
+            session = "other").data<DiffPatch>()
+        assertEquals(0, CapturedProcess.run(listOf("/usr/bin/git", "init", "$dir/foreign"), env).exitCode)
+        store.upsertSession(original.copy(cwd = "$dir/foreign"))
+        patch(files).problem(HttpStatusCode.BadRequest, DiffReason.foreign_worktree)
+        get("files", "worktreeId" to root, "mode" to "commit", "commitOid" to oid).problem(HttpStatusCode.BadRequest, DiffReason.foreign_worktree)
     }
 
     @Test fun authenticationAndOriginPrecedeReaderAccess() {

@@ -288,6 +288,8 @@ object Commands {
                             planStore = storage.planStore.value,
                             onPlanReview = { topic -> if (push != null) { val _ = planWakes.trySend(topic) } },
                             port = port,
+                            diffReader = io.kotgent.diff.GitDiffReader(diskCache = io.kotgent.diff.DiffDiskCache(
+                                io.kotgent.host.DiskCacheFiles("${kotgentHome()}/diff-cache-v1"))),
                         )
                     },
                 )

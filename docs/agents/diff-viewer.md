@@ -161,3 +161,39 @@ attributed to a particular agent.
 
 Real-device Safari and installed-PWA checks remain separate from Chromium automation; see
 [the testing checklist](../TESTING.md#git-diff-viewer). Linux native runtime requires its own CI run.
+
+## Immutable disk payload cache
+
+Production uses a private `~/.kotgent/diff-cache-v1` directory outside the checkout and `.git`.
+A configured root inside the selected checkout or Git directory is bypassed, including home-directory
+repositories. Tests inject a temporary directory. Only successful, complete immutable history, file metadata and
+selected patch payloads are stored. Local comparisons continue to read and fingerprint all relevant
+bytes before and after the selected patch. No new memory payload cache is used; the existing snapshot
+registry budgets are unchanged.
+
+Every request still passes HTTP authorization, current session/cwd/worktree/common-directory checks,
+ref resolution where applicable, and object membership/type checks before lookup. Keys hash a reader
+schema, canonical repository and worktree, full pinned OIDs, parent/paths/paging/options, effective Git
+configuration, shallow/graft bytes and the available object inventory. Diff keys also include index
+entries and the bytes of applicable checkout, info and global attributes. This intentionally invalidates
+more broadly than necessary (even an unrelated object addition can cause a miss). Context reads are
+bounded; an unprovable, unsafe or oversized dependency bypasses caching without reducing the ordinary
+reader's limits. Worktrees and clones do not share entries. The session-bound snapshot and response
+timestamps come from the current request, not a stored authorization envelope.
+
+The disk budget is 256 MiB, at most 1,024 records, at most 8 MiB per record, retained for at most seven
+days from publication. Records include schema, key and content checksums. Fixed hashed slots (four slots per set) bound
+lookup and cleanup work; collisions are ordinary misses. A permanent, nonblocking cross-process file lock
+serializes publication and eviction, with contention treated as a miss. Before each write, at most
+1,024 slots are inspected, unsafe/expired records are removed, and oldest records are evicted until
+the new record (including staging bytes) fits. Failed cleanup stops publication. Corrupt payloads miss
+and are replaced by the next successful read. A private temporary record is atomically renamed;
+crash leftovers have one fixed staging name, reclaimed by the next writer. Lock files are never
+unlinked. Descriptor-relative no-follow access rejects symlinks, hard links, special files and unsafe
+permissions. Missing/unwritable storage, malformed records and old schemas fall back to Git; coroutine
+cancellation still propagates. There is no background cleanup process or watcher.
+
+Warm hits skip the expensive `log`/`diff` command, but still perform bounded dependency validation.
+That validation can dominate small repositories; a disk hit is not a promise of lower latency for every
+fixture. The opt-in benchmark reports disk-cold and restart-warm history/files/patch separately from
+its original cache-disabled scenarios, with Git command counts and uncontrolled OS page-cache state.

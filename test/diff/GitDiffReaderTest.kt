@@ -13,6 +13,11 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fwrite
@@ -77,6 +82,221 @@ class GitDiffReaderTest {
         } finally {
             assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", directory), env).exitCode)
         }
+    }
+
+    @Test fun immutableDiskHitsSurviveReaderRestartAndUseFreshEnvelopes() = fixture {
+        write("a", "one\n"); commit()
+        write("a", "two\n"); val tip = commit("two")
+        val counts = mutableMapOf<String, Long>()
+        var clock = 1000L
+        fun cached() = GitDiffReader(now = { clock }, diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, value -> counts[name] = (counts[name] ?: 0) + value })
+        val inventory = inventory()
+        val tree = inventory.worktrees.single()
+        val selection = DiffSelection(DiffMode.commit, commitOid = tip)
+        val cold = cached()
+        val history = cold.commits(inventory.repository, tree).ok()
+        val files = cold.files(inventory.repository, tree, selection).ok()
+        val patch = cold.patch(inventory.repository, tree, files.snapshot, files.files.single()).ok()
+        assertEquals(1L, counts["logCommands"])
+        assertEquals(2L, counts["diffCommands"])
+        counts.clear(); clock++
+        val restarted = cached()
+        val warmHistory = restarted.commits(inventory.repository, tree).ok()
+        val warmFiles = restarted.files(inventory.repository, tree, selection).ok()
+        val warmPatch = restarted.patch(inventory.repository, tree, warmFiles.snapshot, warmFiles.files.single()).ok()
+        assertEquals(history.commits, warmHistory.commits)
+        assertEquals(files.files, warmFiles.files)
+        assertEquals(patch.hunks, warmPatch.hunks)
+        assertEquals(clock, warmHistory.readAt)
+        assertEquals(clock, warmFiles.snapshot.readAt)
+        assertEquals(clock, warmPatch.snapshot.readAt)
+        assertNull(counts["logCommands"])
+        assertNull(counts["diffCommands"])
+        assertTrue(counts.getValue("gitCommands") > 0) // Trust/source/object checks still execute.
+        // A missing disk is just a cold read; local reads never enter this cache.
+        assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", "$directory/cache"), env).exitCode)
+        restarted.files(inventory.repository, tree, selection).ok()
+        assertEquals(1L, counts["diffCommands"])
+        counts.clear()
+        restarted.files(inventory.repository, tree, DiffSelection()).ok()
+        restarted.files(inventory.repository, tree, DiffSelection()).ok()
+        assertEquals(2L, counts["diffCommands"])
+    }
+
+    @Test fun immutableCacheInvalidatesConfigAttributesAndObjectMembership() = fixture {
+        write("a", "one\n"); commit()
+        write("a", "two\n"); val tip = commit("two")
+        var diffs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "diffCommands") diffs += n })
+        val inventory = inventory()
+        val tree = inventory.worktrees.single()
+        val selection = DiffSelection(DiffMode.commit, commitOid = tip)
+        suspend fun read() = cached.files(inventory.repository, tree, selection).ok()
+        val original = read()
+        val _ = read(); assertEquals(1L, diffs)
+        git("config", "diff.algorithm", "patience")
+        val _ = read(); assertEquals(2L, diffs)
+        write(".gitattributes", "a -diff\n")
+        assertEquals(DiffFileKind.binary, read().files.single().kind)
+        assertEquals(3L, diffs)
+        assertEquals(0, CapturedProcess.run(listOf("/bin/cp", "-p", "$root/.gitattributes", "$directory/attributes-stamp"), env).exitCode)
+        write(".gitattributes", "a diff \n")
+        assertEquals(0, CapturedProcess.run(listOf("/usr/bin/touch", "-r", "$directory/attributes-stamp", "$root/.gitattributes"), env).exitCode)
+        assertEquals(DiffFileKind.text, read().files.single().kind)
+        assertEquals(4L, diffs)
+        cached.patch(inventory.repository, tree, original.snapshot, original.files.single()).ok()
+        val blob = git("rev-parse", "$tip:a")
+        assertEquals(0, platform.posix.unlink("$root/.git/objects/${blob.take(2)}/${blob.drop(2)}"))
+        assertNotNull(cached.patch(inventory.repository, tree, original.snapshot, original.files.single()).error)
+        assertEquals(0, platform.posix.unlink("$root/.git/objects/${tip.take(2)}/${tip.drop(2)}"))
+        assertEquals(DiffReason.missing_object, cached.commits(inventory.repository, tree).error?.reason)
+    }
+
+    @Test fun immutableCacheResolvesMovedDeletedRefsAndIsolatesClonesAndWorktrees() = fixture {
+        write("a", "one\n"); val first = commit()
+        git("branch", "base")
+        write("a", "two\n"); val second = commit("two")
+        var diffs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "diffCommands") diffs += n })
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        val branch = DiffSelection(DiffMode.branch, baseRef = "refs/heads/base")
+        val files = cached.files(inventory.repository, tree, branch).ok()
+        cached.files(inventory.repository, tree, branch).ok(); assertEquals(1L, diffs)
+        git("branch", "-f", "base", second)
+        assertTrue(cached.files(inventory.repository, tree, branch).ok().files.isEmpty())
+        git("branch", "-D", "base")
+        assertEquals(DiffReason.missing_ref, cached.files(inventory.repository, tree, branch).error?.reason)
+        // Pinned patch still uses its OIDs even after its mutable ref disappears.
+        assertEquals(first, files.snapshot.comparison.leftOid)
+        assertTrue(cached.patch(inventory.repository, tree, files.snapshot, files.files.single()).ok().hunks.isNotEmpty())
+        val selection = DiffSelection(DiffMode.commit, commitOid = second)
+        cached.files(inventory.repository, tree, selection).ok()
+        git("worktree", "add", "--detach", "$directory/linked", second)
+        val linked = cached.worktrees("$directory/linked").ok()
+        val beforeLinked = diffs
+        val linkedFiles = cached.files(linked.repository, linked.worktrees.single { it.current }, selection).ok()
+        assertTrue(diffs > beforeLinked)
+        assertEquals(io.kotgent.host.canonicalWorktreePath("$directory/linked"), linkedFiles.snapshot.comparison.worktreeId)
+        git("clone", "--no-hardlinks", root, "$directory/clone")
+        val clone = cached.worktrees("$directory/clone").ok(); val beforeClone = diffs
+        cached.files(clone.repository, clone.worktrees.single(), selection).ok()
+        assertTrue(diffs > beforeClone)
+        assertEquals(DiffReason.foreign_worktree, cached.files(inventory.repository, clone.worktrees.single(), selection).error?.reason)
+    }
+
+    @Test fun cacheBypassesUnprovableAttributesAndNeverStoresLimitedPatches() = fixture {
+        write("a", "one\n"); commit()
+        write("a", "line\n".repeat(DIFF_MAX_PATCH_LINES + 1)); val tip = commit("large")
+        var diffs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "diffCommands") diffs += n })
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        val selection = DiffSelection(DiffMode.commit, commitOid = tip)
+        val files = cached.files(inventory.repository, tree, selection).ok()
+        repeat(2) {
+            val before = diffs
+            assertNotNull(cached.patch(inventory.repository, tree, files.snapshot, files.files.single()).ok().limited)
+            assertTrue(diffs > before)
+        }
+        write("../attributes", "a -diff\n")
+        assertEquals(0, symlink("$directory/attributes", "$root/.gitattributes"))
+        val before = diffs
+        repeat(2) { cached.files(inventory.repository, tree, selection).ok() }
+        assertEquals(before + 2, diffs)
+    }
+
+    @Test fun cacheMustStayOutsideTheCheckoutAndGitDirectory() = fixture {
+        write("a", "one\n"); val tip = commit()
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        for (path in listOf("$root/cache", "$root/.git/cache")) {
+            var diffs = 0L
+            val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles(path)),
+                measure = { name, n -> if (name == "diffCommands") diffs += n })
+            repeat(2) { cached.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = tip)).ok() }
+            assertEquals(2L, diffs)
+            assertNull(io.kotgent.host.canonicalWorktreePath(path))
+        }
+    }
+
+    @Test fun infoGlobalIgnoredNestedAndIndexAttributesAreCacheDependencies() = fixture {
+        assertEquals(0, platform.posix.mkdir("$root/d", 448u))
+        write("d/a", "one\n"); commit()
+        write("d/a", "two\n"); val tip = commit("two")
+        var diffs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "diffCommands") diffs += n })
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        suspend fun kind(): DiffFileKind {
+            val first = cached.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = tip)).ok().files.single().kind
+            val before = diffs
+            val second = cached.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = tip)).ok().files.single().kind
+            assertEquals(first, second)
+            assertEquals(before, diffs) // Each dependency state really populates and hits the cache.
+            return first
+        }
+        assertEquals(DiffFileKind.text, kind())
+        write(".git/info/attributes", "d/a -diff\n")
+        assertEquals(DiffFileKind.binary, kind())
+        assertEquals(0, platform.posix.unlink("$root/.git/info/attributes"))
+        write("../global-attributes", "d/a -diff\n")
+        git("config", "core.attributesFile", "${io.kotgent.host.canonicalWorktreePath(directory)}/global-attributes")
+        assertEquals(DiffFileKind.binary, kind())
+        write("../global-attributes", "d/a diff \n")
+        assertEquals(DiffFileKind.text, kind())
+        write(".gitignore", "**/.gitattributes\n")
+        write("d/.gitattributes", "a -diff\n")
+        assertEquals("d/.gitattributes", git("check-ignore", "d/.gitattributes"))
+        assertEquals(DiffFileKind.binary, kind())
+        git("add", "-f", "d/.gitattributes")
+        assertEquals(0, platform.posix.unlink("$root/d/.gitattributes"))
+        // Match fresh Git when the checkout attribute is absent; tree-to-tree diff need not load the index.
+        assertEquals(reader.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = tip)).ok().files.single().kind, kind())
+        write("d/.gitattributes", "a diff \n"); git("add", "-f", "d/.gitattributes")
+        assertEquals(0, platform.posix.unlink("$root/d/.gitattributes"))
+        assertEquals(DiffFileKind.text, kind())
+    }
+
+    @Test fun cancellationDuringCacheValidationDoesNotFallBackOrPublish() = fixture {
+        write("a", "one\n"); commit()
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        val marker = "$directory/validation-entered"
+        fun quote(value: String) = "'" + value.replace("'", "'\\''") + "'"
+        val wrapper = "$directory/cache-git"
+        write("../cache-git", "#!/bin/sh\nfor arg do\nif [ \"\$arg\" = --batch-all-objects ]; then " +
+            "/usr/bin/touch ${quote(marker)}; /bin/sleep 30; fi\ndone\nexec /usr/bin/git \"\$@\"\n")
+        assertEquals(0, platform.posix.chmod(wrapper, 448u))
+        var logs = 0L
+        val cached = GitDiffReader(executable = wrapper, diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "logCommands") logs += n })
+        coroutineScope {
+            val pending = async { cached.commits(inventory.repository, tree) }
+            withTimeout(5_000) { while (readRegularFileBytesOrNull(marker) == null) delay(10) }
+            pending.cancelAndJoin()
+            assertTrue(pending.isCancelled)
+        }
+        assertEquals(0L, logs)
+        assertNull(io.kotgent.host.canonicalWorktreePath("$directory/cache"))
+    }
+
+    @Test fun historyCacheTracksShallowDeepeningWithUnchangedTip() = fixture {
+        repeat(3) { write("a", "$it\n"); commit("commit $it") }
+        git("clone", "--depth=1", "file://$root", "$directory/shallow")
+        var logs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "logCommands") logs += n })
+        val inventory = cached.worktrees("$directory/shallow").ok(); val tree = inventory.worktrees.single()
+        val first = cached.commits(inventory.repository, tree).ok()
+        assertEquals(1, first.commits.size)
+        assertTrue(first.commits.single().parents.isNotEmpty())
+        cached.commits(inventory.repository, tree).ok(); assertEquals(1L, logs)
+        git("fetch", "--deepen=2", path = tree.path)
+        val deeper = cached.commits(inventory.repository, tree).ok()
+        assertEquals(first.cursor?.headOid, deeper.cursor?.headOid)
+        assertEquals(3, deeper.commits.size)
+        assertEquals(2L, logs)
     }
 
     @Test fun inventoriesLinkedDetachedLockedMissingAndBareRepositories() = fixture {

@@ -19,10 +19,12 @@ linkerOpts.linux = -lutil -ldl
 #include <spawn.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <limits.h>
 #include <stdint.h>
@@ -334,3 +336,16 @@ static int kotgent_at_file_kind(int directory, const char *path) {
 static long kotgent_readlinkat(int directory, const char *path, char *bytes, unsigned long capacity) {
     return (long)readlinkat(directory, path, bytes, (size_t)capacity);
 }
+
+// Cache mutations remain relative to the opened private directory, including on rename races.
+static int kotgent_cache_open(int directory, const char *name, int exclusive) {
+    return openat(directory, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK |
+                  (exclusive ? O_EXCL : 0), 0600);
+}
+static int kotgent_cache_remove(int directory, const char *name) {
+    return unlinkat(directory, name, 0);
+}
+static int kotgent_cache_publish(int directory, const char *name) {
+    return renameat(directory, "pending", directory, name);
+}
+static int kotgent_cache_lock(int fd) { return flock(fd, LOCK_EX | LOCK_NB); }
