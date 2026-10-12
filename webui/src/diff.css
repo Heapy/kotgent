@@ -1,0 +1,57 @@
+.diff-panel { container: diff / inline-size; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: auto; background: var(--bg); color: var(--text); font-size: 12px; }
+.diff-panel p { margin: 8px 12px; overflow-wrap: anywhere; }
+.diff-panel button, .diff-panel select, .diff-panel input[type="search"] { min-height: 36px; border: 1px solid var(--border); border-radius: 5px; background: var(--input-bg); color: var(--text); padding: 6px 8px; max-width: 100%; }
+.diff-panel button { cursor: pointer; }
+.diff-panel button:disabled { opacity: .55; cursor: default; }
+.diff-panel :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.diff-panel label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.diff-controls, .diff-patch-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.diff-worktree { flex: 1 1 230px; }
+.diff-source { color: var(--muted); font-family: monospace; }
+.diff-panel .diff-check { flex-direction: row; align-items: center; min-height: 36px; }
+.diff-check input { accent-color: var(--accent); }
+.diff-status { padding: 8px 12px; background: #30263a; border-bottom: 1px solid var(--border); }
+.diff-history { border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.diff-history summary { cursor: pointer; padding: 10px 12px; }
+.diff-history ol { max-height: 180px; overflow: auto; padding: 0 12px; list-style: none; }
+.diff-history li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.diff-history button { text-align: left; }
+.diff-history small, .diff-files small { display: block; color: var(--muted); margin-top: 4px; }
+.diff-history button[aria-pressed="true"], .diff-files button[aria-current="true"] { background: var(--row-active); border-color: var(--accent); }
+.diff-commit { padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
+.diff-commit p { margin-left: 0; }
+.diff-body { display: flex; flex: 1; min-width: 0; min-height: 220px; overflow: hidden; }
+.diff-files { display: flex; flex-direction: column; flex: 0 0 260px; width: 260px; min-height: 0; padding: 10px; border-right: 1px solid var(--border); background: var(--panel); }
+.diff-files ul { list-style: none; padding: 0; margin: 8px 0 0; overflow: auto; flex: 1; }
+.diff-files li { margin-bottom: 4px; }
+.diff-files button { text-align: left; width: 100%; }
+.diff-file-path { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-patch-pane { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.diff-patch-pane h3 { font: 12px/1.5 monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.diff-patch-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.diff-back { display: none; }
+.diff-lines { border-collapse: collapse; width: 100%; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.diff-lines th { text-align: left; font-weight: 400; padding: 5px 8px; color: var(--muted); }
+.diff-lines td { vertical-align: top; padding: 0 6px; }
+.diff-number { width: 4ch; min-width: 4ch; text-align: right; color: #aab3c3; user-select: none; }
+.diff-sign { width: 2ch; user-select: none; }
+.diff-cell { white-space: pre; }
+.diff-cell code { font: inherit; }
+.diff-addition { background: #183b2b; color: #cdf4db; }
+.diff-deletion { background: #45242b; color: #ffd5db; }
+.diff-empty { background: #1b1e24; }
+.diff-hunk { background: #202d41; }
+.diff-hunk th { color: #c0d3f0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-no-newline { font-style: italic; color: #c5bdad; }
+.diff-wrap .diff-lines { table-layout: fixed; }
+.diff-wrap .diff-cell { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-wrap .diff-unified th:nth-child(1), .diff-wrap .diff-unified th:nth-child(2) { width: 5ch; }
+.diff-wrap .diff-unified th:nth-child(3) { width: 7ch; }
+.diff-wrap .diff-split col:nth-child(2), .diff-wrap .diff-split col:nth-child(4) { width: calc((100% - 10ch) / 2); }
+@container diff (max-width: 680px) {
+  .diff-files { flex: 1; width: auto; border-right: 0; }
+  .diff-page-files .diff-patch-pane, .diff-page-patch .diff-files { display: none; }
+  .diff-back { display: inline-block; }
+  .diff-controls, .diff-patch-tools { gap: 6px; padding: 8px; }
+  .diff-panel button { min-height: 40px; }
+}
