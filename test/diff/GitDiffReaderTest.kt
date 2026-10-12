@@ -306,4 +306,67 @@ class GitDiffReaderTest {
         assertEquals(DiffReason.no_merge_base, reader.files(inventory.repository, tree,
             DiffSelection(DiffMode.branch, baseRef = "refs/heads/main")).error?.reason)
     }
+
+    @Test fun filterNamesContainingEqualsCannotLaunchCommands() = fixture {
+        write("a", "one\n"); commit()
+        write(".gitattributes", "* filter=evil=driver\n")
+        val marker = "$directory/equal-filter-executed"
+        for (part in listOf("clean", "smudge", "process")) {
+            git("config", "filter.evil=driver.$part", "touch $marker")
+        }
+        git("config", "filter.evil=driver.required", "true")
+        write("a", "two\n")
+        val inventory = inventory()
+        val tree = inventory.worktrees.single()
+        for (scope in DiffLocalScope.entries) {
+            val response = reader.files(inventory.repository, tree, DiffSelection(scope = scope))
+            assertNull(readRegularFileBytesOrNull(marker), "A configured filter command ran during $scope metadata")
+            val files = response.ok()
+            if (scope != DiffLocalScope.staged) {
+                val patch = reader.patch(inventory.repository, tree, files.snapshot, files.files.single { it.newPath == "a" })
+                assertNull(readRegularFileBytesOrNull(marker), "A configured filter command ran during $scope patch")
+                assertTrue(patch.ok().hunks.isNotEmpty())
+            }
+        }
+    }
+
+    @Test fun submoduleHeadChangesInvalidateLocalSnapshotWithoutReadingNestedContent() = fixture {
+        write("a", "one\n"); commit()
+        val nested = "$root/module"
+        git("init", "-b", "main", nested)
+        git("commit", "--allow-empty", "-m", "A", path = nested)
+        val a = git("rev-parse", "HEAD", path = nested)
+        git("update-index", "--add", "--cacheinfo", "160000,$a,module")
+        git("commit", "-m", "record gitlink")
+        git("commit", "--allow-empty", "-m", "B", path = nested)
+        val atB = files()
+        assertEquals(DiffFileKind.submodule, atB.files.single().kind)
+        assertTrue(patch(atB).ok().hunks.isEmpty())
+        git("commit", "--allow-empty", "-m", "C", path = nested)
+        assertEquals(DiffReason.snapshot_changed, patch(atB).error?.reason)
+        assertNotEquals(atB.snapshot.id, files().snapshot.id)
+    }
+
+    @Test fun removalFromIndexKeepsTrackedAndUntrackedStatusesSeparate() = fixture {
+        write("a", "one\n"); commit()
+        git("rm", "--cached", "a")
+        val staged = files(DiffSelection(scope = DiffLocalScope.staged)).files.single()
+        assertEquals(DiffChange.deleted, staged.change)
+        assertEquals("D", staged.indexStatus)
+        assertEquals(" ", staged.worktreeStatus)
+        val unstaged = files(DiffSelection(scope = DiffLocalScope.unstaged)).files.single()
+        assertEquals(DiffChange.untracked, unstaged.change)
+        assertEquals("?", unstaged.indexStatus)
+        assertEquals("?", unstaged.worktreeStatus)
+    }
+
+    @Test fun displayConfigCannotSuppressBlankPatchContext() = fixture {
+        write("a", "top\n\nbottom\n"); commit()
+        git("config", "diff.suppressBlankEmpty", "true")
+        write("a", "TOP\n\nbottom\n")
+        val patch = patch(files()).ok()
+        val blank = patch.hunks.single().lines.single { it.kind == DiffLineKind.context && it.text.isEmpty() }
+        assertEquals(2, blank.oldLine)
+        assertEquals(2, blank.newLine)
+    }
 }
