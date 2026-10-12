@@ -293,7 +293,7 @@ describe("visible columns", () => {
   });
 
   test("hide a column whose share is narrower than the minimum", () => {
-    const tab = only(moveDivider(twoColumns(), "t1", 0, 1, 0.4, 0.05, 2));
+    const tab = only(moveDivider(focusColumn(twoColumns(), "t1", 0, 1), "t1", 0, 1, 0.4, 0.05, 2));
 
     const shown = visibleColumns(tab, options(1000));
     assert.deepEqual(shown.map((c) => c.type), ["terminal"]);
@@ -558,4 +558,33 @@ test("Open changes is a session command without a task link or running terminal 
   assert.equal(opened, 1);
   assert.ok(buildCommands({ actions }).find(c => c.id === command.id)!.disabled);
   assert.equal(buildCommands({ activeSession: session, onBoard: true, actions }).some(c => c.id === command.id), false);
+});
+
+
+test("opening Diff keeps it visible after a weighted desktop layout narrows", () => {
+  const mixed = setColumnType(twoColumns(), "t1", 1, "diff", 2);
+  const resized = moveDivider(mixed, "t1", 0, 1, .2, .1, 3);
+  const original = focusColumn(resized, "t1", 0, 4);
+  const opened = openDiffTab(original, 5);
+  const stored = JSON.stringify(opened);
+  const options = { width: 1200, minWidth: 320, narrow: false, available: AVAILABLE_COLUMN_TYPES };
+  assert.deepEqual(visibleColumns(only(opened), options).map(c => c.type), ["terminal", "diff"]);
+  assert.deepEqual(visibleColumns(only(opened), { ...options, width: 900 }).map(c => c.type), ["diff"]);
+  const repeated = openDiffTab(opened, 6);
+  assert.equal(repeated, opened);
+  assert.deepEqual(visibleColumns(only(repeated), { ...options, width: 900 }).map(c => c.type), ["diff"]);
+  assert.equal(JSON.stringify(opened), stored);
+  assert.equal(only(opened).fractions, only(original).fractions);
+  assert.deepEqual(visibleColumns(only(opened), options).map(c => c.type), ["terminal", "diff"]);
+});
+
+
+test("cancelled checkout discovery suppresses a late read failure", async () => {
+  const controller = new AbortController();
+  let rejectRead!: (error: Error) => void;
+  const pending = new Promise<DiffWorktrees>((_, reject) => { rejectRead = reject; });
+  const result = loadDiffCheckouts(["old-task-host"], () => pending, controller.signal);
+  controller.abort();
+  rejectRead(new Error("old task checkout disappeared"));
+  await assert.rejects(result, { name: "AbortError" });
 });
