@@ -1,6 +1,9 @@
 package io.kotgent.transport
 
 import io.kotgent.core.SessionId
+import io.kotgent.diff.DiffReader
+import io.kotgent.diff.DiffService
+import io.kotgent.diff.GitDiffReader
 import io.kotgent.currentUiVersion
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
@@ -86,7 +89,9 @@ class KotgentServer(
     private val mutexStore: MutexStore? = null,
     private val planStore: PlanStore? = null,
     private val onPlanReview: (String) -> Unit = {},
+    diffReader: DiffReader = GitDiffReader(),
 ) {
+    private val diffService = DiffService(eventStore, diffReader)
     private var terminalRegistry: TerminalRegistry? = null
 
     @Volatile
@@ -148,6 +153,7 @@ class KotgentServer(
                         authRoutes(tokens, tickets, publicUrl, json)
                         val _ = authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
+                                diffRoutes(diffService, json)
                                 fileUploadRoutes(eventStore, fileUploader, json)
                                 controlRoutes(
                                     sessionManager,
@@ -270,6 +276,7 @@ class KotgentServer(
             mutexStore: MutexStore? = null,
             planStore: PlanStore? = null,
             onPlanReview: (String) -> Unit = {},
+            diffReader: DiffReader = GitDiffReader(),
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -292,6 +299,7 @@ class KotgentServer(
             mutexStore = mutexStore,
             planStore = planStore,
             onPlanReview = onPlanReview,
+            diffReader = diffReader,
             host = host,
             port = port,
         )
