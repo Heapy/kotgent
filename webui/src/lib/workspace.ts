@@ -230,11 +230,11 @@ export function visibleColumns(tab: Tab, options: VisibilityOptions): VisibleCol
     .map((column, index) => ({ index: index, type: column.type, share: tab.fractions[index] || 0 }))
     .filter((column) => options.available.includes(column.type));
   if (kept.length === 0) return [];
+  const focused = kept.find((column) => column.index === tab.focus) || kept[0]!;
 
   const measured = !options.narrow && options.width > 0;
   const limit = options.narrow ? 1 : measured ? Math.max(1, Math.floor(options.width / options.minWidth)) : kept.length;
   if (kept.length > limit) {
-    const focused = kept.find((column) => column.index === tab.focus) || kept[0]!;
     const others = kept.filter((column) => column !== focused).slice(0, limit - 1);
     kept = kept.filter((column) => column === focused || others.includes(column));
   }
@@ -245,7 +245,10 @@ export function visibleColumns(tab: Tab, options: VisibilityOptions): VisibleCol
       let narrowest = kept[0]!;
       for (const column of kept) if (column.share <= narrowest.share) narrowest = column;
       if (narrowest.share / total * options.width >= options.minWidth) break;
-      kept = kept.filter((column) => column !== narrowest);
+      // A focused column must remain reachable even if its stored share is the smallest.
+      const removable = kept.filter((column) => column !== focused);
+      const victim = removable.reduce((smallest, column) => column.share <= smallest.share ? column : smallest);
+      kept = kept.filter((column) => column !== victim);
     }
   }
 

@@ -2,7 +2,7 @@
  * rows by revision, live session links outrank stale fetched links, and dirty drafts outrank updates. */
 
 import type { ComponentChildren, JSX } from "preact";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
 import { loadDiffCheckouts } from "../lib/commands.ts";
@@ -181,7 +181,8 @@ export function TaskDetail({
     setChangesLoading(false);
     setChanges(null);
   };
-  useEffect(() => {
+  // Cancel at commit, before an old response can navigate during the passive-effect window.
+  useLayoutEffect(() => {
     cancelChanges();
     return () => { changesRequest.current?.abort(); changesRequest.current = null; };
   }, [taskRef, linkedKey]);
