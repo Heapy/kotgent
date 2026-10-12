@@ -35,20 +35,28 @@ class GitDiffReader(
     private val flags = listOf("--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false",
         "-c", "core.untrackedCache=false", "-c", "core.preloadIndex=false", "-c", "diff.autoRefreshIndex=false",
         "-c", "diff.external=", "-c", "core.pager=cat", "-c", "color.ui=false",
-        "-c", "log.showSignature=false",
+        "-c", "log.showSignature=false", "-c", "diff.suppressBlankEmpty=false",
         "-c", "diff.ignoreSubmodules=dirty", "-c", "submodule.recurse=false")
     private val diffFlags = listOf("--no-ext-diff", "--no-textconv", "--no-color", "--no-relative",
         "--ignore-submodules=dirty", "--find-renames=50%", "-l1000", "--word-diff=none",
         "--output-indicator-new=+", "--output-indicator-old=-", "--output-indicator-context= ")
 
-    private suspend fun command(cwd: String, args: List<String>, extra: List<String> = emptyList()): CapturedProcessResult {
+    private suspend fun command(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap()): CapturedProcessResult {
         if (!cwd.startsWith('/') || '\u0000' in cwd) gitFailure(DiffReason.invalid_request, "Invalid checkout", DiffErrorCode.invalid)
-        return CapturedProcess.run(listOf(executable) + flags + extra + listOf("-C", cwd) + args,
-            environment, DIFF_PROCESS_STDOUT_BYTES, DIFF_PROCESS_STDERR_BYTES,
+        // Keys and values are separate: a valid subsection name can itself contain '='.
+        val configEnvironment = buildMap {
+            put("GIT_CONFIG_COUNT", extra.size.toString())
+            extra.entries.forEachIndexed { index, entry ->
+                put("GIT_CONFIG_KEY_$index", entry.key)
+                put("GIT_CONFIG_VALUE_$index", entry.value)
+            }
+        }
+        return CapturedProcess.run(listOf(executable) + flags + listOf("-C", cwd) + args,
+            environment + configEnvironment, DIFF_PROCESS_STDOUT_BYTES, DIFF_PROCESS_STDERR_BYTES,
             DIFF_PROCESS_TIMEOUT_MILLIS.milliseconds)
     }
 
-    private suspend fun read(cwd: String, args: List<String>, extra: List<String> = emptyList()): ByteArray {
+    private suspend fun read(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap()): ByteArray {
         val result = command(cwd, args, extra)
         if (result.exitCode != 0) gitFailure(DiffReason.git_failed, "Git read failed")
         return result.stdout
@@ -232,11 +240,11 @@ class GitDiffReader(
     }
 
     /** Disable every configured conversion driver before Git can inspect worktree content. */
-    private suspend fun noFilters(path: String): List<String> {
+    private suspend fun noFilters(path: String): Map<String, String> {
         val config = command(path, listOf("config", "--null", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"))
         if (config.exitCode !in 0..1) gitFailure(DiffReason.git_failed, "Cannot inspect Git conversion settings")
-        return gitFields(config.stdout).map(::gitText).distinct().flatMap { key ->
-            listOf("-c", "$key=${if (key.endsWith(".required")) "false" else ""}")
+        return gitFields(config.stdout).map(::gitText).associateWith { key ->
+            if (key.endsWith(".required")) "false" else ""
         }
     }
 
@@ -244,14 +252,15 @@ class GitDiffReader(
 
     private suspend fun observe(tree: DiffWorktree, comparison: DiffComparison): Observation {
         val local = comparison.mode == DiffMode.local
-        val filterFlags = if (local) noFilters(tree.path) else emptyList()
+        val filterFlags = if (local) noFilters(tree.path) else emptyMap()
         val args = diffArgs(tree.path, comparison)
         val raw = read(tree.path, args + listOf("--raw", "--no-abbrev", "-z", "--"), filterFlags)
         val statsBytes = read(tree.path, args + listOf("--numstat", "-z", "--"), filterFlags)
         val stats = parseGitNumstat(statsBytes).associateBy { it.newPath }
         val statusBytes = if (local) read(tree.path, listOf("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"), filterFlags) else byteArrayOf()
         val statuses = parseGitStatus(statusBytes)
-        val statusByPath = statuses.associateBy { it.path }
+        val trackedStatuses = statuses.filter { it.index != "?" }
+        val statusByPath = trackedStatuses.associateBy { it.path }
         // Raw worktree diff can report stat-dirty entries whose bytes cancel the staged edit.
         // Numstat runs content comparison (and includes 0/0 mode-only records).
         val files = parseGitRaw(raw).filter { rawFile ->
@@ -259,7 +268,7 @@ class GitDiffReader(
         }.map { rawFile ->
             val file = rawFile.file
             val stat = stats[file.newPath ?: file.oldPath]
-            val status = statusByPath[file.newPath ?: file.oldPath] ?: statuses.firstOrNull { it.oldPath == file.oldPath }
+            val status = statusByPath[file.newPath ?: file.oldPath] ?: trackedStatuses.firstOrNull { it.oldPath != null && it.oldPath == file.oldPath }
             val conflict = status != null && (status.index == "U" || status.worktree == "U" || status.index + status.worktree in listOf("AA", "DD"))
             file.copy(kind = when { conflict -> DiffFileKind.conflict
                 file.kind != DiffFileKind.text -> file.kind
@@ -282,7 +291,11 @@ class GitDiffReader(
             for (i in files.indices.take(DIFF_MAX_FILES)) {
                 currentCoroutineContext().ensureActive()
                 val file = files[i]
-                if (comparison.scope == DiffLocalScope.staged || file.newPath == null || file.kind == DiffFileKind.submodule) continue
+                if (comparison.scope == DiffLocalScope.staged || file.newPath == null) continue
+                if (file.newMode == "160000") {
+                    identities += file.newPath + ":gitlink:" + workingGitlink(tree.path, file.newPath)
+                    continue
+                }
                 val content = localContent(tree.path, file.newPath)
                 contentBytes += content.bytes?.size ?: 0
                 if (contentBytes > DIFF_PROCESS_STDOUT_BYTES) gitFailure(DiffReason.output_limit, "Local content budget reached", DiffErrorCode.limited)
@@ -330,7 +343,7 @@ class GitDiffReader(
                     noNewline = i == lines.lastIndex && !text.endsWith('\n')) })))
         } else {
             val output = read(tree.path, diffArgs(tree.path, comparison) + listOf("--raw", "--no-abbrev", "-z", "--patch", "--unified=3", "--") +
-                listOfNotNull(file.oldPath, file.newPath).distinct(), if (comparison.mode == DiffMode.local) noFilters(tree.path) else emptyList())
+                listOfNotNull(file.oldPath, file.newPath).distinct(), if (comparison.mode == DiffMode.local) noFilters(tree.path) else emptyMap())
             val parsed = try { parseGitPatch(selectGitPatch(output, file), DIFF_MAX_PATCH_BYTES, DIFF_MAX_PATCH_LINES) }
             catch (failure: GitReadFailure) {
                 if (failure.problem.reason != DiffReason.unsupported_encoding) throw failure
@@ -341,6 +354,21 @@ class GitDiffReader(
         }
         check()
         result
+    }
+
+    /** Only the nested repository's root/HEAD metadata, never recursive content or status. */
+    private suspend fun workingGitlink(root: String, path: String): String {
+        val expectedRoot = "$root/$path"
+        val canonical = canonicalWorktreePath(expectedRoot) ?: return "missing"
+        if (canonical != expectedRoot) gitFailure(DiffReason.unsupported_path, "Submodule root traverses a symlink")
+        val top = command(canonical, listOf("rev-parse", "--show-toplevel"))
+        // An uninitialized submodule directory can resolve upward to the superproject.
+        if (top.exitCode != 0 || canonicalWorktreePath(line(top.stdout)) != canonical) return "uninitialized"
+        val result = command(canonical, listOf("rev-parse", "--verify", "HEAD"))
+        if (result.exitCode != 0) return "missing-head"
+        return line(result.stdout).also {
+            if (!isDiffOid(it)) gitFailure(DiffReason.git_failed, "Malformed working gitlink OID")
+        }
     }
 
     private data class LocalContent(val bytes: ByteArray?, val kind: DiffFileKind, val identity: String, val problem: DiffProblem? = null, val executable: Boolean = false)
