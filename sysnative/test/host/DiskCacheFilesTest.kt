@@ -109,4 +109,25 @@ class DiskCacheFilesTest {
         assertFailsWith<CancellationException> { job.await() }
         assertNull(store().get(998, 2000))
     }
+
+    @Test fun cancellationAfterStagingWritePreventsPublicationAndReleasesLock() = fixture { root ->
+        var staged = false
+        val job = CoroutineScope(currentCoroutineContext()).async {
+            val context = currentCoroutineContext()
+            val cache = DiskCacheFiles("$root/cache", measure = { name, bytes ->
+                if (name == "cacheWriteBytes" && bytes > 0) {
+                    staged = true
+                    context.cancel()
+                }
+            })
+            cache.put(12, ByteArray(4096) { 7 }, 1000)
+        }
+        assertFailsWith<CancellationException> { job.await() }
+        assertTrue(staged, "Cancellation must occur after the active writer stages bytes")
+        assertNull(readRegularFileBytesOrNull("$root/cache/pending"))
+        val restarted = DiskCacheFiles("$root/cache")
+        assertNull(restarted.get(12, 1001))
+        restarted.put(12, byteArrayOf(9), 1002)
+        assertContentEquals(byteArrayOf(9), restarted.get(12, 1003))
+    }
 }

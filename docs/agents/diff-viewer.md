@@ -199,6 +199,11 @@ Warm hits skip the expensive `log`/`diff` command, but still perform bounded dep
 That validation can dominate small repositories; a disk hit is not a promise of lower latency for every
 fixture. The opt-in benchmark reports disk-cold and restart-warm history/files/patch separately from
 its original cache-disabled scenarios, with Git command counts and uncontrolled OS page-cache state.
+For example, the initial tiny-fixture task-3 measurements had history/root-files/root-patch p50s of
+221/220/233 ms with caching disabled, 320/501/410 ms with an empty application cache, and
+260/289/420 ms with a warm cache. Keep these results alongside subsequent runs: dependency checks
+can outweigh saved computation. Process-worker reuse has separately measured causal latency gains;
+fewer reader commands and successful disk hits alone do not establish additional latency gains.
 
 Benchmark accounting preserves `gitBytes`, `fileBytes` (returned local content) and `hashBytes`
 (reader SHA inputs). Additive `dependencyReadBytes` counts successful dependency read/readlink syscall
