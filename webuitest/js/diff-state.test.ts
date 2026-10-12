@@ -249,3 +249,26 @@ test("file activation during snapshot revalidation does not abandon the validati
   f.store.selectFile("s", "f2"); assert.equal(f.state().selected, "f1");
   pending.resolve(patch(files())); await tick(); assert.equal(f.state().files.stale, false);
 });
+test("repeated remount preserves Viewed while inventory or refs revalidation is pending", async () => {
+  for (const resource of ["inventory", "refs"] as const) {
+    const pendingInventory = deferred<DiffWorktrees>(), pendingRefs = deferred<DiffRefs>();
+    let inventoryReads = 0, refsReads = 0;
+    const f = fixture({worktrees: async () => ++inventoryReads === 2 && resource === "inventory" ? pendingInventory.promise : inventory(), refs: async (_, w) => ++refsReads === 2 && resource === "refs" ? pendingRefs.promise : refs(w)});
+    const first = f.store.retain("s"); await tick(); f.store.markViewed("s", "f1", true);
+    f.store.reading("s", {query: "f", scrollTop: 31}); first();
+    const second = f.store.retain("s"); await tick(); assert.equal(f.state()[resource].loading, true);
+    assert.equal(f.state().viewed.has("f1"), true); second();
+    f.store.retain("s"); assert.equal(f.state().viewed.has("f1"), true); await tick();
+    assert.equal(f.state().viewed.has("f1"), true); assert.equal(f.state().scrollTop, 31); assert.equal(f.state().query, "f");
+    pendingInventory.resolve(inventory()); pendingRefs.resolve(refs("/a")); await tick();
+    assert.equal(f.state().viewed.has("f1"), true); assert.equal(f.state().files.stale, false);
+  }
+});
+test("repeated remount does not turn an explicit resetting Refresh into preserving validation", async () => {
+  const pending = deferred<DiffWorktrees>(); let reads = 0, fileReads = 0;
+  const f = fixture({worktrees: async () => ++reads === 2 ? pending.promise : inventory(), files: async (_, w, s) => {fileReads++; return files(w, s);}});
+  const release = f.store.retain("s"); await tick(); f.store.markViewed("s", "f1", true);
+  const refresh = f.store.refresh("s"); await tick(); assert.equal(f.state().viewed.size, 0);
+  release(); f.store.retain("s"); await tick(); assert.equal(fileReads, 2); assert.equal(f.state().viewed.size, 0);
+  pending.resolve(inventory()); await refresh; assert.equal(f.state().viewed.size, 0);
+});
