@@ -23,7 +23,7 @@ export const MAX_DIFF_COMMITS = 2000;
 
 /** A store is a page-memory owner. Components retain it; they never own requests or patch bytes. */
 export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SESSIONS) {
-  interface Entry { state: Signal<DiffState>; generation: number; controllers: Map<Resource, AbortController>; retained: number; dirty: boolean; resume: Set<Resource>; bases: Map<string, string> }
+  interface Entry { state: Signal<DiffState>; generation: number; controllers: Map<Resource, AbortController>; retained: number; dirty: boolean; resume: Set<Resource>; historyIntent: "first" | "more" | null; bases: Map<string, string> }
   const entries = new Map<string, Entry>();
   let visible = true;
   function entry(session: string): Entry {
@@ -35,7 +35,7 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       if (!victim) break;
       cancel(victim[1]); entries.delete(victim[0]);
     }
-    const e: Entry = { state: signal(initial()), generation: 0, controllers: new Map(), retained: 0, dirty: false, resume: new Set(), bases: new Map() };
+    const e: Entry = { state: signal(initial()), generation: 0, controllers: new Map(), retained: 0, dirty: false, resume: new Set(), historyIntent: null, bases: new Map() };
     entries.set(session, e); return e;
   }
   function update(e: Entry, change: Partial<DiffState>) { e.state.value = { ...e.state.value, ...change }; }
@@ -81,10 +81,10 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     } finally { if (current()) e.controllers.delete(key); }
   }
   const ready = <T>(data: T): DiffRead<T> => ({ data, state: "ready", loading: false, error: null, problem: null, stale: false });
-  async function loadPatch(session: string, e: Entry) {
+  async function loadPatch(session: string, e: Entry, validateStale = false) {
     const s = e.state.value, snapshot = s.files.data?.snapshot, id = s.selected;
-    if (!snapshot || !id || !s.worktree || s.files.stale) return;
-    await read(e, "patch", a => port.patch(session, s.worktree!, snapshot.id, id, a), data => {
+    if (!snapshot || !id || !s.worktree || (s.files.stale && !validateStale)) return false;
+    return read(e, "patch", a => port.patch(session, s.worktree!, snapshot.id, id, a), data => {
       assertSource(e, data.snapshot.comparison);
       if (data.snapshot.id !== snapshot.id || comparisonKey(session, data.snapshot.comparison) !== comparisonKey(session, snapshot.comparison) || data.file.fileId !== id) throw new Error("Patch does not match the selected comparison");
       update(e, { patch: ready(data) });
@@ -110,16 +110,33 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     const s = e.state.value;
     if (!s.worktree || s.mode === "local" || (s.mode === "branch" && !s.baseRef) || s.history.loading) return;
     const prior = more ? s.history.data : null, cursor = prior?.nextCursor ?? null;
-    if (more && (!cursor || prior!.commits.length >= MAX_DIFF_COMMITS)) return;
+    if (more && (s.inventory.loading || s.refs.loading || !cursor || prior!.commits.length >= MAX_DIFF_COMMITS)) return;
+    const generation = e.generation;
+    e.historyIntent = more ? "more" : "first";
     await read(e, "history", a => port.commits(session, s.worktree!, s.mode === "branch" ? s.baseRef : null, cursor, a), data => {
       assertSource(e, data);
+      if (s.mode !== e.state.value.mode || (s.mode === "branch" && s.baseRef !== e.state.value.baseRef)) throw new Error("History selection changed");
       if (cursor && (data.cursor?.headOid !== cursor.headOid || data.cursor?.baseOid !== cursor.baseOid || data.cursor?.offset !== cursor.offset)) throw new Error("History page changed its pinned comparison");
       if (data.nextCursor && (!data.cursor || data.nextCursor.headOid !== data.cursor.headOid || data.nextCursor.baseOid !== data.cursor.baseOid || data.nextCursor.offset <= data.cursor.offset)) throw new Error("History continuation changed its pinned comparison");
       const commits = prior ? [...prior.commits, ...data.commits.filter(c => !prior.commits.some(p => p.oid === c.oid))] : data.commits;
       update(e, { history: ready({ ...data, commits: commits.slice(0, MAX_DIFF_COMMITS) }) });
     });
+    if (e.generation === generation && !e.controllers.has("history")) e.historyIntent = null;
   }
-  async function loadSource(session: string, e: Entry) {
+  async function revalidateFiles(session: string, e: Entry) {
+    const s = e.state.value, previous = s.files.data;
+    const c = previous?.snapshot.comparison;
+    const head = s.inventory.data?.worktrees.find(w => w.id === s.worktree)?.headOid;
+    const base = s.refs.data?.refs.find(r => r.name === s.baseRef)?.oid;
+    const sameTips = c && (c.mode === "commit" || (c.headOid === head && (c.mode !== "branch" || (c.baseRef === s.baseRef && c.baseOid === base))));
+    if (!previous || !s.selected || !sameTips) { await loadFiles(session, e); return; }
+    const generation = e.generation;
+    // A successful read of the old snapshot validates its content observation, including local bytes.
+    // File metadata, timestamps and a newly issued opaque token cannot prove unchanged content.
+    if (await loadPatch(session, e, true)) update(e, { files: ready(previous) });
+    else if (e.generation === generation && e.state.value.patch.problem?.code === "stale") await loadFiles(session, e);
+  }
+  async function loadSource(session: string, e: Entry, preserve = false, resumeHistory: "first" | "more" | null = null) {
     const s = e.state.value;
     if (!s.worktree) return;
     const ok = await read(e, "refs", a => port.refs(session, s.worktree!, a), data => {
@@ -127,31 +144,43 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       const key = JSON.stringify([data.repository.commonDir, data.worktreeId]);
       const saved = e.bases.get(key) ?? e.state.value.baseRef;
       const baseRef = data.refs.some(r => r.name === saved) ? saved : data.defaultBaseRef ?? "";
+      if (e.state.value.mode === "branch" && e.state.value.baseRef !== baseRef) {
+        e.controllers.get("history")?.abort(); e.controllers.delete("history"); e.historyIntent = null;
+        update(e, { history: empty(), viewed: new Set() });
+      }
       update(e, { refs: ready(data), baseRef });
     });
     if (!ok) return;
-    await Promise.all([loadFiles(session, e), loadHistory(session, e)]);
+    const current = e.state.value, history = current.history.data;
+    const head = current.inventory.data?.worktrees.find(w => w.id === current.worktree)?.headOid;
+    const base = current.mode === "branch" ? current.refs.data?.refs.find(r => r.name === current.baseRef)?.oid : null;
+    const sameHistory = !!history && (history.cursor?.headOid ?? null) === head && (history.cursor?.baseOid ?? null) === base;
+    const historyRead = !preserve || resumeHistory === "first" || !sameHistory || current.history.error
+      ? loadHistory(session, e) : resumeHistory === "more" ? loadHistory(session, e, true) : Promise.resolve();
+    await Promise.all([preserve ? revalidateFiles(session, e) : loadFiles(session, e), historyRead]);
   }
-  async function refresh(session: string) {
-    const e = entry(session); cancel(e); e.dirty = false; e.resume.clear();
-    update(e, { viewed: new Set(), files: { ...e.state.value.files, stale: !!e.state.value.files.data }, patch: { ...e.state.value.patch, stale: !!e.state.value.patch.data } });
+  async function refresh(session: string, preserve = false, resumeHistory: "first" | "more" | null = null) {
+    const e = entry(session); cancel(e); e.dirty = false; e.resume.clear(); e.historyIntent = null;
+    update(e, { ...(preserve ? {} : { viewed: new Set() }), files: { ...e.state.value.files, stale: !!e.state.value.files.data }, patch: { ...e.state.value.patch, stale: !!e.state.value.patch.data } });
     const ok = await read(e, "inventory", a => port.worktrees(session, a), data => {
       const s = e.state.value;
       const repositoryChanged = s.inventory.data && s.inventory.data.repository.commonDir !== data.repository.commonDir;
       const worktree = !repositoryChanged && data.worktrees.some(w => w.id === s.worktree) ? s.worktree : data.currentWorktreeId;
-      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, baseRef: "", commitOid: "", commit: null, scrollTop: 0, page: "files" });
+      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, baseRef: "", commitOid: "", commit: null, viewed: new Set(), scrollTop: 0, page: "files" });
       update(e, { inventory: ready(data), worktree });
     });
-    if (ok) await loadSource(session, e);
+    if (ok) await loadSource(session, e, preserve, resumeHistory);
   }
   function choose(session: string, change: Partial<Pick<DiffState, "worktree" | "mode" | "scope" | "baseRef" | "commitOid" | "parent">>) {
     const e = entry(session), before = e.state.value;
     if (change.commitOid && !before.history.data?.commits.some(c => c.oid === change.commitOid)) return;
-    cancel(e);
-    const historyChanged = change.worktree !== undefined || change.mode !== undefined || change.baseRef !== undefined;
-    update(e, { ...change, ...(change.commitOid ? { commit: before.history.data!.commits.find(c => c.oid === change.commitOid)! } : {}), files: empty(), patch: empty(), selected: null, viewed: new Set(), page: "files", scrollTop: 0, filesScrollTop: 0,
+    cancel(e); e.historyIntent = null;
+    const historyChanged = (change.worktree !== undefined && change.worktree !== before.worktree) || (change.mode !== undefined && change.mode !== before.mode) || (change.baseRef !== undefined && change.baseRef !== before.baseRef);
+    update(e, { ...change, files: empty(), patch: empty(), selected: null, viewed: new Set(), page: "files", scrollTop: 0, filesScrollTop: 0,
       ...(historyChanged ? { history: empty(), commitOid: "", commit: null, parent: 1 } : {}),
-      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "" } : {}) });
+      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "" } : {}),
+      // Capture from the loaded history before clearing it during an atomic branch → commit transition.
+      ...(change.commitOid ? { commitOid: change.commitOid, commit: before.history.data!.commits.find(c => c.oid === change.commitOid)!, parent: change.parent ?? 1 } : {}) });
     const s = e.state.value;
     if (s.worktree && s.inventory.data && s.baseRef) {
       const key = JSON.stringify([s.inventory.data.repository.commonDir, s.worktree]);
@@ -164,7 +193,9 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
   }
   function selectFile(session: string, id: string) {
     const e = entry(session);
-    if (!e.state.value.files.data?.files.some(f => f.fileId === id)) return;
+    const current = e.state.value;
+    if (current.files.stale && [current.inventory, current.refs, current.files, current.patch].some(r => r.loading)) return;
+    if (!current.files.data?.files.some(f => f.fileId === id)) return;
     const same = id === e.state.value.selected;
     if (same && e.state.value.patch.loading) { update(e, { page: "patch" }); return; }
     e.controllers.get("patch")?.abort(); e.controllers.delete("patch");
@@ -191,10 +222,9 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
   }
   function retain(session: string) {
     const e = entry(session); e.retained++;
-    if (visible && (e.dirty || e.state.value.inventory.state === "idle" || [...e.resume].some(k => k === "inventory" || k === "refs" || k === "files"))) void refresh(session);
-    else if (visible) {
-      if (e.resume.has("patch")) void loadPatch(session, e);
-      if (e.resume.has("history")) void loadHistory(session, e, !!e.state.value.history.data);
+    if (visible && e.retained === 1) {
+      const reset = e.dirty || e.state.value.inventory.state === "idle" || [...e.resume].some(k => k === "inventory" || k === "refs" || k === "files");
+      void refresh(session, !reset, e.resume.has("history") ? e.historyIntent : null);
     }
     e.resume.clear();
     let released = false;

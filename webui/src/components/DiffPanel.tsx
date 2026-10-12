@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { diffStore, MAX_DIFF_COMMITS } from "../state/diff.ts";
-import { filePath, filterFiles } from "../lib/diff.ts";
-import type { DiffMode, DiffLocalScope } from "../lib/diff.ts";
+import { filePath, filterFiles, comparisonLabels } from "../lib/diff.ts";
+import type { DiffMode, DiffLocalScope, DiffComparison } from "../lib/diff.ts";
 import { DiffPatch } from "./DiffPatch.tsx";
 import "../diff.css";
 
@@ -43,15 +43,16 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       {state.mode === "local" && <label>Scope<select value={state.scope} onChange={e => choose({ scope: e.currentTarget.value as DiffLocalScope })}><option value="all">All</option><option value="staged">Staged</option><option value="unstaged">Unstaged</option></select></label>}
       {state.mode === "branch" && <label>Base branch<select value={state.baseRef} onChange={e => choose({ baseRef: e.currentTarget.value })}><option value="">Choose a base…</option>{state.refs.data?.refs.map(r => <option key={r.name} value={r.name}>{r.name.replace(/^refs\/(heads|remotes)\//, "")} · {r.kind}</option>)}</select></label>}
     </div>
-    {worktree && <p class="diff-source">{worktree.path} · {worktree.headOid?.slice(0, 12) ?? "No HEAD"}{worktree.locked ? " · Locked (readable)" : ""}</p>}
+    {worktree && <p class="diff-source">{worktree.path} · Checkout HEAD {worktree.headOid?.slice(0, 12) ?? "unborn"}{worktree.locked ? " · Locked (readable)" : ""}</p>}
+    {state.files.data && <ComparisonIdentity comparison={state.files.data.snapshot.comparison} label="File list comparison"/>}
     {worktree?.unavailable && <p role="status">Worktree unavailable: {worktree.unavailable.message}</p>}
     {worktree?.bare && state.mode === "local" && <p role="status">Bare repositories have no local working copy.</p>}
     {(loading || stale || errors.length > 0) && <div class="diff-status" role="status">{loading && <span>Loading changes… </span>}{stale && <strong>Showing stale content. </strong>}{errors.map(error => <p key={error}>{error}</p>)}</div>}
     {state.mode !== "local" && <details class="diff-history" open={state.mode === "commit" && !state.commitOid}>
       <summary>{state.mode === "branch" ? "Commits absent from base" : "Choose a commit"} ({state.history.data?.commits.length ?? 0})</summary>
-      <ol>{state.history.data?.commits.map(c => <li key={c.oid}>{state.mode === "commit" ? <button type="button" aria-pressed={state.commitOid === c.oid} onClick={() => choose({ commitOid: c.oid, parent: 1 })}>{c.subject} · {c.oid.slice(0, 12)}</button> : <span>{c.subject} · {c.oid.slice(0, 12)}</span>}<small>{c.author} · <time dateTime={new Date(c.authoredAt).toISOString()}>{new Date(c.authoredAt).toLocaleString()}</time> · {c.parents.length} parent{c.parents.length === 1 ? "" : "s"}</small></li>)}</ol>
+      <ol>{state.history.data?.commits.map(c => <li key={c.oid}><button type="button" aria-pressed={state.mode === "commit" && state.commitOid === c.oid} onClick={() => choose({ mode: "commit", commitOid: c.oid, parent: 1 })}>{c.subject} · {c.oid.slice(0, 12)}</button><small>{c.author} · <time dateTime={new Date(c.authoredAt).toISOString()}>{new Date(c.authoredAt).toLocaleString()}</time> · {c.parents.length} parent{c.parents.length === 1 ? "" : "s"}</small></li>)}</ol>
       {state.history.data && !state.history.data.commits.length && <p>No commits in this history.</p>}
-      {state.history.data?.nextCursor && <button type="button" disabled={state.history.loading || state.history.data.commits.length >= MAX_DIFF_COMMITS} onClick={() => void diffStore.more(sessionId)}>Load more commits</button>}
+      {state.history.data?.nextCursor && <button type="button" disabled={state.inventory.loading || state.refs.loading || state.history.loading || state.history.data.commits.length >= MAX_DIFF_COMMITS} onClick={() => void diffStore.more(sessionId)}>Load more commits</button>}
       {(state.history.data?.commits.length ?? 0) >= MAX_DIFF_COMMITS && <p>History limited to {MAX_DIFF_COMMITS} commits. Refresh to start again.</p>}
     </details>}
     {commit && <div class="diff-commit"><p>{commit.subject} · {commit.author} · {new Date(commit.authoredAt).toLocaleString()}<br/><code>{commit.oid}</code></p>{commit.parents.length ? <label>Parent<select value={state.parent} onChange={e => choose({ parent: Number(e.currentTarget.value) })}>{commit.parents.map((p, i) => <option key={p} value={i + 1}>Parent {i + 1} · {p.slice(0, 12)}</option>)}</select></label> : <p>Root commit · compared with the empty tree</p>}</div>}
@@ -63,7 +64,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         <label class="diff-check"><input type="checkbox" checked={state.hideViewed} onChange={e => reading({ hideViewed: e.currentTarget.checked })}/> Hide viewed</label>
         {state.files.data && <p>{files.length} of {state.files.data.files.length} files · {state.viewed.size} viewed</p>}
         {state.files.data?.limited && <p role="status">Partial file list: {state.files.data.limited.message}</p>}
-        <ul ref={filesScroll} onScroll={e => reading({ filesScrollTop: e.currentTarget.scrollTop })}>{files.map(f => <li key={f.fileId}><button type="button" aria-current={state.selected === f.fileId ? "true" : undefined} onClick={() => diffStore.selectFile(sessionId, f.fileId)}>
+        <ul ref={filesScroll} onScroll={e => reading({ filesScrollTop: e.currentTarget.scrollTop })}>{files.map(f => <li key={f.fileId}><button type="button" disabled={state.files.stale && [state.inventory, state.refs, state.files, state.patch].some(r => r.loading)} aria-current={state.selected === f.fileId ? "true" : undefined} onClick={() => diffStore.selectFile(sessionId, f.fileId)}>
           <span class="diff-file-path">{f.oldPath && f.newPath && f.oldPath !== f.newPath ? `${f.oldPath} → ${f.newPath}` : filePath(f)}</span>
           <small>{f.change} · {f.kind}{f.indexStatus !== null ? ` · index ${f.indexStatus === " " ? "unchanged" : f.indexStatus}` : ""}{f.worktreeStatus !== null ? ` · worktree ${f.worktreeStatus === " " ? "unchanged" : f.worktreeStatus}` : ""} · +{f.additions ?? "?"} −{f.deletions ?? "?"}{state.viewed.has(f.fileId) ? " · Viewed" : ""}</small>
         </button></li>)}</ul>
@@ -77,10 +78,17 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           <button type="button" disabled={!files.some(f => !state.viewed.has(f.fileId))} onClick={() => diffStore.next(sessionId)}>Next unviewed</button>
         </div>
         <h3 ref={heading} tabIndex={-1}>{selected ? filePath(selected) : "Select a changed file"}</h3>
+        {state.patch.data && <ComparisonIdentity comparison={state.patch.data.snapshot.comparison} label={state.patch.stale ? "Stale patch comparison" : "Patch comparison"}/>}
         <div class="diff-patch-scroll" tabIndex={0} role="region" aria-label="Selected patch" ref={patchScroll} onScroll={e => reading({ scrollTop: e.currentTarget.scrollTop })}>
           {state.patch.data && <DiffPatch patch={state.patch.data} layout={state.layout} wrap={state.wrap}/>}
         </div>
       </div>
     </div>
   </section>;
+}
+
+function ComparisonIdentity({ comparison, label }: { comparison: DiffComparison; label: string }) {
+  return <details class="diff-comparison"><summary>{label} · HEAD {comparison.headOid?.slice(0, 12) ?? "unborn"}{comparison.mode === "branch" ? ` · base ${comparison.baseOid?.slice(0, 12)} · merge-base ${comparison.mergeBaseOid?.slice(0, 12)}` : ""}</summary>
+    <dl>{comparisonLabels(comparison).map(([name, value]) => <div key={name}><dt>{name}</dt><dd><code>{value}</code></dd></div>)}</dl>
+  </details>;
 }
