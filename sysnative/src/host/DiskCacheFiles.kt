@@ -22,6 +22,8 @@ class DiskCacheFiles(
     private val maxEntries: Int = 1024,
     private val maxEntryBytes: Int = 8 * 1024 * 1024,
     private val ttlMillis: Long = 7L * 24 * 60 * 60 * 1000,
+    /** Optional scalar accounting of successful read/write syscall bytes, including scan headers. */
+    private val measure: ((String, Long) -> Unit)? = null,
 ) {
     init {
         require(maxBytes > 0 && maxEntries in 1..SLOTS && maxEntryBytes in 1..8 * 1024 * 1024 && ttlMillis > 0)
@@ -78,6 +80,7 @@ class DiskCacheFiles(
                     val written = output.usePinned { write(fd, it.addressOf(offset), (output.size - offset).convert()) }
                     if (written < 0 && errno == EINTR) continue
                     if (written <= 0) return@access null
+                    measure?.invoke("cacheWriteBytes", written)
                     offset += written.toInt()
                 }
                 if (fsync(fd) != 0) return@access null
@@ -111,6 +114,7 @@ class DiskCacheFiles(
                     val n = bytes.usePinned { read(fd, it.addressOf(size), (bytes.size - size).convert()) }
                     if (n < 0 && errno == EINTR) continue
                     if (n <= 0) return@memScoped null
+                    measure?.invoke("cacheReadBytes", n)
                     size += n.toInt()
                 }
                 val separator = bytes.indexOf(10)

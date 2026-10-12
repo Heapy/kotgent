@@ -35,7 +35,7 @@ fun worktreeUserHome(): String? = getenv("HOME")?.toKString()
  * Symlinks return their target bytes as metadata, never target content. Special files never block.
  * This is a bounded observation, not an atomic snapshot against concurrent writers.
  */
-fun readWorktreeFile(root: String, relativePath: String, maxBytes: Int): WorktreeFileRead {
+fun readWorktreeFile(root: String, relativePath: String, maxBytes: Int, onRead: ((Long) -> Unit)? = null): WorktreeFileRead {
     require(maxBytes in 0..<Int.MAX_VALUE)
     val parts = relativePath.split('/')
     if (!root.startsWith('/') || '\u0000' in root || '\u0000' in relativePath ||
@@ -63,6 +63,7 @@ fun readWorktreeFile(root: String, relativePath: String, maxBytes: Int): Worktre
             if (kind == 2) {
                 val bytes = ByteArray(minOf(maxBytes + 1, 64 * 1024))
                 val count = bytes.usePinned { kotgent_readlinkat(directory, name, it.addressOf(0), bytes.size.convert()) }
+                if (count > 0) onRead?.invoke(count)
                 return@memScoped when {
                     count < 0 -> WorktreeFileRead(WorktreeFileKind.unreadable)
                     count > maxBytes || count == bytes.size.toLong() -> WorktreeFileRead(WorktreeFileKind.limited)
@@ -82,6 +83,7 @@ fun readWorktreeFile(root: String, relativePath: String, maxBytes: Int): Worktre
                 var size = 0
                 while (size < bytes.size) {
                     val count = bytes.usePinned { read(fd, it.addressOf(size), (bytes.size - size).convert()) }
+                    if (count > 0) onRead?.invoke(count)
                     when {
                         count < 0 -> if (errno != EINTR) return@memScoped WorktreeFileRead(WorktreeFileKind.unreadable)
                         count == 0L -> return@memScoped WorktreeFileRead(WorktreeFileKind.regular, bytes.copyOf(size), executable)

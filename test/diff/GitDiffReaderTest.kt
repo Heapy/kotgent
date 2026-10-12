@@ -259,6 +259,53 @@ class GitDiffReaderTest {
         assertEquals(DiffFileKind.text, kind())
     }
 
+    @Test fun dependencyAccountingMeasuresWarmAttributeReads() = fixture {
+        write("a", "one\n"); commit()
+        write("a", "two\n"); val tip = commit("two")
+        write(".gitattributes", "a diff\n")
+        git("config", "core.attributesFile", "${io.kotgent.host.canonicalWorktreePath(directory)}/absent-attributes")
+        var bytes = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "dependencyReadBytes") bytes += n })
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        val selection = DiffSelection(DiffMode.commit, commitOid = tip)
+        cached.files(inventory.repository, tree, selection).ok()
+        assertEquals(14L, bytes) // Before and after publication.
+        bytes = 0
+        cached.files(inventory.repository, tree, selection).ok()
+        assertEquals(7L, bytes) // A warm hit still reads its attribute dependency.
+    }
+
+    @Test fun configuredOrderFileBypassesDiffCacheAndPreservesGitFailures() = fixture {
+        write("a", "one\n"); write("b", "one\n"); commit()
+        write("a", "two\n"); write("b", "two\n"); val tip = commit("two")
+        val order = "${io.kotgent.host.canonicalWorktreePath(directory)}/order"
+        write("../order", "b\na\n")
+        git("config", "diff.orderFile", order)
+        var diffs = 0L; var logs = 0L
+        val cached = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")),
+            measure = { name, n -> if (name == "diffCommands") diffs += n else if (name == "logCommands") logs += n })
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        val selection = DiffSelection(DiffMode.commit, commitOid = tip)
+        val first = cached.files(inventory.repository, tree, selection).ok()
+        assertEquals(listOf("b", "a"), first.files.map { it.newPath })
+        cached.patch(inventory.repository, tree, first.snapshot, first.files.first()).ok()
+        val before = diffs
+        cached.files(inventory.repository, tree, selection).ok()
+        cached.patch(inventory.repository, tree, first.snapshot, first.files.first()).ok()
+        assertEquals(before + 4, diffs) // Files plus both patch observations and the selected patch.
+        cached.commits(inventory.repository, tree).ok()
+        write("../order", "a\nb\n")
+        val changed = cached.files(inventory.repository, tree, selection).ok()
+        assertEquals(listOf("a", "b"), changed.files.map { it.newPath })
+        cached.patch(inventory.repository, tree, changed.snapshot, changed.files.first()).ok()
+        assertEquals(0, platform.posix.unlink(order))
+        assertEquals(DiffReason.git_failed, cached.files(inventory.repository, tree, selection).error?.reason)
+        assertEquals(DiffReason.git_failed, cached.patch(inventory.repository, tree, changed.snapshot, changed.files.first()).error?.reason)
+        cached.commits(inventory.repository, tree).ok()
+        assertEquals(1L, logs) // Ordering only affects diff; history remains cacheable.
+    }
+
     @Test fun cancellationDuringCacheValidationDoesNotFallBackOrPublish() = fixture {
         write("a", "one\n"); commit()
         val inventory = inventory(); val tree = inventory.worktrees.single()

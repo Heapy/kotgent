@@ -40,6 +40,17 @@ class WorktreeFilesTest {
         assertTrue(readWorktreeFile(root, "file", 5).executable)
     }
 
+    @Test fun optionalAccountingCountsSuccessfulSyscallBytesOnly() = fixture { root ->
+        write("$root/file", "hello")
+        val reads = mutableListOf<Long>()
+        assertEquals(WorktreeFileKind.regular, readWorktreeFile(root, "file", 5, reads::add).kind)
+        assertEquals(WorktreeFileKind.limited, readWorktreeFile(root, "file", 4, reads::add).kind)
+        assertEquals(WorktreeFileKind.missing, readWorktreeFile(root, "missing", 5, reads::add).kind)
+        assertEquals(0, symlink("target", "$root/link"))
+        assertEquals(WorktreeFileKind.symlink, readWorktreeFile(root, "link", 10, reads::add).kind)
+        assertEquals(listOf(5L, 6L), reads)
+    }
+
     @Test fun rejectsTraversalAndNeverFollowsFinalOrIntermediateLinks() = fixture { root ->
         assertEquals(0, symlink("/etc/passwd", "$root/link"))
         assertEquals(0, symlink("/etc", "$root/dir"))
