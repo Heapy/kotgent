@@ -316,3 +316,21 @@ static int kotgent_capture_exited(int child) {
     if (waitid(P_PID, (id_t)child, &info, WEXITED | WNOHANG | WNOWAIT) < 0) return -1;
     return info.si_pid != 0;
 }
+
+// Darwin's variadic openat is not exposed by Kotlin/Native's platform bindings.
+// Read-only flags are selected by the caller; never allow creation/truncation through this helper.
+static int kotgent_openat_read(int directory, const char *path, int flags) {
+    if ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC))) { errno = EINVAL; return -1; }
+    return openat(directory, path, flags);
+}
+
+// These *at declarations are also missing from the bundled Linux platform bindings.
+static int kotgent_at_file_kind(int directory, const char *path) {
+    struct stat value;
+    if (fstatat(directory, path, &value, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    return S_ISREG(value.st_mode) ? 1 : S_ISLNK(value.st_mode) ? 2 : 3;
+}
+
+static long kotgent_readlinkat(int directory, const char *path, char *bytes, unsigned long capacity) {
+    return (long)readlinkat(directory, path, bytes, (size_t)capacity);
+}
