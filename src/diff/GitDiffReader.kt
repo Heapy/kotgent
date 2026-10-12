@@ -21,6 +21,8 @@ import kotlin.time.Duration.Companion.milliseconds
 class GitDiffReader(
     private val executable: String = "/usr/bin/git",
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    /** Optional benchmark counter scoped to this reader; never receives paths or content. */
+    private val measure: ((String, Long) -> Unit)? = null,
 ) : DiffReader {
     init { require(executable.startsWith('/') && '\u0000' !in executable) }
 
@@ -51,9 +53,12 @@ class GitDiffReader(
                 put("GIT_CONFIG_VALUE_$index", entry.value)
             }
         }
+        measure?.invoke("gitCommands", 1)
         return CapturedProcess.run(listOf(executable) + flags + listOf("-C", cwd) + args,
             environment + configEnvironment, DIFF_PROCESS_STDOUT_BYTES, DIFF_PROCESS_STDERR_BYTES,
-            DIFF_PROCESS_TIMEOUT_MILLIS.milliseconds)
+            DIFF_PROCESS_TIMEOUT_MILLIS.milliseconds).also {
+                measure?.invoke("gitBytes", it.stdout.size.toLong() + it.stderr.size)
+            }
     }
 
     private suspend fun read(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap()): ByteArray {
@@ -378,6 +383,7 @@ class GitDiffReader(
 
     private fun localContent(root: String, path: String): LocalContent {
         val read = readWorktreeFile(root, path, DIFF_MAX_PATCH_BYTES)
+        measure?.invoke("fileBytes", read.bytes.size.toLong())
         val identity = read.kind.name + ":" + read.executable + ":" + digest(read.bytes)
         return when (read.kind) {
             WorktreeFileKind.regular -> {
@@ -396,5 +402,8 @@ class GitDiffReader(
         }
     }
 
-    private fun digest(bytes: ByteArray): String = sha256(bytes).toHexString()
+    private fun digest(bytes: ByteArray): String {
+        measure?.invoke("hashBytes", bytes.size.toLong())
+        return sha256(bytes).toHexString()
+    }
 }

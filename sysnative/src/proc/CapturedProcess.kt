@@ -3,11 +3,13 @@ package io.kotgent.proc
 import io.kotgent.cinterop.pty.kotgent_capture_exited
 import io.kotgent.cinterop.pty.kotgent_spawn_capture
 import kotlinx.cinterop.*
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -27,6 +29,16 @@ class CapturedProcessTimeoutException : RuntimeException("Captured process deadl
 class CapturedProcessException(val operation: String, val errorCode: Int) :
     RuntimeException("$operation failed (errno=$errorCode)")
 
+/** Optional per-call monotonic timings. No global samples or captured content are retained. */
+class CaptureTimings {
+    var dispatchNanos: Long = 0
+    var spawnNanos: Long = 0
+    var drainNanos: Long = 0
+    var reapNanos: Long = 0
+    var returnNanos: Long = 0
+    var closeNanos: Long = 0
+}
+
 /**
  * Narrow, shell-free capture for short commands. The executable must be an absolute path; arguments
  * are literal and the supplied environment is the entire child environment. stdin is /dev/null; cwd is inherited
@@ -37,14 +49,21 @@ class CapturedProcessException(val operation: String, val errorCode: Int) :
  * owned process group (including remaining descendants on success), and reaps the direct child.
  * Descendants that deliberately leave the process group are outside this contract.
  */
-@OptIn(ExperimentalForeignApi::class, DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalForeignApi::class)
 object CapturedProcess {
+    // Runtime-owned IO workers live for the process lifetime: never create/close a Native worker per
+    // command. This view and admission gate cap capture at four, independently of other IO users.
+    // Admission suspends on the caller, so a queued timeout/cancel need not wait for a poll worker.
+    private val dispatcher = Dispatchers.IO.limitedParallelism(4)
+    private val permits = Semaphore(4)
+
     suspend fun run(
         argv: List<String>,
         environment: Map<String, String> = emptyMap(),
         stdoutLimitBytes: Int = 8 * 1024 * 1024,
         stderrLimitBytes: Int = 256 * 1024,
         timeout: Duration = 10.seconds,
+        timings: CaptureTimings? = null,
     ): CapturedProcessResult {
         require(argv.isNotEmpty() && argv[0].startsWith('/')) { "An absolute executable path is required" }
         require(argv.none { '\u0000' in it }) { "argv must not contain NUL" }
@@ -54,82 +73,92 @@ object CapturedProcess {
         require(stdoutLimitBytes >= 0 && stderrLimitBytes >= 0) { "Byte caps must be nonnegative" }
         require(timeout.isPositive() && timeout.isFinite()) { "A finite positive timeout is required" }
         val started = TimeSource.Monotonic.markNow()
-        // Native has no blocking-I/O dispatcher. A per-call thread keeps poll/reap off the caller's
-        // dispatcher; its lifetime ends only after cleanup, including when withContext is cancelled.
-        return newSingleThreadContext("kotgent-capture").use { dispatcher ->
-            withContext(dispatcher) {
-                val context = currentCoroutineContext()
-                fun checkDeadline() {
-                    context.ensureActive()
-                    if (started.elapsedNow() >= timeout) throw CapturedProcessTimeoutException()
-                }
-                checkDeadline()
-                memScoped {
-                    fun strings(values: List<String>): CPointer<CPointerVar<ByteVar>> {
-                        val result = allocArray<CPointerVar<ByteVar>>(values.size + 1)
-                        values.forEachIndexed { index, value -> result[index] = value.cstr.ptr }
-                        result[values.size] = null
-                        return result
+        val result = withTimeoutOrNull(timeout) {
+            permits.withPermit {
+                withContext(dispatcher) {
+                    timings?.dispatchNanos = started.elapsedNow().inWholeNanoseconds
+                    val context = currentCoroutineContext()
+                    fun checkDeadline() {
+                        context.ensureActive()
+                        if (started.elapsedNow() >= timeout) throw CapturedProcessTimeoutException()
                     }
-                    val args = strings(argv)
-                    val env = strings(environment.map { (key, value) -> "$key=$value" })
-                    val child = alloc<IntVar>()
-                    val out = alloc<IntVar>()
-                    val err = alloc<IntVar>()
-                    val rc = kotgent_spawn_capture(child.ptr, out.ptr, err.ptr, args, env)
-                    if (rc != 0) throw CapturedProcessException("posix_spawn", rc)
-                    val pid = child.value
-                    val fds = intArrayOf(out.value, err.value)
-                    var reaped = false
-                    try {
-                        val buffers = arrayOf(
-                            CaptureBuffer(CapturedStream.STDOUT, stdoutLimitBytes),
-                            CaptureBuffer(CapturedStream.STDERR, stderrLimitBytes),
-                        )
-                        val polls = allocArray<pollfd>(2)
-                        val chunk = allocArray<ByteVar>(8192)
-                        while (true) {
-                            checkDeadline()
-                            if (fds.all { it < 0 }) {
-                                val exited = kotgent_capture_exited(pid)
-                                if (exited > 0) break
-                                if (exited < 0 && errno != EINTR) throw CapturedProcessException("waitid", errno)
-                            }
-                            for (i in 0..1) {
-                                polls[i].fd = fds[i]
-                                polls[i].events = POLLIN.convert()
-                                polls[i].revents = 0
-                            }
-                            val remaining = (timeout - started.elapsedNow()).inWholeMilliseconds
-                            val ready = poll(polls, 2.convert(), remaining.coerceIn(0, 20).toInt())
-                            if (ready < 0 && errno != EINTR) throw CapturedProcessException("poll", errno)
-                            checkDeadline()
-                            // One bounded read per stream keeps a flooding writer from starving its peer
-                            // or the deadline/cancellation checks. The read ends are nonblocking.
-                            for (i in 0..1) {
-                                if (fds[i] < 0 || polls[i].revents.toInt() == 0) continue
-                                val size = read(fds[i], chunk, 8192.convert())
-                                when {
-                                    size > 0 -> buffers[i].append(chunk, size.toInt())
-                                    size == 0L -> { close(fds[i]); fds[i] = -1 }
-                                    errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK ->
-                                        throw CapturedProcessException("read", errno)
+                    checkDeadline()
+                    memScoped {
+                        fun strings(values: List<String>): CPointer<CPointerVar<ByteVar>> {
+                            val result = allocArray<CPointerVar<ByteVar>>(values.size + 1)
+                            values.forEachIndexed { index, value -> result[index] = value.cstr.ptr }
+                            result[values.size] = null
+                            return result
+                        }
+                        val args = strings(argv)
+                        val env = strings(environment.map { (key, value) -> "$key=$value" })
+                        val child = alloc<IntVar>()
+                        val out = alloc<IntVar>()
+                        val err = alloc<IntVar>()
+                        val spawnStart = timings?.let { TimeSource.Monotonic.markNow() }
+                        val rc = kotgent_spawn_capture(child.ptr, out.ptr, err.ptr, args, env)
+                        if (rc != 0) throw CapturedProcessException("posix_spawn", rc)
+                        timings?.spawnNanos = spawnStart!!.elapsedNow().inWholeNanoseconds
+                        val drainStart = timings?.let { TimeSource.Monotonic.markNow() }
+                        val pid = child.value
+                        val fds = intArrayOf(out.value, err.value)
+                        var reaped = false
+                        try {
+                            val buffers = arrayOf(
+                                CaptureBuffer(CapturedStream.STDOUT, stdoutLimitBytes),
+                                CaptureBuffer(CapturedStream.STDERR, stderrLimitBytes),
+                            )
+                            val polls = allocArray<pollfd>(2)
+                            val chunk = allocArray<ByteVar>(8192)
+                            while (true) {
+                                checkDeadline()
+                                if (fds.all { it < 0 }) {
+                                    val exited = kotgent_capture_exited(pid)
+                                    if (exited > 0) break
+                                    if (exited < 0 && errno != EINTR) throw CapturedProcessException("waitid", errno)
+                                }
+                                for (i in 0..1) {
+                                    polls[i].fd = fds[i]
+                                    polls[i].events = POLLIN.convert()
+                                    polls[i].revents = 0
+                                }
+                                val remaining = (timeout - started.elapsedNow()).inWholeMilliseconds
+                                val ready = poll(polls, 2.convert(), remaining.coerceIn(0, 20).toInt())
+                                if (ready < 0 && errno != EINTR) throw CapturedProcessException("poll", errno)
+                                checkDeadline()
+                                // One bounded read per stream keeps a flooding writer from starving its peer
+                                // or the deadline/cancellation checks. The read ends are nonblocking.
+                                for (i in 0..1) {
+                                    if (fds[i] < 0 || polls[i].revents.toInt() == 0) continue
+                                    val size = read(fds[i], chunk, 8192.convert())
+                                    when {
+                                        size > 0 -> buffers[i].append(chunk, size.toInt())
+                                        size == 0L -> { close(fds[i]); fds[i] = -1 }
+                                        errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK ->
+                                            throw CapturedProcessException("read", errno)
+                                    }
                                 }
                             }
+                            timings?.drainNanos = drainStart!!.elapsedNow().inWholeNanoseconds
+                            val reapStart = timings?.let { TimeSource.Monotonic.markNow() }
+                            // The leader is still waitable here: kill before reap, never signal a reused pid.
+                            kill(-pid, SIGKILL)
+                            val exitCode = reap(pid)
+                            reaped = true
+                            timings?.reapNanos = reapStart!!.elapsedNow().inWholeNanoseconds
+                            CapturedProcessResult(exitCode, buffers[0].bytes(), buffers[1].bytes())
+                        } finally {
+                            if (!reaped) kill(-pid, SIGKILL)
+                            fds.filter { it >= 0 }.forEach { close(it) }
+                            if (!reaped) { val _ = reap(pid) }
                         }
-                        // The leader is still waitable here: kill before reap, never signal a reused pid.
-                        kill(-pid, SIGKILL)
-                        val exitCode = reap(pid)
-                        reaped = true
-                        CapturedProcessResult(exitCode, buffers[0].bytes(), buffers[1].bytes())
-                    } finally {
-                        if (!reaped) kill(-pid, SIGKILL)
-                        fds.filter { it >= 0 }.forEach { close(it) }
-                        if (!reaped) { val _ = reap(pid) }
                     }
                 }
             }
-        }
+        } ?: throw CapturedProcessTimeoutException()
+        timings?.let { it.returnNanos = started.elapsedNow().inWholeNanoseconds -
+            it.dispatchNanos - it.spawnNanos - it.drainNanos - it.reapNanos }
+        return result
     }
 
     private fun reap(pid: Int): Int = memScoped {

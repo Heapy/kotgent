@@ -171,6 +171,64 @@ class CapturedProcessTest {
         assertFailsWith<IllegalArgumentException> { CapturedProcess.run(listOf("/bin/echo"), mapOf("A" to "x\u0000y")) }
     }
 
+    @Test
+    fun repeatedParallelCapturesKeepOutputsSeparateAndDoNotLeakDescriptors() = runBlocking<Unit> {
+        // Warm runtime-owned workers before comparing descriptor ownership.
+        val _ = CapturedProcess.run(listOf("/usr/bin/true"))
+        val before = descriptorCount()
+        repeat(3) {
+            val results = (0..15).map { index ->
+                async {
+                    val result = CapturedProcess.run(perl("print $index; print STDERR 'e$index'"))
+                    assertEquals(0, result.exitCode)
+                    assertEquals(index.toString(), result.stdout.decodeToString())
+                    assertEquals("e$index", result.stderr.decodeToString())
+                }
+            }
+            val _ = results.awaitAll()
+        }
+        assertEquals(before, descriptorCount())
+    }
+
+    @Test
+    fun saturatedCaptureQueueTimesOutAndCancelsWithoutSpawning() = runBlocking<Unit> {
+        withPidFiles(5) { paths ->
+            val jobs = paths.take(4).map { path ->
+                async { CapturedProcess.run(perl(groupHelper, path), timeout = 5.seconds) }
+            }
+            try {
+                val running = paths.take(4).map { awaitPids(it) }
+                val marker = paths.last()
+                val argv = perl("open my \$f, '>', \$ARGV[0] or die \$!; print \$f 'spawned'; close \$f", marker)
+                withTimeout(2.seconds) {
+                    assertFailsWith<CapturedProcessTimeoutException> {
+                        CapturedProcess.run(argv, timeout = 100.milliseconds)
+                    }
+                }
+                val queued = async(start = CoroutineStart.UNDISPATCHED) { CapturedProcess.run(argv) }
+                withTimeout(2.seconds) { queued.cancelAndJoin() }
+                assertTrue(queued.isCancelled)
+                assertEquals(0L, fileSize(marker), "a timed out or cancelled queued command must never spawn")
+                jobs.forEach { it.cancelAndJoin() }
+                running.forEach { assertReapedAndStopped(it) }
+                assertEquals(0L, fileSize(marker), "released slots must not launch cancelled queue entries")
+                // Released permits must remain usable after both queue exits.
+                assertEquals(0, CapturedProcess.run(listOf("/usr/bin/true")).exitCode)
+            } finally { jobs.forEach { it.cancelAndJoin() } }
+        }
+    }
+
+    private suspend fun withPidFiles(count: Int, paths: List<String> = emptyList(), block: suspend (List<String>) -> Unit) {
+        if (count == 0) block(paths)
+        else withPidFile { path -> withPidFiles(count - 1, paths + path, block) }
+    }
+
+    private fun fileSize(path: String): Long = memScoped {
+        val info = alloc<stat>()
+        check(stat(path, info.ptr) == 0)
+        info.st_size
+    }
+
     private val groupHelper = $$"""
         my $kid = fork(); die $! unless defined $kid;
         if (!$kid) { alarm 6; select undef, undef, undef, 5; exit 0; }

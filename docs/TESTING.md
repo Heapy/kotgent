@@ -785,3 +785,59 @@ and the Vite build, followed by serialized `./kotlin build -p macosArm64 -p jvm`
 authenticated HTTP suites. No Linux runtime, Safari, real-phone or installed-PWA manual result is claimed. For a focused rerun after building the Web UI and native harness, use
 `kotgent mutex run kotlin-build -- ./kotlin test -m webuitest --include-tag diff-viewer`; the lifecycle
 race alone has tag `diff-task-race`.
+
+### Opt-in Diff performance fixture
+
+`DiffReadBenchmark.temporaryFixture` returns immediately unless `KOTGENT_DIFF_BENCH=1`.
+It creates and removes its own temporary Git repository, with 25 tracked text files and 12 MiB
+of untracked binary files. It never opens an operator checkout or starts a daemon/provider.
+The fixture and scenario list are intentionally reusable for further reader and disk-cache work.
+
+Run the root module test with `KOTGENT_DIFF_BENCH=1` and optionally
+`KOTGENT_DIFF_BENCH_RUNS=5` (minimum five), through
+`kotgent mutex run kotlin-build -- ./kotlin test -m <root-module> -p macosArm64
+--include-classes io.kotgent.diff.DiffReadBenchmark -v debug`, then repeat with `-v release`.
+The root module name follows the checkout directory; use `./kotlin show modules` through the
+same mutex to discover it. On Linux select `linuxX64`. Keep before/after on the same fixture,
+host and build variant; retain stdout and the exact source revision for each run.
+
+`DIFF_BENCH` emits each sample in nanoseconds with Git invocation/output-byte counts,
+worktree bytes returned by the safe reader, and bytes passed to the reader's SHA-256 helper.
+These byte counts represent application reads and hash inputs, not physical disk I/O or Git's
+internal hashing. `CAPTURE_BENCH` splits `/usr/bin/true` capture into dispatch/thread creation,
+spawn, drain/exit observation, reap, and residual return/cleanup/thread teardown.
+`DIFF_SUMMARY` reports count and nearest-rank p50/p95. Allocation plus hashing has a separate
+16 MiB scenario. Baseline release instrumentation also records `closeNs`, a component of
+`returnNs`; runtime-owned workers have no per-call close, so that component is zero after reuse.
+There are no wall-clock performance assertions in CI. The OS page cache is uncontrolled;
+these runs must not be described as cold disk reads. This initial fixture has no application
+payload cache, so later cache scenarios must explicitly identify empty-cache and warm-cache runs.
+
+Capture concurrency is bounded at four in one runtime-owned `Dispatchers.IO` view. Semaphore admission
+suspends before dispatch, within the command deadline; saturated queued requests can cancel or expire
+without waiting for a worker. The existing monotonic checks, nonblocking dual-pipe draining, independent
+caps and kill-before-reap cleanup remain. The process runtime owns IO worker lifetime; capture never
+closes the shared dispatcher. `CapturedProcessTest` exercises saturated admission using four real process
+groups with PID-file readiness, then proves queued timeout/cancel never launches a fifth command and
+released permits remain usable. It also checks repeated parallel output isolation and descriptor counts.
+
+On macOS 26.6.2 ARM64, task local:522 measured the v1 fixture before/after worker reuse
+against baseline `1ac6703ed7838dbc0a68baa728e5c2513f86c473` (Kotlin 2.4.20,
+coroutines 1.11.0). Five samples per scenario and variant gave these p50/p95 milliseconds:
+
+| Scenario | Debug before | Debug after | Release before | Release after |
+|---|---:|---:|---:|---:|
+| Ten trivial captures | 1734 / 1785 | 11 / 33 | 1671 / 1716 | 11 / 32 |
+| Reader All files | 2778 / 2985 | 531 / 885 | 2471 / 2700 | 195 / 274 |
+| Reader All patch | 4368 / 4439 | 991 / 1303 | 3612 / 3841 | 334 / 526 |
+| Service All files | 4017 / 4228 | 596 / 889 | 3779 / 4031 | 267 / 368 |
+| Service All patch | 5623 / 5803 | 1038 / 1215 | 4926 / 5048 | 416 / 432 |
+
+All measured command/output/read/hash counts matched before and after. Reader All files/patch
+used 15/22 Git commands and returned 12,583,174/25,166,348 worktree bytes; service calls used
+23/30 commands with the same worktree byte totals. In 50 baseline release captures, median explicit
+thread-close time was 163.5 ms, versus 0.66 ms spawn and 4.10 ms drain/exit observation. This
+isolates the removed cost; it is not evidence that Git or hashing got faster. Allocation plus hashing
+16 MiB still took a debug median of 539 ms after the change. Local fingerprints and repeated Git
+validation remain measurable costs for subsequent work. These are fixture-specific measurements,
+with no application payload cache and an uncontrolled OS page cache, not CI timing requirements.
