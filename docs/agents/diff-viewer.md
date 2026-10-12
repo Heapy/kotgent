@@ -31,7 +31,9 @@ choice for this worktree, then a known remote default branch, then local main, t
 otherwise choose explicitly. Multiple conflicting remote defaults require a choice/fallback, not an
 arbitrary remote. A feature branch's upstream is not a default base. Refs use local and already-present
 remote-tracking branches only; nothing fetches. No common ancestor, ambiguous merge bases, and missing
-shallow history are distinct unavailable states. Equal base/HEAD is a valid empty comparison.
+shallow history are distinct unavailable states. A shallow repository is readable when Git proves
+one endpoint is the unique merge base; unproven ancestry stays unavailable. Equal base/HEAD is a valid
+empty comparison.
 
 The viewer loads a file list and only the selected patch. Unified/Split, wrap, path filtering, Viewed,
 and next-unviewed operate on this one comparison. The filter, layout and wrap controls are local to
