@@ -216,6 +216,76 @@ class GitDiffReaderTest {
         assertEquals(0, combined.stats.single { it.newPath == "mode" }.added)
     }
 
+    @Test fun longPathInventoryRetainsSeparateOutputBudgets() = fixture {
+        git("commit", "--allow-empty", "-m", "empty root")
+        val base = git("rev-parse", "HEAD")
+        git("branch", "base")
+        var prefix = ""
+        repeat(4) { index ->
+            prefix += "d".repeat(190) + index + "/"
+            assertEquals(0, platform.posix.mkdir("$root/$prefix", 448u))
+        }
+        fun populate(start: Int, end: Int) {
+            for (index in start..<end) {
+                val path = prefix + index.toString().padStart(32, '0')
+                assertEquals(800, path.length)
+                write(path, "content\n")
+            }
+        }
+        populate(0, DIFF_MAX_FILES)
+        val tip = commit("long paths")
+        suspend fun metadata(format: String) = CapturedProcess.run(listOf("/usr/bin/git", "-C", root,
+            "diff", base, tip, format, "--no-abbrev", "-z", "--"), env,
+            stdoutLimitBytes = DIFF_PROCESS_STDOUT_BYTES)
+        val raw = metadata("--raw")
+        val stats = metadata("--numstat")
+        assertEquals(0, raw.exitCode); assertEquals(0, stats.exitCode)
+        assertTrue(raw.stdout.size + stats.stdout.size > DIFF_PROCESS_STDOUT_BYTES)
+        val selection = DiffSelection(DiffMode.branch, baseRef = "refs/heads/base")
+        val list = files(selection)
+        assertEquals(DIFF_MAX_FILES, list.files.size)
+        assertNull(list.limited)
+        assertEquals("content", patch(list, list.files.first()).ok().hunks.single().lines.single().text)
+
+        // The individual raw output now exceeds the same 8 MiB cap: fallback must not raise it.
+        populate(DIFF_MAX_FILES, DIFF_MAX_FILES * 2)
+        commit("overflow raw output")
+        val inventory = inventory()
+        val failed = reader.files(inventory.repository, inventory.worktrees.single(), selection)
+        assertEquals(DiffReason.output_limit, failed.error?.reason)
+        assertEquals(DiffErrorCode.limited, failed.error?.code)
+    }
+
+    @Test fun metadataFallbackKeepsFingerprintAndDoesNotRetryStderrLimits() = fixture {
+        write("a", "before\n"); commit()
+        write("a", "after\n")
+        val inventory = inventory()
+        val tree = inventory.worktrees.single()
+        val normal = reader.files(inventory.repository, tree, DiffSelection()).ok()
+        fun wrapper(name: String, stream: String, cap: Int): String {
+            val executable = "$directory/$name"
+            val marker = "$directory/$name-fallback"
+            fun quote(value: String) = "'" + value.replace("'", "'\\''") + "'"
+            write("../$name", "#!/bin/sh\nraw=0\nstats=0\nfor arg do\n" +
+                "case \"\$arg\" in --raw) raw=1;; --numstat) stats=1;; esac\ndone\n" +
+                "if [ \"\$raw:\$stats\" = 1:1 ]; then /usr/bin/head -c ${cap + 1} /dev/zero $stream; exit 0; fi\n" +
+                "if [ \"\$raw:\$stats\" = 1:0 ]; then /usr/bin/touch ${quote(marker)}; fi\n" +
+                "exec /usr/bin/git \"\$@\"\n")
+            assertEquals(0, platform.posix.chmod(executable, 448u))
+            return executable
+        }
+        val fallback = GitDiffReader(executable = wrapper("stdout-git", "", DIFF_PROCESS_STDOUT_BYTES))
+        val retried = fallback.files(inventory.repository, tree, DiffSelection()).ok()
+        assertEquals(normal.snapshot.id, retried.snapshot.id)
+        assertEquals(normal.files, retried.files)
+        assertNotNull(readRegularFileBytesOrNull("$directory/stdout-git-fallback"))
+        assertTrue(fallback.patch(inventory.repository, tree, normal.snapshot, normal.files.single()).ok().hunks.isNotEmpty())
+
+        val stderr = GitDiffReader(executable = wrapper("stderr-git", ">&2", DIFF_PROCESS_STDERR_BYTES))
+        assertEquals(DiffReason.output_limit, stderr.files(inventory.repository, tree, DiffSelection()).error?.reason)
+        assertNull(readRegularFileBytesOrNull("$directory/stderr-git-fallback"))
+    }
+
     @Test fun unrelatedEditDuringPatchIsRejectedByTheSecondGlobalObservation() = fixture {
         write("a", "before\n"); commit()
         write("a", "after\n")

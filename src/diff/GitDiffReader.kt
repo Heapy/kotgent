@@ -10,6 +10,7 @@ import io.kotgent.proc.CapturedProcessException
 import io.kotgent.proc.CapturedProcessLimitException
 import io.kotgent.proc.CapturedProcessResult
 import io.kotgent.proc.CapturedProcessTimeoutException
+import io.kotgent.proc.CapturedStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.encodeToString
@@ -272,7 +273,16 @@ class GitDiffReader(
         val local = comparison.mode == DiffMode.local
         val filterFlags = if (local) noFilters(tree.path) else emptyMap()
         val args = diffArgs(tree.path, comparison)
-        val metadata = read(tree.path, args + listOf("--raw", "--numstat", "--no-abbrev", "-z", "--"), filterFlags)
+        val metadata = try {
+            read(tree.path, args + listOf("--raw", "--numstat", "--no-abbrev", "-z", "--"), filterFlags)
+        } catch (failure: CapturedProcessLimitException) {
+            // Combining two bounded outputs must not reduce the formerly supported inventory.
+            // Each fallback command keeps the original cap; stderr limits and cancellation escape.
+            if (failure.stream != CapturedStream.STDOUT) throw failure
+            val raw = read(tree.path, args + listOf("--raw", "--no-abbrev", "-z", "--"), filterFlags)
+            val stats = read(tree.path, args + listOf("--numstat", "-z", "--"), filterFlags)
+            raw + stats
+        }
         val parsed = parseGitRawNumstat(metadata)
         val stats = parsed.stats.associateBy { it.newPath }
         val statusBytes = if (local) read(tree.path, listOf("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"), filterFlags) else byteArrayOf()

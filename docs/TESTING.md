@@ -854,6 +854,12 @@ colons or contain tabs/newlines. Real-Git tests compare combined records with se
 including copies, renames, binary and mode-only records. Conflict handling, staged reversals and
 strict path decoding remain covered. Repository discovery combines the common-directory and bare
 flag reads, parsing the fixed boolean suffix so newlines in a directory remain valid.
+If combined metadata exceeds stdout's 8 MiB cap, the reader retries raw and numstat separately,
+each with the original cap, and uses the same concatenated NUL stream for parsing/fingerprinting.
+It never retries stderr overflow, timeout or cancellation. Real-Git coverage includes 5,000 entries
+with 800-byte paths (each separate output fits while their sum does not), selected patch access,
+and an inventory whose individual raw output exceeds the cap. A controlled Git wrapper verifies
+identical fingerprints on the normal/fallback paths and that stderr overflow never starts fallback.
 
 Service resolution reuses its just-read inventory only when the selected path is that inventory's
 current root. Other worktrees still receive independent common-directory/root validation, and every
@@ -900,3 +906,9 @@ and patches 532/974 → 547/693 ms; reader All files were 215/419 → 357/451 ms
 Run-to-run timing variation is substantial, and these measurements do not isolate its cause.
 The deterministic command reduction is the established result; final integration must remeasure
 latency rather than infer a speedup from counts. Global content hashing remains required work.
+
+After the stdout-overflow fallback correction, all 48 focused diff/parser/service/HTTP tests passed
+in debug and release. Five further release samples retained exact command/output/read/hash totals
+for all 17 benchmark scenarios. Reader All files/patch measured 184/344 and 313/340 ms p50/p95;
+service files/patch measured 195/242 and 319/435 ms. These later results reinforce the need to retain
+all runs and report timing variation rather than select only a favorable measurement.
