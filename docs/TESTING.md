@@ -912,3 +912,110 @@ in debug and release. Five further release samples retained exact command/output
 for all 17 benchmark scenarios. Reader All files/patch measured 184/344 and 313/340 ms p50/p95;
 service files/patch measured 195/242 and 319/435 ms. These later results reinforce the need to retain
 all runs and report timing variation rather than select only a favorable measurement.
+
+### Integrated Diff performance matrix
+
+`DiffMatrixBenchmark.temporaryMatrix` is separately opt-in with `KOTGENT_DIFF_MATRIX=1` and
+`KOTGENT_DIFF_BENCH_RUNS=5` (minimum five). Run it through the same mutex and root-module command
+as above, selecting `--include-classes io.kotgent.diff.DiffMatrixBenchmark`, in both debug and release.
+It owns a temporary repository with 109 commits, a nonempty second history page, a two-parent merge,
+a base branch and two worktrees. Each worktree has 25 changed tracked text files and 12 MiB of
+unrelated untracked binary content. Fixed commit identities and dates make recreated fixtures comparable.
+
+The matrix measures history and its next page, All/Staged/Unstaged files and patches, root and ordinary
+commits, both merge parents, and branch files/patches in each worktree. Each scenario reports five
+samples and nearest-rank p50/p95. `uncached` disables the application payload cache; `cold` starts with
+a separate empty cache for every sample/scenario; `warm` primes that scenario outside the timer and
+constructs a fresh reader over its disk records. Patch snapshots are prepared with an uncached reader
+outside the timed operation. Thus cold patch includes its own metadata publication, while warm patch
+can reuse both metadata and selected hunks. Local comparisons intentionally bypass payload caching.
+Fixture setup, priming and untimed snapshot preparation are excluded from the reported operation.
+The OS page cache is uncontrolled in every state. Worktree entries are isolated, not shared hits.
+
+`DIFF_MATRIX` reports the same additive byte counters as `DIFF_BENCH`, including cache writes
+separately; they describe logical application work, not physical I/O or Git's internal reads/hashing.
+Warm immutable samples deterministically assert zero `logCommands` and `diffCommands`; latency has
+no CI threshold. For a pre-cache baseline, use identical fixture/scenario code with the reader factory
+adapted to omit the unavailable cache and run only `uncached`; retain that adaptation and scalar
+instrumentation with the raw logs. A baseline without a cache has no distinct cold/warm cache state.
+
+`DiskCacheFilesTest.cancellationAfterStagingWritePreventsPublicationAndReleasesLock` cancels the active
+writer through its byte-accounting callback after a successful staging write. It proves cancellation
+escapes, the target is not published, staging is removed, and a fresh instance can acquire the lock and
+publish. This complements cancellation before admission and during Git dependency validation.
+
+### Integrated measurements (2026-10-12, local:522)
+
+The v2 matrix compares baseline `1ac6703ed7838dbc0a68baa728e5c2513f86c473` with the integrated
+implementation at `9d4045131a6ac1337b065d2f4bf83ec44e27e6f3` plus the reusable matrix and active
+publication-cancellation test. Host: macOS 26.6.2 ARM64, Git 2.54.0, Kotlin 2.4.20 / Toolchain 0.13.0.
+Both revisions recreate the same root and HEAD OIDs. Each variant has 180 baseline samples and 540
+optimized samples (36 operations across both worktrees, five repeats, three final cache states).
+Baseline has no payload cache. All timed operations succeeded; every warm immutable sample skipped
+`log` and `diff`. The following representative first-worktree rows are p50/p95 milliseconds:
+
+**Debug**
+
+| Operation | Baseline | Final uncached | Final empty cache | Final warm |
+|---|---:|---:|---:|---:|
+| history | 1703 / 1820 | 99 / 505 | 146 / 150 | 91 / 115 |
+| next-page | 1218 / 1247 | 88 / 121 | 141 / 160 | 80 / 100 |
+| local-all-files | 2783 / 2865 | 531 / 645 | 504 / 529 | 509 / 512 |
+| local-all-patch | 4324 / 4450 | 999 / 1150 | 956 / 992 | 976 / 1148 |
+| local-staged-files | 2324 / 2535 | 150 / 223 | 124 / 137 | 148 / 467 |
+| local-unstaged-patch | 4414 / 4523 | 955 / 1408 | 973 / 1372 | 986 / 1019 |
+| root-files | 1939 / 2103 | 99 / 412 | 257 / 662 | 165 / 171 |
+| root-patch | 1993 / 2005 | 88 / 334 | 303 / 390 | 154 / 198 |
+| commit-files | 1880 / 2109 | 99 / 234 | 257 / 266 | 174 / 192 |
+| merge-parent1-patch | 1451 / 1486 | 86 / 177 | 328 / 451 | 196 / 232 |
+| merge-parent2-patch | 1453 / 1692 | 59 / 140 | 270 / 290 | 170 / 192 |
+| branch-files | 2252 / 2487 | 137 / 421 | 291 / 370 | 183 / 200 |
+| branch-patch | 1390 / 1611 | 60 / 156 | 276 / 313 | 168 / 172 |
+
+Across both worktrees, local-all-files empty-cache p50 improved 5.5–5.6× over baseline.
+Across both worktrees, local-all-patch empty-cache p50 improved 4.5–4.6× over baseline.
+
+**Release**
+
+| Operation | Baseline | Final uncached | Final empty cache | Final warm |
+|---|---:|---:|---:|---:|
+| history | 2468 / 3925 | 227 / 234 | 173 / 276 | 136 / 270 |
+| next-page | 1813 / 2050 | 164 / 190 | 188 / 324 | 102 / 259 |
+| local-all-files | 3325 / 3768 | 381 / 440 | 202 / 346 | 201 / 313 |
+| local-all-patch | 5003 / 5484 | 498 / 551 | 457 / 520 | 303 / 556 |
+| local-staged-files | 3235 / 3601 | 290 / 342 | 223 / 659 | 172 / 397 |
+| local-unstaged-patch | 4886 / 5116 | 480 / 732 | 395 / 495 | 479 / 646 |
+| root-files | 2751 / 2801 | 249 / 589 | 349 / 412 | 182 / 305 |
+| root-patch | 2566 / 2629 | 156 / 242 | 403 / 527 | 284 / 380 |
+| commit-files | 2455 / 2632 | 188 / 627 | 386 / 600 | 224 / 606 |
+| merge-parent1-patch | 1888 / 2151 | 146 / 201 | 384 / 1171 | 252 / 364 |
+| merge-parent2-patch | 1991 / 2120 | 107 / 150 | 468 / 700 | 211 / 241 |
+| branch-files | 3092 / 3771 | 229 / 298 | 386 / 796 | 203 / 288 |
+| branch-patch | 1975 / 2104 | 132 / 180 | 407 / 456 | 262 / 294 |
+
+Across both worktrees, local-all-files empty-cache p50 improved 14.4–16.5× over baseline.
+Across both worktrees, local-all-patch empty-cache p50 improved 8.7–11.0× over baseline.
+
+Local All/Unstaged files and patches still return 12,583,174 and 25,166,348 worktree-content bytes;
+Staged returns zero. All three local cache states execute identical work and bypass payload storage;
+differences between their timings are run-to-run variation, not a local-cache speedup. Commands fall
+from 15/22 to 13/19 for each local files/patch pair. Combining
+metadata removes 65 bytes per observation from the final snapshot hash input, with no removed content
+bytes. Warm immutable responses still read Git dependency output and cache records and hash their
+inputs; zero `log`/`diff` does not mean zero I/O. The complete emitted rows include these costs and
+cache writes separately. These results establish the aggregate improvement over the original process
+implementation, not a separate universal cache latency improvement. Small comparisons often remain
+cheaper uncached. Run order, OS page cache and host load are uncontrolled; do not compare debug and
+release as if they were adjacent runs under identical load.
+
+Final verification passed the required npm install/typecheck/build → host/JVM build → host/JVM test
+order, with 1,948 Native method pass records and 275 JVM passes (263 browser/logic, 10 build-info,
+2 SQLDelight plugin). The focused release Diff/HTTP and native cache tests also passed. `sysnative`
+production and test sources compiled for macOS ARM64, Linux x64 and Linux ARM64. This is not Linux
+runtime evidence. Safari/iOS/PWA manual checks remain outstanding.
+
+No new compiler warnings were introduced. Existing warnings are five Native test unused returns and
+seven unchanged `PlanFindings` harness unused returns. The unchanged Web UI emits a Vite chunk-size
+notice; npm audit reports the existing `source-map-js` advisory GHSA-68fv-2mgg-jv7q. Dependency updates
+were outside this optimization scope. Raw samples, baseline instrumentation, exact commands, warning
+logs and the complete two-worktree matrix accompany the review handoff.
