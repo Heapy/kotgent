@@ -47,7 +47,7 @@ class DiffReadBenchmark {
             val nanos = start.elapsedNow().inWholeNanoseconds
             samples.getOrPut(label) { mutableListOf() }.add(nanos)
             println("DIFF_BENCH run=$run scenario=$label ns=$nanos " +
-                listOf("gitCommands", "gitBytes", "fileBytes", "hashBytes").joinToString(" ") { "$it=" + (counters[it] ?: 0) })
+                listOf("gitCommands", "gitBytes", "fileBytes", "hashBytes", "logCommands", "diffCommands").joinToString(" ") { "$it=" + (counters[it] ?: 0) })
             return result
         }
         fun <T> DiffResponse<T>.ok(): T = assertNotNull(data, error.toString())
@@ -106,6 +106,25 @@ class DiffReadBenchmark {
                 val _ = measure("root-patch", run) {
                     reader.patch(inventory.repository, tree, rootFiles.snapshot, rootFiles.files.single { it.newPath == "selected.txt" }).ok()
                 }
+            }
+            // Application disk cold/warm, separate from all original v1 cache-disabled scenarios.
+            repeat(runs) { run ->
+                val cacheRoot = "$directory/cache-$run"
+                fun cached() = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles(cacheRoot)),
+                    measure = { name, value -> counters[name] = (counters[name] ?: 0) + value })
+                val cold = cached()
+                val _ = measure("disk-cold-history", run) { cold.commits(inventory.repository, tree).ok() }
+                val list = measure("disk-cold-root-files", run) {
+                    cold.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = rootOid)).ok()
+                }
+                val selected = list.files.single { it.newPath == "selected.txt" }
+                val _ = measure("disk-cold-root-patch", run) { cold.patch(inventory.repository, tree, list.snapshot, selected).ok() }
+                val restarted = cached()
+                val _ = measure("disk-warm-history", run) { restarted.commits(inventory.repository, tree).ok() }
+                val warm = measure("disk-warm-root-files", run) {
+                    restarted.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = rootOid)).ok()
+                }
+                val _ = measure("disk-warm-root-patch", run) { restarted.patch(inventory.repository, tree, warm.snapshot, selected).ok() }
             }
             for ((key, value) in samples) {
                 val sorted = value.sorted()

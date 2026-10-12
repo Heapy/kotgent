@@ -13,6 +13,7 @@ import io.kotgent.proc.CapturedProcessTimeoutException
 import io.kotgent.proc.CapturedStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
@@ -24,6 +25,7 @@ class GitDiffReader(
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     /** Optional benchmark counter scoped to this reader; never receives paths or content. */
     private val measure: ((String, Long) -> Unit)? = null,
+    private val diskCache: DiffDiskCache? = null,
 ) : DiffReader {
     init { require(executable.startsWith('/') && '\u0000' !in executable) }
 
@@ -55,6 +57,7 @@ class GitDiffReader(
             }
         }
         measure?.invoke("gitCommands", 1)
+        if (args.firstOrNull() in listOf("log", "diff")) measure?.invoke("${args.first()}Commands", 1)
         return CapturedProcess.run(listOf(executable) + flags + listOf("-C", cwd) + args,
             environment + configEnvironment, DIFF_PROCESS_STDOUT_BYTES, DIFF_PROCESS_STDERR_BYTES,
             DIFF_PROCESS_TIMEOUT_MILLIS.milliseconds).also {
@@ -194,6 +197,12 @@ class GitDiffReader(
         val args = listOf("log", "--topo-order", "--max-count=${DIFF_COMMIT_PAGE_SIZE + 1}", "--skip=${pinned.offset}",
             "-z", "--format=%H%x00%P%x00%an%x00%at%x00%s", "--encoding=UTF-8", pinned.headOid) +
             listOfNotNull(pinned.baseOid?.let { "^$it" }) + "--"
+        val context = cacheContext(repository, tree, listOfNotNull(pinned.headOid, pinned.baseOid))
+        val key = context?.let { "history-v1:$it:" + Json.encodeToString(pinned) }
+        key?.let { diskCache?.get<HistoryPage>(it, now()) }?.let { page ->
+            return@response DiffCommits(repository, tree.id, pinned, page.commits,
+                if (page.more) pinned.copy(offset = pinned.offset + DIFF_COMMIT_PAGE_SIZE) else null, now())
+        }
         val records = gitFields(read(tree.path, args))
         if (records.size % 5 != 0) gitFailure(DiffReason.git_failed, "Malformed commit page")
         val shallow = line(read(tree.path, listOf("rev-parse", "--is-shallow-repository"))) == "true"
@@ -206,8 +215,11 @@ class GitDiffReader(
             if (shallow && parents.isEmpty()) commit(tree.path, oid)
             else DiffCommit(oid, parents, gitText(record[2]), authored * 1000, gitText(record[4]))
         }
+        val more = records.size / 5 > DIFF_COMMIT_PAGE_SIZE
+        if (key != null && context == cacheContext(repository, tree, listOfNotNull(pinned.headOid, pinned.baseOid)))
+            diskCache?.put(key, HistoryPage(commits, more), now())
         DiffCommits(repository, tree.id, pinned, commits,
-            if (records.size / 5 > DIFF_COMMIT_PAGE_SIZE) pinned.copy(offset = pinned.offset + DIFF_COMMIT_PAGE_SIZE) else null, now())
+            if (more) pinned.copy(offset = pinned.offset + DIFF_COMMIT_PAGE_SIZE) else null, now())
     }
 
     private suspend fun ref(repository: DiffRepository, tree: DiffWorktree, name: String): DiffRef =
@@ -267,9 +279,20 @@ class GitDiffReader(
         }
     }
 
-    private data class Observation(val files: List<DiffFile>, val digest: String, val limited: DiffProblem?)
+    @Serializable private data class HistoryPage(val commits: List<DiffCommit>, val more: Boolean)
+    @Serializable private data class PatchPayload(val hunks: List<DiffHunk>)
+    @Serializable private data class Observation(val files: List<DiffFile>, val digest: String, val limited: DiffProblem?)
 
-    private suspend fun observe(tree: DiffWorktree, comparison: DiffComparison): Observation {
+    private suspend fun observe(tree: DiffWorktree, comparison: DiffComparison, context: String?): Observation {
+        val key = context?.let { "files-v1:$it:" + Json.encodeToString(comparison) }
+        key?.let { diskCache?.get<Observation>(it, now()) }?.let { return it }
+        val result = observeUncached(tree, comparison)
+        if (key != null && result.limited == null && result.files.none { it.problem != null } &&
+            context == comparisonContext(tree, comparison)) diskCache?.put(key, result, now())
+        return result
+    }
+
+    private suspend fun observeUncached(tree: DiffWorktree, comparison: DiffComparison): Observation {
         val local = comparison.mode == DiffMode.local
         val filterFlags = if (local) noFilters(tree.path) else emptyMap()
         val args = diffArgs(tree.path, comparison)
@@ -345,7 +368,7 @@ class GitDiffReader(
     override suspend fun files(repository: DiffRepository, worktree: DiffWorktree, selection: DiffSelection): DiffResponse<DiffFiles> = response {
         val tree = verify(repository, worktree)
         val comparison = comparison(repository, tree, selection)
-        val observation = observe(tree, comparison)
+        val observation = observe(tree, comparison, comparisonContext(tree, comparison))
         DiffFiles(DiffSnapshot(observation.digest, comparison, now()), observation.files, observation.limited)
     }
 
@@ -353,12 +376,19 @@ class GitDiffReader(
         val tree = verify(repository, worktree)
         val comparison = snapshot.comparison
         if (comparison.repository != repository || comparison.worktreeId != tree.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
-        suspend fun check() {
-            val observation = observe(tree, comparison)
+        suspend fun check(): String? {
+            val context = comparisonContext(tree, comparison)
+            val observation = observe(tree, comparison, context)
             if (observation.digest != snapshot.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
             if (file !in observation.files) gitFailure(DiffReason.unknown_file, "Unknown snapshot file", DiffErrorCode.invalid)
+            return context
         }
-        check()
+        val context = check()
+        val key = context?.let { "patch-v1:$it:" + Json.encodeToString(comparison) + ":" + Json.encodeToString(file) }
+        key?.let { diskCache?.get<PatchPayload>(it, now()) }?.let { payload ->
+            if (check() != context) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+            return@response DiffPatch(snapshot.copy(readAt = now()), file, payload.hunks)
+        }
         val result = if (file.kind != DiffFileKind.text) DiffPatch(snapshot, file, limited = file.problem?.takeIf { it.code == DiffErrorCode.limited }) else if (file.change == DiffChange.untracked) {
             val content = localContent(tree.path, file.newPath!!)
             val bytes = content.bytes ?: gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
@@ -374,13 +404,81 @@ class GitDiffReader(
             val parsed = try { parseGitPatch(selectGitPatch(output, file), DIFF_MAX_PATCH_BYTES, DIFF_MAX_PATCH_LINES) }
             catch (failure: GitReadFailure) {
                 if (failure.problem.reason != DiffReason.unsupported_encoding) throw failure
-                check()
+                val _ = check()
                 return@response DiffPatch(snapshot, file.copy(kind = DiffFileKind.unavailable, problem = failure.problem))
             }
             DiffPatch(snapshot, file, parsed.hunks, parsed.limited)
         }
-        check()
+        if (check() != context) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        if (key != null && result.limited == null && result.file.problem == null)
+            diskCache?.put(key, PatchPayload(result.hunks), now())
         result
+    }
+
+    private suspend fun comparisonContext(tree: DiffWorktree, comparison: DiffComparison): String? {
+        if (comparison.mode == DiffMode.local) return null
+        return cacheContext(comparison.repository, tree,
+            listOfNotNull(comparison.headOid, comparison.baseOid, comparison.mergeBaseOid,
+                comparison.commitOid, comparison.leftOid, comparison.rightOid).distinct(),
+            listOfNotNull(comparison.leftOid, comparison.rightOid))
+    }
+
+    /**
+     * Conservative, bounded proof of the inputs Git can consult. No stat/mtime validity cache.
+     * Object inventory includes unreachable objects and alternates, so deletion cannot keep an old hit.
+     * Large or unreadable contexts bypass storage; they do not narrow ordinary reader limits.
+     */
+    private suspend fun cacheContext(repository: DiffRepository, tree: DiffWorktree, pins: List<String>, endpoints: List<String>? = null): String? {
+        if (diskCache == null || !diskCache.isOutside(repository.commonDir, tree.path)) return null
+        return try {
+            val parts = mutableListOf("reader-v1", repository.commonDir, tree.path, executable,
+                digest(read(tree.path, listOf("--version"))),
+                digest(read(tree.path, listOf("config", "--null", "--list"))))
+            var dependencyBytes = 0L
+            fun dependency(root: String, path: String): Boolean {
+                val value = readWorktreeFile(root, path, DIFF_PROCESS_STDOUT_BYTES)
+                if (value.kind !in listOf(WorktreeFileKind.regular, WorktreeFileKind.missing)) return false
+                dependencyBytes += value.bytes.size
+                if (dependencyBytes > DIFF_PROCESS_STDOUT_BYTES) return false
+                parts += Json.encodeToString(listOf(root, path, value.kind.name, digest(value.bytes)))
+                return true
+            }
+            for (path in listOf("shallow", "info/grafts")) if (!dependency(repository.commonDir, path)) return null
+            val objects = read(tree.path, listOf("cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"))
+            val members = gitFields(objects, 10).map(::gitText).toSet()
+            if (pins.any { "$it commit" !in members }) return null
+            parts += digest(objects)
+            if (endpoints != null) {
+                // Index attributes are the fallback for absent checkout attributes, including split indexes.
+                parts += digest(read(tree.path, listOf("ls-files", "--stage", "-z")))
+                if (!dependency(repository.commonDir, "info/attributes")) return null
+                val global = command(tree.path, listOf("config", "--path", "--get", "core.attributesFile"))
+                if (global.exitCode !in 0..1) return null
+                val attributeFile = if (global.exitCode == 0) line(global.stdout) else
+                    worktreeUserHome()?.let { "$it/.config/git/attributes" }
+                if (attributeFile != null && attributeFile.isNotEmpty()) {
+                    if (attributeFile.startsWith('/')) {
+                        if (!dependency("/", attributeFile.removePrefix("/"))) return null
+                    } else if (!dependency(tree.path, attributeFile)) return null
+                }
+                val attributes = linkedSetOf(".gitattributes")
+                for (oid in endpoints.distinct()) {
+                    for (path in gitFields(read(tree.path, listOf("ls-tree", "-r", "--name-only", "-z", oid))).map(::gitText)) {
+                        val components = path.split('/')
+                        for (n in 1..<components.size) attributes += components.take(n).joinToString("/") + "/.gitattributes"
+                        if (attributes.size > DIFF_MAX_FILES) return null
+                    }
+                }
+                for (path in attributes) {
+                    currentCoroutineContext().ensureActive()
+                    if (!dependency(tree.path, path)) return null
+                }
+            }
+            digest(Json.encodeToString(parts).encodeToByteArray())
+        } catch (_: GitReadFailure) { null
+        } catch (_: CapturedProcessLimitException) { null
+        } catch (_: CapturedProcessTimeoutException) { null
+        } catch (_: CapturedProcessException) { null }
     }
 
     /** Only the nested repository's root/HEAD metadata, never recursive content or status. */
