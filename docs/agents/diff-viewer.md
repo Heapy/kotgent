@@ -55,8 +55,13 @@ Files mode fields: local accepts `scope=all|staged|unstaged` (default all); comm
 `commitOid` and accepts one-based `parent`; branch requires full `baseRef` such as `refs/heads/main`.
 Reject irrelevant, repeated, malformed, and unknown query fields. Missing branch base is invalid;
 `defaultBaseRef` from refs is a UI suggestion, not an implicit moving server default. The server checks
-baseRef membership and commit reachability in the selected pinned history, not arbitrary rev expressions.
-Full OIDs support SHA-1 and SHA-256. No arbitrary-SHA search UI or graph view is included.
+baseRef membership. For commit mode, it looks up the full `commitOid` as a commit object inside the
+authorized repository; it does not require reachability from current HEAD or a particular history page.
+Thus a commit selected from history pinned at HEAD A remains readable after HEAD moves to B, provided
+the object still exists. Missing objects return unavailable/missing_object; an existing non-commit
+object is invalid/invalid_request. Rev expressions and abbreviated OIDs are not accepted. Full OIDs
+support SHA-1 and SHA-256. The UI selects only commits in its loaded history; arbitrary-SHA search and
+graph views remain outside this version. No pinned-history context is required in the files request.
 
 `cursor` is URL-encoded JSON `{ "headOid": "…", "baseOid": null, "offset": 100 }`, not a signed
 capability. First page pins current HEAD and optional baseRef OIDs. Later pages use those same OIDs,
