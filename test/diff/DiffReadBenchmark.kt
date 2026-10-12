@@ -95,8 +95,17 @@ class DiffReadBenchmark {
                 val files = measure("service-files", run) { service.files(id, tree.id, DiffSelection()).ok() }
                 val selected = files.files.single { it.newPath == "selected.txt" }
                 val _ = measure("service-patch", run) { service.patch(id, tree.id, files.snapshot.id, selected.fileId).ok() }
-                val _ = measure("history", run) { reader.commits(inventory.repository, tree, null, null).ok() }
-                val _ = measure("root-files", run) { reader.files(inventory.repository, tree, DiffSelection(mode = DiffMode.commit, commitOid = rootOid)).ok() }
+                val history = measure("history", run) { reader.commits(inventory.repository, tree, null, null).ok() }
+                val rootFiles = measure("root-files", run) { reader.files(inventory.repository, tree, DiffSelection(mode = DiffMode.commit, commitOid = rootOid)).ok() }
+                // Additional reads leave the v1 fixture unchanged, so its original scenarios remain comparable.
+                val _ = measure("history-pinned-page", run) {
+                    reader.commits(inventory.repository, tree, null, assertNotNull(history.cursor).copy(offset = DIFF_COMMIT_PAGE_SIZE)).ok()
+                }
+                val _ = measure("service-inventory", run) { service.worktrees(id).ok() }
+                val _ = measure("service-history", run) { service.commits(id, tree.id, null, null).ok() }
+                val _ = measure("root-patch", run) {
+                    reader.patch(inventory.repository, tree, rootFiles.snapshot, rootFiles.files.single { it.newPath == "selected.txt" }).ok()
+                }
             }
             for ((key, value) in samples) {
                 val sorted = value.sorted()

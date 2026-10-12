@@ -108,6 +108,9 @@ class DiffService(
         val tree = inventory.worktrees.singleOrNull { it.id == worktree }
             ?: throw ReadFailure(DiffProblem(DiffErrorCode.invalid, DiffReason.foreign_worktree, "Worktree is not in this repository"))
         tree.unavailable?.let { throw ReadFailure(it) }
+        // The current root was resolved from the stored cwd by this very inventory. The reader
+        // still verifies it afresh before reading; only a different selected path needs discovery here.
+        if (tree.id == inventory.currentWorktreeId && tree.path == inventory.currentWorktreeId) return source to tree
         // Re-resolve the selected entry itself: an inventory path can now point to another clone.
         val selectedResult = reader.worktrees(tree.path)
         if (selectedResult.error != null) { invalidate(session); throw ReadFailure(selectedResult.error) }

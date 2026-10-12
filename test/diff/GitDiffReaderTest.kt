@@ -190,6 +190,65 @@ class GitDiffReaderTest {
         assertTrue(patch(conflicts, conflict).ok().hunks.isEmpty())
     }
 
+    @Test fun combinedMetadataMatchesSeparateGitOutputsIncludingCopiesAndOddPaths() = fixture {
+        write(":old\t\nname", "one\ntwo\nthree\n")
+        write("source", "copy content\n")
+        write("mode", "mode\n")
+        writeBytes("binary", byteArrayOf(0, 1, 2))
+        commit()
+        git("mv", ":old\t\nname", ":new\t\nname")
+        write("1\t2\tcopy", "copy content\n")
+        writeBytes("binary", byteArrayOf(0, 2, 3))
+        git("add", "--all")
+        git("update-index", "--chmod=+x", "mode")
+        suspend fun output(vararg formats: String): ByteArray {
+            val result = CapturedProcess.run(listOf("/usr/bin/git", "-C", root, "diff", "--cached",
+                "--find-renames", "--find-copies-harder", "--no-abbrev", "-z") + formats + "--", env)
+            assertEquals(0, result.exitCode)
+            return result.stdout
+        }
+        val combined = parseGitRawNumstat(output("--raw", "--numstat"))
+        assertEquals(parseGitRaw(output("--raw")), combined.raw)
+        assertEquals(parseGitNumstat(output("--numstat")), combined.stats)
+        assertTrue(combined.raw.any { it.file.change == DiffChange.copied })
+        assertTrue(combined.raw.any { it.file.change == DiffChange.renamed })
+        assertNull(combined.stats.single { it.newPath == "binary" }.added)
+        assertEquals(0, combined.stats.single { it.newPath == "mode" }.added)
+    }
+
+    @Test fun unrelatedEditDuringPatchIsRejectedByTheSecondGlobalObservation() = fixture {
+        write("a", "before\n"); commit()
+        write("a", "after\n")
+        writeBytes("unrelated", byteArrayOf(0, 1, 2))
+        // This test executable changes an unrelated file only after Git produced the selected patch.
+        // Both metadata reads use the same real Git executable and ordinary read-only flags.
+        val wrapper = "$directory/git-wrapper"
+        fun quote(value: String) = "'" + value.replace("'", "'\\''") + "'"
+        write("../git-wrapper", "#!/bin/sh\n/usr/bin/git \"\$@\"\nresult=\$?\n" +
+            "for arg do\nif [ \"\$arg\" = --patch ]; then printf '\\000\\003\\004' > " +
+            quote("$root/unrelated") + "; fi\ndone\nexit \$result\n")
+        assertEquals(0, platform.posix.chmod(wrapper, 448u))
+        val hooked = GitDiffReader(executable = wrapper)
+        val inventory = hooked.worktrees(root).ok()
+        val tree = inventory.worktrees.single()
+        val list = hooked.files(inventory.repository, tree, DiffSelection()).ok()
+        val selected = list.files.single { it.newPath == "a" }
+        assertEquals(DiffReason.snapshot_changed, hooked.patch(inventory.repository, tree, list.snapshot, selected).error?.reason)
+    }
+
+    @Test fun discoveryPreservesNewlinesInCommonDirectoryAndNestedCwd() = fixture {
+        write("a", "one\n"); commit()
+        val moved = "$directory/repo\nfalse\n"
+        assertEquals(0, CapturedProcess.run(listOf("/bin/mv", root, moved), env).exitCode)
+        assertEquals(0, platform.posix.mkdir("$moved/nested", 448u))
+        val discovered = reader.worktrees("$moved/nested").ok()
+        val canonical = assertNotNull(io.kotgent.host.canonicalWorktreePath(moved))
+        assertEquals("$canonical/.git", discovered.repository.commonDir)
+        assertEquals(canonical, discovered.currentWorktreeId)
+        assertFalse(discovered.worktrees.single().bare)
+        assertTrue(reader.files(discovered.repository, discovered.worktrees.single(), DiffSelection()).ok().files.isEmpty())
+    }
+
     @Test fun readsDoNotMutateIndexRefsOrInvokeExternalCommands() = fixture {
         write("a", "one\n"); commit()
         write(".gitattributes", "* filter=evil diff=evil\n")

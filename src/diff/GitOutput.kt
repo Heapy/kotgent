@@ -36,12 +36,15 @@ internal fun gitPath(bytes: ByteArray): String {
 
 internal data class GitRawFile(val file: DiffFile, val oldOid: String, val newOid: String)
 
-internal fun parseGitRaw(bytes: ByteArray): List<GitRawFile> {
-    val fields = gitFields(bytes)
+internal fun parseGitRaw(bytes: ByteArray): List<GitRawFile> = parseGitRaw(gitFields(bytes))
+
+private fun parseGitRaw(fields: List<ByteArray>): List<GitRawFile> {
     val result = mutableListOf<GitRawFile>()
     var i = 0
     while (i < fields.size) {
-        val header = gitText(fields[i++]).removePrefix(":").split(' ')
+        val record = gitText(fields[i++])
+        if (!record.startsWith(':')) gitFailure(DiffReason.git_failed, "Missing raw diff marker")
+        val header = record.removePrefix(":").split(' ')
         if (header.size != 5 || header[4].isEmpty()) gitFailure(DiffReason.git_failed, "Malformed raw diff")
         val oldMode = header[0].takeUnless { it == "000000" }
         val newMode = header[1].takeUnless { it == "000000" }
@@ -78,8 +81,9 @@ internal fun parseGitRaw(bytes: ByteArray): List<GitRawFile> {
 
 internal data class GitStat(val oldPath: String, val newPath: String, val added: Int?, val deleted: Int?)
 
-internal fun parseGitNumstat(bytes: ByteArray): List<GitStat> {
-    val fields = gitFields(bytes)
+internal fun parseGitNumstat(bytes: ByteArray): List<GitStat> = parseGitNumstat(gitFields(bytes))
+
+private fun parseGitNumstat(fields: List<ByteArray>): List<GitStat> {
     val result = mutableListOf<GitStat>()
     var i = 0
     while (i < fields.size) {
@@ -104,6 +108,23 @@ internal fun parseGitNumstat(bytes: ByteArray): List<GitStat> {
         result += GitStat(old, new, added, deleted)
     }
     return result
+}
+
+internal data class GitRawNumstat(val raw: List<GitRawFile>, val stats: List<GitStat>)
+
+/** Git emits all raw records, then all numstat records, with no extra separator.
+ * Consume path fields by raw record arity: a filename may itself start with ':' or contain tabs.
+ */
+internal fun parseGitRawNumstat(bytes: ByteArray): GitRawNumstat {
+    val fields = gitFields(bytes)
+    var boundary = 0
+    while (boundary < fields.size && fields[boundary].firstOrNull() == ':'.code.toByte()) {
+        val header = gitText(fields[boundary]).split(' ')
+        if (header.size != 5 || header[4].isEmpty()) gitFailure(DiffReason.git_failed, "Malformed raw diff")
+        boundary += if (header[4][0] in "RC") 3 else 2
+        if (boundary > fields.size) gitFailure(DiffReason.git_failed, "Missing raw diff path")
+    }
+    return GitRawNumstat(parseGitRaw(fields.subList(0, boundary)), parseGitNumstat(fields.subList(boundary, fields.size)))
 }
 
 internal data class GitStatus(val path: String, val oldPath: String?, val index: String, val worktree: String)

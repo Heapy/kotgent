@@ -836,8 +836,67 @@ coroutines 1.11.0). Five samples per scenario and variant gave these p50/p95 mil
 All measured command/output/read/hash counts matched before and after. Reader All files/patch
 used 15/22 Git commands and returned 12,583,174/25,166,348 worktree bytes; service calls used
 23/30 commands with the same worktree byte totals. In 50 baseline release captures, median explicit
-thread-close time was 163.5 ms, versus 0.66 ms spawn and 4.10 ms drain/exit observation. This
+thread-close time was 163.5 ms, versus 0.66 ms spawn and 4.00 ms drain/exit observation. This
 isolates the removed cost; it is not evidence that Git or hashing got faster. Allocation plus hashing
 16 MiB still took a debug median of 539 ms after the change. Local fingerprints and repeated Git
 validation remain measurable costs for subsequent work. These are fixture-specific measurements,
 with no application payload cache and an uncontrolled OS page cache, not CI timing requirements.
+
+The next reader optimization keeps the v1 repository contents and original benchmark scenarios intact.
+Additional scenarios measure a supplied history cursor (the v1 root-only history has an empty next
+page), service inventory/history, and a selected root-commit patch. All scenarios still require at
+least five samples. The final integration matrix must separately exercise a nonempty second page,
+merge parents, branch comparisons and multiple worktrees.
+
+Reader metadata uses one `diff --raw --numstat --no-abbrev -z` invocation. The parser consumes raw
+paths by status arity before finding the numstat section; rename/copy paths may themselves begin with
+colons or contain tabs/newlines. Real-Git tests compare combined records with separate Git output,
+including copies, renames, binary and mode-only records. Conflict handling, staged reversals and
+strict path decoding remain covered. Repository discovery combines the common-directory and bare
+flag reads, parsing the fixed boolean suffix so newlines in a directory remain valid.
+
+Service resolution reuses its just-read inventory only when the selected path is that inventory's
+current root. Other worktrees still receive independent common-directory/root validation, and every
+reader operation retains fresh verification. First history pages reuse the full HEAD object validation
+already performed in that request; caller-supplied cursors still validate pinned objects afresh.
+Local HEAD/index/status/content observations are retained before and after a selected patch, including
+unrelated binary bytes. A real-Git wrapper regression edits an unrelated file after Git emits the
+patch and proves the second observation rejects it. Authenticated HTTP regressions also cover
+same-size binary edits with restored mtime, index mode changes, moved worktrees, and foreign clones.
+No payload cache or larger snapshot metadata registry is introduced.
+
+Compared with the task-1 reader at `9e19a506282f73a783463db83e83df103aeeaaa9`, the same v1
+fixture consistently reduces invocation counts:
+
+| Scenario | Before | After |
+|---|---:|---:|
+| Inventory | 4 | 3 |
+| First history page | 11 | 8 |
+| Reader local files / patch (each scope) | 15 / 22 | 13 / 19 |
+| Service local files / patch | 23 / 30 | 16 / 22 |
+| Root-commit files | 12 | 10 |
+
+All/Unstaged file and patch reads retain exactly 12,583,174 and 25,166,348 worktree bytes;
+Staged retains zero worktree-content bytes. Combining the metadata fingerprints removes 65 bytes
+from each final snapshot-hash input, not from the file content hashed. Reader All Git output remains
+6,332/12,315 bytes; service output falls from 6,800/12,783 to 6,566/12,549 bytes, and first-page history
+output falls from 709 to 529 bytes.
+
+Five-sample task-2 measurements on the same host/variants gave these p50/p95 milliseconds;
+the before columns are the earlier task-1 measurements above:
+
+| Scenario | Debug before | Debug after | Release before | Release after |
+|---|---:|---:|---:|---:|
+| Reader All files | 531 / 885 | 629 / 647 | 195 / 274 | 216 / 427 |
+| Reader All patch | 991 / 1303 | 1135 / 1154 | 334 / 526 | 466 / 711 |
+| Service All files | 596 / 889 | 649 / 687 | 267 / 368 | 377 / 498 |
+| Service All patch | 1038 / 1215 | 1219 / 1274 | 416 / 432 | 545 / 689 |
+
+These samples prove fewer invocations, not an incremental latency improvement. A follow-up release
+run restored the prior reader/service, then ran the preserved changed release binary immediately
+afterward (five samples each, same fixture, serialized mutex). Service files were 348/761 → 472/556 ms
+and patches 532/974 → 547/693 ms; reader All files were 215/419 → 357/451 ms and patches
+347/787 → 508/751 ms. First service history improved from 246/345 → 99/235 ms in that run.
+Run-to-run timing variation is substantial, and these measurements do not isolate its cause.
+The deterministic command reduction is the established result; final integration must remeasure
+latency rather than infer a speedup from counts. Global content hashing remains required work.
