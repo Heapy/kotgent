@@ -1,6 +1,7 @@
+import { revealDiffPaths } from "../lib/diff-tree.ts";
 import { signal } from "@preact/signals-core";
 import type { ReadonlySignal, Signal } from "@preact/signals-core";
-import { diffApi, comparisonKey, DiffReadError, filterFiles, nextUnviewedFile } from "../lib/diff.ts";
+import { diffApi, filePath, comparisonKey, DiffReadError, filterFiles, nextUnviewedFile } from "../lib/diff.ts";
 import type { DiffPort, DiffMode, DiffLocalScope, DiffSelection, DiffWorktrees, DiffRefs, DiffCommits, DiffFiles, DiffPatch, DiffProblem, DiffCommit } from "../lib/diff.ts";
 
 export interface DiffRead<T> { data: T | null; state: "idle" | "loading" | "ready" | "failed"; loading: boolean; error: string | null; problem: DiffProblem | null; stale: boolean }
@@ -10,12 +11,13 @@ export interface DiffState {
   inventory: DiffRead<DiffWorktrees>; refs: DiffRead<DiffRefs>; history: DiffRead<DiffCommits>;
   files: DiffRead<DiffFiles>; patch: DiffRead<DiffPatch>;
   selected: string | null; query: string; hideViewed: boolean; viewed: ReadonlySet<string>;
+  fileView: "list" | "tree"; collapsedFolders: ReadonlySet<string>;
   page: "files" | "patch"; layout: "unified" | "split"; wrap: boolean; scrollTop: number; filesScrollTop: number;
 }
 function initial(): DiffState {
   return { worktree: null, mode: "local", scope: "all", baseRef: "", commitOid: "", parent: 1, commit: null,
     inventory: empty(), refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null,
-    query: "", hideViewed: false, viewed: new Set(), page: "files", layout: "unified", wrap: false, scrollTop: 0, filesScrollTop: 0 };
+    query: "", hideViewed: false, fileView: "list", collapsedFolders: new Set(), viewed: new Set(), page: "files", layout: "unified", wrap: false, scrollTop: 0, filesScrollTop: 0 };
 }
 type Resource = "inventory" | "refs" | "history" | "files" | "patch";
 export const MAX_DIFF_SESSIONS = 8;
@@ -169,7 +171,7 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       const s = e.state.value;
       const repositoryChanged = s.inventory.data && s.inventory.data.repository.commonDir !== data.repository.commonDir;
       const worktree = !repositoryChanged && data.worktrees.some(w => w.id === s.worktree) ? s.worktree : data.currentWorktreeId;
-      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, baseRef: "", commitOid: "", commit: null, viewed: new Set(), scrollTop: 0, page: "files" });
+      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, collapsedFolders: new Set(), baseRef: "", commitOid: "", commit: null, viewed: new Set(), scrollTop: 0, page: "files" });
       update(e, { inventory: ready(data), worktree });
     });
     if (ok) await loadSource(session, e, preserve, resumeHistory);
@@ -182,7 +184,7 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     const historyChanged = (change.worktree !== undefined && change.worktree !== before.worktree) || (change.mode !== undefined && change.mode !== before.mode) || (change.baseRef !== undefined && change.baseRef !== before.baseRef);
     update(e, { ...change, files: empty(), patch: empty(), selected: null, viewed: new Set(), page: "files", scrollTop: 0, filesScrollTop: 0,
       ...(historyChanged ? { history: empty(), commitOid: "", commit: null, parent: 1 } : {}),
-      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "" } : {}),
+      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "", collapsedFolders: new Set() } : {}),
       // Capture from the loaded history before clearing it during an atomic branch → commit transition.
       ...(change.commitOid ? { commitOid: change.commitOid, commit: before.history.data!.commits.find(c => c.oid === change.commitOid)!, parent: change.parent ?? 1 } : {}) });
     const s = e.state.value;
@@ -199,19 +201,25 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     const e = entry(session);
     const current = e.state.value;
     if (current.files.stale && [current.inventory, current.refs, current.files, current.patch].some(r => r.loading)) return;
-    if (!current.files.data?.files.some(f => f.fileId === id)) return;
+    const file = current.files.data?.files.find(f => f.fileId === id);
+    if (!file) return;
     const same = id === e.state.value.selected;
     if (same && e.state.value.patch.loading) { update(e, { page: "patch" }); return; }
     e.controllers.get("patch")?.abort(); e.controllers.delete("patch");
-    update(e, { selected: id, page: "patch", ...(same ? {} : { patch: empty(), scrollTop: 0 }) });
+    update(e, { selected: id, collapsedFolders: revealDiffPaths(current.collapsedFolders, [filePath(file)]), page: "patch", ...(same ? {} : { patch: empty(), scrollTop: 0 }) });
     if (!same || !e.state.value.patch.data || e.state.value.patch.stale) void loadPatch(session, e);
   }
-  function reading(session: string, change: Partial<Pick<DiffState, "query" | "hideViewed" | "page" | "layout" | "wrap" | "scrollTop" | "filesScrollTop">>) {
+  function reading(session: string, change: Partial<Pick<DiffState, "query" | "hideViewed" | "page" | "layout" | "wrap" | "scrollTop" | "filesScrollTop" | "fileView" | "collapsedFolders">>) {
     const e = entry(session);
     // Scroll is a restoration bookmark, not rendered data: do not rebuild 20,000 code lines per scroll event.
     const { scrollTop, filesScrollTop, ...rendered } = change;
     if (scrollTop !== undefined) e.state.peek().scrollTop = scrollTop;
     if (filesScrollTop !== undefined) e.state.peek().filesScrollTop = filesScrollTop;
+    if (rendered.query !== undefined && rendered.query !== e.state.peek().query) {
+      const s = e.state.peek();
+      rendered.collapsedFolders = revealDiffPaths(s.collapsedFolders,
+        filterFiles(s.files.data?.files ?? [], rendered.query, s.viewed, s.hideViewed).map(filePath));
+    }
     if (Object.keys(rendered).length) update(e, rendered);
   }
   function markViewed(session: string, id: string, value: boolean) {

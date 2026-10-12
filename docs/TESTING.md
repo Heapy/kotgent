@@ -735,6 +735,11 @@ commit IDs, results and any remaining blockers when performing this check:
 
 ## Git Diff viewer
 
+`DiffTest` also checks List/Tree switching, nested folder disclosure, arrow-key navigation,
+filter-driven expansion and reading-state restoration. Held worktree/patch responses assert unchanged
+patch bounds during refresh and file selection, including the phone refresh path. `diff-tree.test.ts`
+covers duplicate Git paths, rename/deletion hierarchy, literal unusual names and 5,000-file inventories.
+
 `GitDiffReaderTest` exercises real disposable Git repositories; `DiffRoutesTest` exercises authenticated
 HTTP reads, service admission, snapshot/session binding and failures. The real-Git shallow regression
 uses a depth-one clone plus a local feature commit: endpoint ancestry produces a patch (or an empty

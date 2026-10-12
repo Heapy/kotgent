@@ -14,7 +14,7 @@ export function DiffPatch({ patch, layout, wrap }: { patch: Patch; layout: "unif
       : !patch.hunks.length ? <p>{file.oldMode !== file.newMode ? "Mode-only change; no text hunks." : "No text hunks in this change."}</p>
       : <table class={`diff-lines diff-${layout}`} aria-label={`${layout === "split" ? "Split" : "Unified"} patch`}>
         <colgroup>{layout === "split" ? <><col style="width:5ch"/><col/><col style="width:5ch"/><col/></> : <><col style="width:5ch"/><col style="width:5ch"/><col style="width:3ch"/><col/></>}</colgroup>
-        <thead><tr>{layout === "split" ? <><th colSpan={2}>Before</th><th colSpan={2}>After</th></> : <><th>Old</th><th>New</th><th>Change</th><th>Code</th></>}</tr></thead>
+        <thead><tr>{layout === "split" ? <><th colSpan={2}>Before</th><th colSpan={2}>After</th></> : <><th>Old</th><th>New</th><th aria-label="Change">±</th><th>Code</th></>}</tr></thead>
         <tbody>{patch.hunks.map((hunk, index) => <FragmentHunk key={index} hunk={hunk} layout={layout} />)}</tbody>
       </table>}
   </div>;
