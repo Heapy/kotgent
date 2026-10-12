@@ -48,6 +48,7 @@ const val TASK_LINKED_SESSION_SCENARIO: String = "task-linked-session"
 const val TASK_LINK_PICKER_SCENARIO: String = "task-link-picker"
 const val DEEP_LINK_SCENARIO: String = "deep-link"
 const val WORKSPACE_SCENARIO: String = "workspace"
+const val DIFF_SCENARIO: String = "diff"
 const val MUTEXES_SCENARIO: String = "mutexes"
 
 const val PALETTE_OPENER: String = "Meta+KeyK" // The app matches macOS physical event codes.
@@ -654,7 +655,7 @@ private const val RESTART_COMMAND = "restart"
 
 // Duplicated from webuicheck because constants cannot cross the native/JVM boundary.
 private const val COMMAND_ACK_PREFIX = "OK "
-private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore", "usage-clock", "plan-edit", "plan-reply", "plan-review", "plan-finding-amend")
+private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore", "usage-clock", "plan-edit", "plan-reply", "plan-review", "plan-finding-amend", "diff-edit", "diff-head", "diff-unlink")
 
 private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
 private const val RESTART_TIMEOUT_MILLIS = 30_000L

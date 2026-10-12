@@ -12,6 +12,7 @@ import io.kotgent.webuicheck.scenarios.terminalScenario
 import io.kotgent.webuicheck.scenarios.terminalX10Scenario
 import io.kotgent.webuicheck.scenarios.usageScenario
 import io.kotgent.webuicheck.scenarios.workspaceScenario
+import io.kotgent.webuicheck.scenarios.diffScenario
 import io.kotgent.plan.ExecutionMode
 import io.kotgent.webuicheck.scenarios.planFindingsScenario
 import io.kotgent.webuicheck.scenarios.planReviewScenario
@@ -35,6 +36,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         terminalX10Scenario(),
         usageScenario(),
         workspaceScenario(),
+        diffScenario(),
         planReviewScenario(),
         planFindingsScenario(),
         planFindingsScenario(ExecutionMode.autonomous),

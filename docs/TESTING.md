@@ -732,3 +732,51 @@ commit IDs, results and any remaining blockers when performing this check:
 - Check the final integrated review, independent Codex opinion and critical review, including a final
   base rebase that needs a fix and fresh checks. Verify accepted deferred findings become backlog tasks,
   the plan completes, and the original task moves to human review with evidence rather than closing.
+
+## Git Diff viewer
+
+`GitDiffReaderTest` exercises real disposable Git repositories; `DiffRoutesTest` exercises authenticated
+HTTP reads, service admission, snapshot/session binding and failures. TypeScript Diff tests cover selection,
+Refresh, cancellation and history paging races. `DiffTest` drives the assembled Vite UI and real Git reader
+through the `diff` harness scenario. The scenario creates one private temporary directory containing all
+repositories/worktrees, uses fake session stores and a deterministic PTY, and removes only that directory
+on normal shutdown or startup failure. It never starts the product daemon or a provider. `diff-edit`,
+`diff-head` and `diff-unlink` acknowledge completion before the browser continues. The real reader remains
+read-only; only those fixture operations write Git state.
+
+Browser assertions cover All/Staged/Unstaged (including staged reversal and the separate untracked
+inventory), a worktree without a session, clean locked/detached and unavailable worktrees, pinned history
+paging, root/merge-parent selection, branch/base selection, file filtering, Viewed, Refresh, selected patch
+and scroll preservation, desktop Split, phone Files/Patch/Back, task entry, Diff tab reuse and unchanged
+terminal socket/xterm identity during workspace/source changes. Task-board navigation may reconnect
+the terminal on return; the phone test establishes its attachment baseline after task entry.
+Controlled response publication exercises late patch and task-discovery
+responses. Desktop width hiding checks 0.7/0.3 saved shares at workspace widths 1200 and 900 pixels.
+The task-discovery test releases responses from a MutationObserver at task/link render, before passive
+effects. Its sensitivity check temporarily restored the old passive cleanup and reproduced navigation
+away from task B; the fixed layout cleanup passed. These are Chromium assertions, not proof of
+real-phone Safari or Linux native runtime.
+
+Manual Safari/iOS and installed-PWA checks, still required:
+
+- Open Diff from a session and a task; return to the terminal and raise the software keyboard. Confirm
+  the terminal remains attached, its last row and key bar stay visible, and focus follows Files/Back.
+- Scroll a long patch and file list independently; try Unified/Split, horizontal scrolling, wrap, search
+  with the keyboard raised, rotation and safe-area insets. Confirm controls stay reachable without page
+  overflow or accidental terminal input.
+- Background/resume the PWA and reconnect after a network interruption. Confirm last-good content is
+  labelled stale when appropriate, Refresh resolves current HEAD/base, and Viewed resets on new evidence.
+- Repeat in macOS Safari with keyboard-only navigation and VoiceOver. Chromium automation does not
+  establish Safari layout, mobile keyboard, accessibility announcements or installed-PWA behavior.
+
+For each verification run record the commit, host/architecture, browser engine and actual checks. A macOS
+ARM64 run does not validate Linux x64/ARM64; use the native CI matrix before claiming those platforms.
+
+The 2026-10-12 local:520 browser run used macOS 26.6.2 ARM64, Node 24.18.0 and Chromium
+151.0.7922.34. All 263 JVM browser/logic tests passed, including the seven `DiffTest` journeys; the
+Node/TypeScript suite ran through `WebUiLogicTest`. The same verification passed `npm ci`, typecheck
+and the Vite build, followed by serialized `./kotlin build -p macosArm64 -p jvm` and
+`./kotlin test -p macosArm64 -p jvm` through the Kotlin mutex, including the native real-Git and
+authenticated HTTP suites. No Linux runtime, Safari, real-phone or installed-PWA manual result is claimed. For a focused rerun after building the Web UI and native harness, use
+`kotgent mutex run kotlin-build -- ./kotlin test -m webuitest --include-tag diff-viewer`; the lifecycle
+race alone has tag `diff-task-race`.

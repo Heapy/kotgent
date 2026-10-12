@@ -268,8 +268,14 @@ the common workflow and links to those guides; implementation invariants belong 
   under one `localStorage` key; `webui/src/lib/workspace.ts` holds the rules, and every operation returns
   its input unchanged when it does nothing. A type is unique within a tab, and choosing a held type swaps
   the two columns. Layouts are pruned only after a full `sessions_snapshot` and capped at 200 by
-  `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`files`,
-  `diff` until implemented) stays stored and hidden, and width hiding never rewrites the layout.
+  `touchedAt`. `AVAILABLE_COLUMN_TYPES` gates what renders: a stored type this build cannot show (`files`)
+  stays stored and hidden, and width hiding never rewrites the layout.
+- `state/diff.ts` owns page-memory reading state, request generations, cancellation and Viewed.
+  `lib/diff.ts` owns the HTTP contract and pure rules; `DiffPanel` renders one selected patch.
+  `openDiffTab` in layout owns tab reuse and focus; worktree selection never selects a session or attaches
+  a terminal. Task checkout discovery invalidates at layout-effect cleanup when task/link identity changes.
+  `DiffService` owns admission and session-bound snapshots; `GitDiffReader` owns Git semantics; bounded
+  process capture and worktree-file safety stay in `sysnative`. Read limits are explicit outcomes.
 - The session header is one 48px row. Workspace tabs share it on desktop; phones use a tab picker.
   Add-tab follows the last desktop tab; column controls sit inside the active tab's shared shape as a
   separate button. The phone picker groups the same controls. The right-hand session menu includes Commands and reuses

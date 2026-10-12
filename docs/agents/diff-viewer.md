@@ -1,6 +1,10 @@
-# Git Diff viewer (upcoming)
+# Git Diff viewer
 
-This contract is for the upcoming viewer; the integrated UI/API is not available yet.
+Use **Open changes** in the command palette (session menu → Commands), or choose **Diff** in Configure
+columns. Open changes reuses an existing Diff column and creates one Diff tab only when none exists. From a task, Open changes uses
+its linked sessions. One resolved checkout with no lookup failures opens directly; otherwise the task
+shows available checkouts and discovery errors. Without a linked session, it asks you to link one;
+it does not use the project path.
 
 Diff opens in a session workspace and reads Git from that session's stored cwd. Choose any worktree
 in the same Git common directory, including one without a session. This changes the Diff source,
@@ -11,8 +15,10 @@ missing/prunable worktrees are unavailable. Bare entries have no Local changes.
 Local changes defaults to **All**: the net HEAD → working-copy change plus untracked files.
 **Staged** compares HEAD → index; **Unstaged** compares index → working copy plus untracked files.
 Ignored files are excluded. An edit staged and then reversed can disappear from All while remaining
-visible in both other scopes. Index and working-copy statuses are shown separately. Unborn HEAD uses
-an empty tree. Conflicts are explicit and are never represented as resolved ordinary patches.
+visible in both other scopes. All combines the tracked HEAD-to-working net diff with a separate
+untracked inventory. For example, `git rm --cached file` leaving a HEAD-tracked file on disk displays
+both a deletion and an untracked entry for that path in All; paths are not coalesced. Index and
+working-copy statuses are shown separately. Unborn HEAD uses an empty tree. Conflicts are explicit and are never represented as resolved ordinary patches.
 
 Commits pages through the selected HEAD's history, independent of base selection. A commit compares
 its first parent to itself; a root compares the empty tree to itself. A merge exposes all parents and
@@ -28,13 +34,15 @@ remote-tracking branches only; nothing fetches. No common ancestor, ambiguous me
 shallow history are distinct unavailable states. Equal base/HEAD is a valid empty comparison.
 
 The viewer loads a file list and only the selected patch. Unified/Split, wrap, path filtering, Viewed,
-and next-unviewed operate on this one comparison. On phones, Files → Patch → Back replaces side-by-side
-panels. Reading position and Viewed survive workspace-tab remounts in page memory. Refresh, changed
+and next-unviewed operate on this one comparison. The filter, layout and wrap controls are local to
+the viewer. File-list and patch comparison details show their own resolved OIDs, including a retained
+stale patch whose identity differs from a refreshed file list. On phones, Files → Patch → Back replaces
+side-by-side panels. Reading position and Viewed survive workspace-tab remounts in page memory. Refresh, changed
 worktree/base/commit, and stale snapshots reset Viewed. Failed revalidation keeps prior content with
 an explicit stale/error indication. Load on opening, Refresh, visibility restoration and connection
 recovery; no continuous polling or filesystem watchers. No review state is stored on the server.
 
-## Upcoming HTTP contract
+## HTTP contract
 
 All reads are authenticated GET routes under `/api/v1/sessions/{id}/diff/`. Authorization precedes
 filesystem access. `worktreeId` is a URL-encoded canonical root returned by `worktrees`, checked against
@@ -133,10 +141,18 @@ must never masquerade as a clean list. A partial file list or patch sets `limite
 the client cannot present it as complete; partial patches contain only complete parsed hunks.
 
 Budgets: 10 seconds per process, 8 MiB stdout and 256 KiB stderr; 5,000 file entries; 100 commits/page;
-2 MiB or 20,000 lines per patch. Total concurrency and queued reads must also be bounded. Propagate
+2 MiB or 20,000 lines per patch. The service admits 4 active reads and 16 queued reads, with a 30-second
+deadline including queue time. Local content observation reads at most 2 MiB per file and 8 MiB total;
+oversized files or observations are explicitly limited. Server history cursors stop beyond offset 100,000.
+Snapshot metadata is capped at 64 snapshots and 20,000 files total, with a two-minute TTL.
+The browser uses an eight-session cache, evicting only unmounted entries (mounted consumers can exceed
+that cap), one selected patch per session and at most 2,000 loaded history commits; Refresh restarts paging. Propagate
 cancellation and drain/reap owned subprocesses. Do not invoke external diff, textconv, filters, fsmonitor,
 interactive prompts or lazy fetch. Respect safe.directory. No read mutates Git/index/files.
 
 Editing, staging, commits, branch switching, worktree management, fetch, blame, review comments,
 full Files browsing, and session-start baselines are outside this version. Checkout changes are not
 attributed to a particular agent.
+
+Real-device Safari and installed-PWA checks remain separate from Chromium automation; see
+[the testing checklist](../TESTING.md#git-diff-viewer). Linux native runtime requires its own CI run.

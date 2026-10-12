@@ -589,12 +589,20 @@ same task. The command palette opens the board with `⌘K o` and its create form
 paths are deep-linkable and installable, which is why the client-facing API lives under `/api/v1`.
 
 Each session has a **workspace** of tabs under its header, and each tab holds side-by-side columns: the
-terminal and the session's linked task, whose editor is the same one the board opens. `+` adds a tab, a
-column's `⊞` adds the next column type the tab does not hold yet, choosing a type the tab already holds
+terminal, linked task, structured plan, and Git Diff. The task editor is the same one the board opens.
+`+` adds a tab, a column's `⊞` adds the next column type the tab does not hold yet, choosing a type the tab already holds
 swaps the two columns, and the divider between columns drags or moves with the arrow keys. A tab without
 the terminal keeps it attached in the background, so switching back shows the same screen without
 reconnecting. A phone shows one column at a time with a switcher, and a desktop drops columns that would be
 narrower than about 320 px until there is room again. Layouts are remembered per browser, not per daemon.
+
+**Open changes** in the command palette (session menu → Commands) or task opens/reuses Diff. Choose any
+worktree in that Git repository, including one without a session, without changing the terminal attachment. Review All,
+Staged or Unstaged local changes, individual commits (including merge parents), or a branch against
+a selected base. Unified/Split, filtering, Viewed and explicit Refresh help read one patch at a time.
+Phone navigation uses Files → Patch → Back to files. Reading state stays in page memory; the viewer
+is read-only and never fetches. See the [Diff guide](docs/agents/diff-viewer.md) for comparison semantics,
+budgets and limitations.
 
 One action changes daemon state at a time, and the palette says so rather than queueing. While a start,
 an import, a lifecycle action, a rename, a preferences save, a task link, or a project delete or restore
@@ -793,7 +801,7 @@ Kotgent is deliberately focused. The current product boundary is:
 - Additional providers, including Cursor; see the [Cursor integration research](docs/cursor-cli-research.md).
 - Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
   remain interactive TUI operations today.
-- A **diff viewer** and snapshots.
+- Durable checkout snapshots (the read-only Git Diff viewer is available).
 - **More of the Web UI's pure rules proven without a browser.** `lib/commands.ts`, `lib/paths.ts` and
   `lib/unicode.ts` import cleanly under Node and are only partly covered by the tier in
   `webuitest/js/`; `lib/qr.ts` imports the local `lib/qrcode.ts` and can also be tested in this tier.
