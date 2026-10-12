@@ -17,6 +17,7 @@ import {
   focusColumn,
   moveDivider,
   normalizeFractions,
+  openDiffTab,
   parseWorkspaces,
   pruneWorkspaces,
   selectTab,
@@ -26,6 +27,10 @@ import {
   visibleColumns,
 } from "../../webui/src/lib/workspace.ts";
 import type { ColumnType, SessionWorkspace, Tab } from "../../webui/src/lib/workspace.ts";
+
+import { loadDiffCheckouts, buildCommands } from "../../webui/src/lib/commands.ts";
+import type { CommandActions } from "../../webui/src/lib/commands.ts";
+import type { DiffWorktrees } from "../../webui/src/lib/diff.ts";
 
 const STORAGE_KEY = "kotgent.workspaces.v1";
 
@@ -91,8 +96,8 @@ describe("the default layout", () => {
     assert.deepEqual(only(ws).fractions, [1]);
   });
 
-  test("offers terminal, task and plan until files and diffs exist", () => {
-    assert.deepEqual([...AVAILABLE_COLUMN_TYPES], ["terminal", "task", "plan"]);
+  test("offers Diff while Files remains unavailable", () => {
+    assert.deepEqual([...AVAILABLE_COLUMN_TYPES], ["terminal", "task", "plan", "diff"]);
   });
 });
 
@@ -161,7 +166,7 @@ describe("columns", () => {
   });
 
   test("adding does nothing once every available type is in the tab", () => {
-    const ws = addColumn(twoColumns(), "t1", 1, AVAILABLE_COLUMN_TYPES, 2);
+    const ws = addColumn(addColumn(twoColumns(), "t1", 1, AVAILABLE_COLUMN_TYPES, 2), "t1", 2, AVAILABLE_COLUMN_TYPES, 3);
 
     assert.equal(addColumn(ws, "t1", 1, AVAILABLE_COLUMN_TYPES, 9), ws);
   });
@@ -311,7 +316,7 @@ describe("visible columns", () => {
   });
 
   test("a tab holding nothing available shows nothing", () => {
-    const tab = only(setColumnType(defaultWorkspace(1), "t1", 0, "diff", 2));
+    const tab = only(setColumnType(defaultWorkspace(1), "t1", 0, "files", 2));
 
     assert.deepEqual(visibleColumns(tab, options(1000)), []);
   });
@@ -441,4 +446,116 @@ test("opening an investigator targets its finding in a reused Terminal · Plan w
   assert.deepEqual(layout.findingFocusFor("investigator"), { taskRef: "local:1", findingId: "f_second" });
   layout.pruneWorkspaces(new Set());
   assert.equal(layout.findingFocusFor("investigator"), undefined);
+});
+
+
+describe("opening Diff", () => {
+  test("creates a single-column tab and repeats without changes", () => {
+    const before = twoColumns();
+    const opened = openDiffTab(before, 3);
+    assert.equal(opened.tabs[0], before.tabs[0]);
+    assert.deepEqual(types(only(opened)), ["diff"]);
+    assert.deepEqual(only(opened).fractions, [1]);
+    assert.equal(openDiffTab(opened, 4), opened);
+  });
+
+  test("reuses a stored mixed tab, preserves shares and focuses Diff on phones", () => {
+    const before = parseWorkspaces(JSON.stringify({ s: {
+      tabs: [
+        { id: "t1", columns: [{ type: "terminal" }], fractions: [1], focus: 0 },
+        { id: "t2", columns: [{ type: "files" }, { type: "terminal" }, { type: "diff" }], fractions: [.2, .3, .5], focus: 1 },
+      ], activeTab: "t1", touchedAt: 1,
+    } })).get("s")!;
+    const opened = openDiffTab(before, 2);
+    assert.equal(opened.tabs.length, 2);
+    assert.equal(opened.activeTab, "t2");
+    assert.equal(only(opened).columns, before.tabs[1]!.columns);
+    assert.equal(only(opened).fractions, before.tabs[1]!.fractions);
+    assert.deepEqual(visibleColumns(only(opened), { width: 390, minWidth: 320, narrow: true, available: AVAILABLE_COLUMN_TYPES }).map(c => c.type), ["diff"]);
+    assert.equal(openDiffTab(opened, 3), opened);
+    assert.deepEqual(parseWorkspaces(serializeWorkspaces(new Map([["s", opened]]))).get("s"), opened);
+  });
+
+  test("the owner persists Diff and skips repeated storage writes", () => {
+    layout.openDiffTab("diff-owner");
+    const before = layout.workspaces.value;
+    const stored = storage.items.get(STORAGE_KEY);
+    layout.openDiffTab("diff-owner");
+    assert.equal(layout.workspaces.value, before);
+    assert.equal(storage.items.get(STORAGE_KEY), stored);
+    assert.deepEqual(types(activeTabOf(parseWorkspaces(stored!).get("diff-owner")!)), ["diff"]);
+  });
+});
+
+
+function inventory(commonDir: string, path: string, id = path): DiffWorktrees {
+  return { repository: { commonDir }, currentWorktreeId: id, readAt: 1,
+    worktrees: [{ id, path, headOid: "abc", branchRef: "refs/heads/main", current: true,
+      detached: false, bare: false, locked: false, prunable: false, unavailable: null }] };
+}
+
+describe("task checkout discovery", () => {
+  test("deduplicates sessions by canonical checkout, keeping other worktrees and clones", async () => {
+    const rows = new Map([
+      ["nested-cwd", inventory("/repo/.git", "/repo")],
+      ["alias-cwd", inventory("/repo/.git", "/repo")],
+      ["worktree", inventory("/repo/.git", "/feature")],
+      ["clone", inventory("/clone/.git", "/clone", "/repo")],
+    ]);
+    const result = await loadDiffCheckouts([...rows.keys()], async id => rows.get(id)!, new AbortController().signal);
+    assert.deepEqual(result.choices.map(c => [c.sessionId, c.worktree.path]), [
+      ["nested-cwd", "/repo"], ["worktree", "/feature"], ["clone", "/clone"],
+    ]);
+    assert.deepEqual(result.unavailable, []);
+  });
+
+  test("does not invent a checkout without links and keeps available hosts after failed cwd reads", async () => {
+    const calls: string[] = [];
+    const read = async (id: string) => {
+      calls.push(id);
+      if (id === "no-git") throw new Error("Not a Git repository");
+      if (id === "missing-cwd") throw new Error("Working directory is unavailable");
+      return inventory("/repo/.git", "/repo");
+    };
+    assert.deepEqual(await loadDiffCheckouts([], read, new AbortController().signal), { choices: [], unavailable: [] });
+    assert.deepEqual(calls, []);
+    const result = await loadDiffCheckouts(["no-git", "missing-cwd", "available", "available"], read, new AbortController().signal);
+    assert.deepEqual(result.choices.map(c => c.sessionId), ["available"]);
+    assert.deepEqual(result.unavailable.map(c => c.sessionId), ["no-git", "missing-cwd"]);
+    assert.deepEqual(calls, ["no-git", "missing-cwd", "available"]);
+  });
+
+  test("excludes an unavailable checkout but permits locked checkouts", async () => {
+    const result = await loadDiffCheckouts(["gone", "locked"], async id => {
+      const row = inventory("/repo/.git", "/" + id);
+      row.worktrees[0]!.prunable = id === "gone";
+      row.worktrees[0]!.locked = id === "locked";
+      return row;
+    }, new AbortController().signal);
+    assert.deepEqual(result.choices.map(c => c.sessionId), ["locked"]);
+    assert.deepEqual(result.unavailable.map(c => c.sessionId), ["gone"]);
+  });
+
+  test("cancellation prevents subsequent discovery and ignores a late successful response", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    await assert.rejects(loadDiffCheckouts(["first", "second"], async id => {
+      calls.push(id);
+      controller.abort();
+      return inventory("/repo/.git", "/repo");
+    }, controller.signal), { name: "AbortError" });
+    assert.deepEqual(calls, ["first"]);
+  });
+});
+
+test("Open changes is a session command without a task link or running terminal requirement", () => {
+  let opened = 0;
+  const actions = { openChanges: () => { opened++; } } as CommandActions;
+  const session = { id: "s", state: "stopped", taskRef: null } as import("../../webui/src/lib/sessions.ts").Session;
+  const command = buildCommands({ activeSession: session, actions }).find(c => c.id === "session.open-changes")!;
+  assert.equal(command.disabled, null);
+  command.run();
+  assert.equal(opened, 1);
+  assert.ok(buildCommands({ actions }).find(c => c.id === command.id)!.disabled);
+  assert.equal(buildCommands({ activeSession: session, onBoard: true, actions }).some(c => c.id === command.id), false);
 });
