@@ -52,3 +52,8 @@ test("typed stale errors survive the common request helper's non-2xx handling", 
   try { await assert.rejects(diffApi.patch("s", "/w", "snap", "f", new AbortController().signal), e => e instanceof DiffReadError && e.problem.reason === "snapshot_expired"); }
   finally { globalThis.fetch = original; }
 });
+test("snapshot labels identify resolved branch endpoints independently of inventory", async () => {
+  const {comparisonLabels} = await import("../../webui/src/lib/diff.ts");
+  const c: DiffComparison = {repository: {commonDir: "/repo/.git"}, worktreeId: "/repo", mode: "branch", scope: null, headOid: "resolved-H", baseRef: "refs/heads/main", baseOid: "resolved-B", mergeBaseOid: "resolved-M", commitOid: null, parent: null, leftOid: "resolved-M", rightOid: "resolved-H"};
+  assert.deepEqual(comparisonLabels(c), [["HEAD", "resolved-H"], ["Base ref", "refs/heads/main"], ["Base OID", "resolved-B"], ["Merge-base OID", "resolved-M"], ["Before", "resolved-M"], ["After", "resolved-H"]]);
+});

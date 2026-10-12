@@ -102,3 +102,12 @@ export function splitLines(lines: DiffLine[]): SplitLine[] {
   }
   flush(); return rows;
 }
+
+/** Labels are derived from the snapshot being read, never from a newer inventory or file-list response. */
+export function comparisonLabels(c: DiffComparison): [string, string][] {
+  const rows: [string, string][] = [["HEAD", c.headOid ?? "Unborn HEAD"]];
+  if (c.mode === "branch") rows.push(["Base ref", c.baseRef ?? "Unavailable"], ["Base OID", c.baseOid ?? "Unavailable"], ["Merge-base OID", c.mergeBaseOid ?? "Unavailable"]);
+  if (c.mode === "commit") rows.push(["Commit", c.commitOid ?? "Unavailable"], ["Parent", c.parent === null ? "Root (empty tree)" : String(c.parent)]);
+  rows.push(["Before", c.leftOid ?? (c.mode === "local" && c.scope === "unstaged" ? "Index" : "Empty tree")], ["After", c.rightOid ?? (c.mode === "local" && c.scope === "staged" ? "Index" : "Working copy")]);
+  return rows;
+}

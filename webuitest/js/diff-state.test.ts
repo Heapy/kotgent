@@ -29,7 +29,7 @@ test("first load requests only selected patch; remount keeps Viewed, filter, pag
   release(); const again = f.store.retain("s"); await tick();
   assert.equal(f.state().selected, "f2"); assert.equal(f.state().scrollTop, 123); assert.equal(f.state().filesScrollTop, 44);
   assert.equal(f.state().page, "patch"); assert.equal(f.state().query, "f"); assert.equal(f.state().viewed.has("f2"), true);
-  assert.deepEqual(f.patches, ["f1", "f2"]); again();
+  assert.deepEqual(f.patches, ["f1", "f2", "f2"]); again();
 });
 test("old worktree file response cannot overwrite new source even if transport ignores abort", async () => {
   const old = deferred<DiffFiles>(); let oldSignal: AbortSignal | null = null;
@@ -167,4 +167,85 @@ test("selecting the same file during revalidation does not abort the replacement
   f.store.retain("s"); await tick(); const refresh = f.store.refresh("s"); await tick();
   f.store.selectFile("s", "f1"); assert.equal(f.state().patch.loading, true);
   pending.resolve(patch(files())); await refresh; assert.equal(f.state().patch.stale, false);
+});
+test("branch-history activation atomically opens root and merge commits", async () => {
+  for (const parents of [[], ["P1", "P2"]]) {
+    const requests: DiffSelection[] = [];
+    const f = fixture({commits: async (_, w) => ({...history(w), commits: [{oid: "chosen", parents, author: "Ada", authoredAt: 0, subject: "Selected"}]}), files: async (_, w, s) => {requests.push(s); return files(w, s);}});
+    f.store.retain("s"); await tick(); f.store.choose("s", {mode: "branch"}); await tick();
+    f.store.choose("s", {mode: "commit", commitOid: "chosen", parent: 1}); await tick();
+    assert.equal(f.state().mode, "commit"); assert.equal(f.state().commitOid, "chosen");
+    assert.equal(f.state().commit?.author, "Ada");
+    assert.deepEqual(requests.at(-1), {mode: "commit", commitOid: "chosen", parent: parents.length ? 1 : null});
+    if (parents.length) { f.store.choose("s", {parent: 2}); await tick(); assert.deepEqual(requests.at(-1), {mode: "commit", commitOid: "chosen", parent: 2}); }
+  }
+});
+test("refresh gates old pagination while discovery changes the default base", async () => {
+  const discovery = deferred<DiffWorktrees>(), oldPage = deferred<DiffCommits>();
+  const calls: {base: string | null; cursor: DiffCommitCursor | null}[] = [];
+  let refreshing = false;
+  const f = fixture({worktrees: async () => refreshing ? discovery.promise : inventory(), refs: async (_, w) => refreshing ? {...refs(w), refs: refs(w).refs.filter(r => r.name.endsWith("other")), defaultBaseRef: "refs/heads/other"} : refs(w), commits: async (_, w, base, cursor) => {calls.push({base, cursor}); return cursor ? oldPage.promise : {...history(w), cursor: {headOid: "H", baseOid: base, offset: 0}, nextCursor: {headOid: "H", baseOid: base, offset: 100}};}});
+  f.store.retain("s"); await tick(); f.store.choose("s", {mode: "branch"}); await tick();
+  const more = f.store.more("s"); await tick(); refreshing = true; const refresh = f.store.refresh("s"); await tick();
+  await f.store.more("s"); assert.equal(calls.length, 2);
+  discovery.resolve(inventory()); await refresh;
+  oldPage.resolve(history("/a", {headOid: "H", baseOid: "refs/heads/main", offset: 100})); await more;
+  assert.deepEqual(calls.at(-1), {base: "refs/heads/other", cursor: null});
+  assert.equal(f.state().baseRef, "refs/heads/other"); assert.equal(f.state().history.data?.cursor?.baseOid, "refs/heads/other");
+  assert.equal(f.state().history.stale, false);
+});
+test("remount restarts an interrupted first-page refresh instead of paging old history", async () => {
+  const pending = deferred<DiffCommits>(), calls: (DiffCommitCursor | null)[] = [];
+  let head = "H";
+  const f = fixture({worktrees: async () => ({...inventory(), worktrees: inventory().worktrees.map(w => ({...w, headOid: head}))}), commits: async (_, w, _b, cursor) => {
+    calls.push(cursor); if (calls.length === 2) return pending.promise;
+    return {...history(w), cursor: {headOid: head, baseOid: null, offset: 0}, nextCursor: {headOid: head, baseOid: null, offset: 100}};
+  }});
+  const release = f.store.retain("s"); await tick(); f.store.choose("s", {mode: "commit"}); await tick();
+  head = "H2"; const refresh = f.store.refresh("s"); await tick();
+  assert.equal(f.state().history.loading, true); assert.equal(f.state().inventory.loading, false); assert.equal(f.state().refs.loading, false);
+  release(); f.store.retain("s"); await tick();
+  assert.deepEqual(calls, [null, null, null]); assert.equal(f.state().history.data?.cursor?.headOid, "H2");
+  pending.resolve(history("/a")); await refresh; assert.equal(f.state().history.data?.cursor?.headOid, "H2");
+});
+test("remount resumes interrupted pagination when its pinned history remains current", async () => {
+  const pending = deferred<DiffCommits>(), calls: (DiffCommitCursor | null)[] = [];
+  const f = fixture({commits: async (_, w, _b, cursor) => {calls.push(cursor); return calls.length === 2 ? pending.promise : history(w, cursor);}});
+  const release = f.store.retain("s"); await tick(); f.store.choose("s", {mode: "commit"}); await tick();
+  const more = f.store.more("s"); await tick(); release(); f.store.retain("s"); await tick();
+  assert.deepEqual(calls, [null, {headOid: "H", baseOid: null, offset: 100}, {headOid: "H", baseOid: null, offset: 100}]);
+  pending.resolve(history("/a", {headOid: "H", baseOid: null, offset: 100})); await more;
+});
+test("settled remount detects changed local bytes and clears Viewed even with identical metadata", async () => {
+  let changed = false;
+  const f = fixture({files: async () => files("/a", {mode: "local", scope: "all"}, changed ? "new" : "snap"), patch: async (_, _w, snapshot, id) => {
+    if (changed && snapshot === "snap") throw new DiffReadError({code: "stale", reason: "snapshot_changed", message: "Bytes changed"});
+    return patch(files("/a", {mode: "local", scope: "all"}, snapshot), id);
+  }});
+  const release = f.store.retain("s"); await tick(); f.store.selectFile("s", "f2"); await tick();
+  f.store.markViewed("s", "f2", true); f.store.reading("s", {query: "f", scrollTop: 42}); release(); changed = true;
+  f.store.retain("s"); await tick();
+  assert.equal(f.state().files.data?.snapshot.id, "new"); assert.equal(f.state().patch.data?.snapshot.id, "new");
+  assert.equal(f.state().viewed.size, 0); assert.equal(f.state().query, "f"); assert.equal(f.state().selected, "f2"); assert.equal(f.state().scrollTop, 42);
+  assert.equal(f.state().files.stale, false);
+});
+test("explicit refresh resets Viewed even when content is unchanged", async () => {
+  const f = fixture(); f.store.retain("s"); await tick(); f.store.markViewed("s", "f1", true);
+  await f.store.refresh("s"); assert.equal(f.state().viewed.size, 0);
+});
+test("stale patch endpoint labels remain on its snapshot after file-list HEAD advances", async () => {
+  const {comparisonLabels} = await import("../../webui/src/lib/diff.ts");
+  let advanced = false;
+  const f = fixture({files: async () => {const data = files(); if (advanced) data.snapshot.comparison.headOid = "H2"; return data;}, patch: async () => {if (advanced) throw new Error("Patch offline"); return patch(files());}});
+  f.store.retain("s"); await tick(); advanced = true; await f.store.refresh("s");
+  assert.equal(f.state().patch.stale, true);
+  assert.deepEqual(comparisonLabels(f.state().patch.data!.snapshot.comparison)[0], ["HEAD", "H"]);
+  assert.deepEqual(comparisonLabels(f.state().files.data!.snapshot.comparison)[0], ["HEAD", "H2"]);
+});
+test("file activation during snapshot revalidation does not abandon the validation read", async () => {
+  const pending = deferred<DiffPatch>(); let reads = 0;
+  const f = fixture({patch: async () => ++reads === 1 ? patch(files()) : pending.promise});
+  const release = f.store.retain("s"); await tick(); release(); f.store.retain("s"); await tick();
+  f.store.selectFile("s", "f2"); assert.equal(f.state().selected, "f1");
+  pending.resolve(patch(files())); await tick(); assert.equal(f.state().files.stale, false);
 });
