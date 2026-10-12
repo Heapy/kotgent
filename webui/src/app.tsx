@@ -126,8 +126,9 @@ import {
 import { announcementHolds, say, status as statusSignal } from "./state/status.ts";
 import { mergeUsageWindow, replaceUsage } from "./state/usage.ts";
 import { mergeMutexes, mutexes as mutexesSignal, replaceMutexes } from "./state/mutexes.ts";
-import { findingFocusFor, openPlanTab, pruneWorkspaces } from "./state/layout.ts";
+import { findingFocusFor, openDiffTab, openPlanTab, pruneWorkspaces } from "./state/layout.ts";
 import { planChanged, recoverPlans } from "./state/plans.ts";
+import { diffStore, recoverDiffs, setDiffVisibility } from "./state/diff.ts";
 import {
   PREFS_SUPERSEDED,
   PREFS_UNREADABLE,
@@ -140,6 +141,7 @@ import {
 import { Board } from "./components/Board.tsx";
 import { TaskDetail } from "./components/TaskDetail.tsx";
 import { PlanPanel } from "./components/PlanPanel.tsx";
+import { DiffPanel } from "./components/DiffPanel.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { MutexesScreen, sessionLabel } from "./components/MutexesScreen.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -652,6 +654,15 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     setTerminalFocusRequest({ sessionId: id });
   }, [selectSession]);
 
+  const openChanges = useCallback((sessionId: string, worktreeId?: string) => {
+    // Navigation uses the existing session/attachment policy. A viewer worktree change never does.
+    if (worktreeId && diffStore.state(sessionId).peek().worktree !== worktreeId) {
+      diffStore.choose(sessionId, { worktree: worktreeId });
+    }
+    openDiffTab(sessionId);
+    navigate(sessionPath(sessionId));
+  }, []);
+
   // Route targets wait for their row. A bare "/" intentionally preserves the current terminal.
   const routeSessionId = route.screen === SCREEN_SESSIONS ? route.id : null;
   useEffect(() => {
@@ -811,6 +822,7 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
       onReady: ({ recovered }) => {
         disconnectAnnouncedRef.current = false;
         recoverPlans();
+        recoverDiffs();
         if (recovered) dispatchReattach(grantAndSchedule());
       },
       onFailure: () => {
@@ -831,9 +843,11 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
   // Foregrounding retries mark-read after hidden-tab updates were deliberately suppressed.
   useEffect(() => {
     const onVisibilityChange = () => {
+      setDiffVisibility(document.visibilityState === "visible");
       const s = activeSessionSignal.value;
       if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
     };
+    onVisibilityChange();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
@@ -1361,10 +1375,12 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
       deleteProject: openDeleteProject,
       restoreProject: openRestoreProject,
       openSessionTask: openSessionTask,
+      openChanges: () => activeSession && openChanges(activeSession.id),
     },
   });
 
   const renderPanel = (type: ColumnType) => {
+    if (type === "diff" && activeSession) return <DiffPanel key={activeSession.id} sessionId={activeSession.id} />;
     if ((type !== "task" && type !== "plan") || !activeSession) return null;
     const ref = activeSession.taskRef;
     if (!ref) {
@@ -1381,7 +1397,7 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
       <TaskDetail key={ref} taskRef={ref} entry={findTask(ref)} sessions={sessions}
                   onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
                   onStartSession={startSessionForTask} onAnnounce={say} onClose={null}
-                  onOpenPlan={() => openPlanTab(activeSession.id)} />
+                  onOpenPlan={() => openPlanTab(activeSession.id)} onOpenChanges={openChanges} />
     );
   };
 
@@ -1453,7 +1469,8 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
           // The router only produces SCREEN_TASK for a path with a decoded task id.
           <TaskDetail taskRef={route.id!} entry={openTaskEntry} sessions={sessions}
                          onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
-                         onStartSession={startSessionForTask} onAnnounce={say} onClose={openBoard} />)}
+                         onStartSession={startSessionForTask} onAnnounce={say} onClose={openBoard}
+                         onOpenChanges={openChanges} />)}
         {route.screen === SCREEN_PLAN && <PlanPanel key={route.id!} taskRef={route.id!}
           onClose={() => navigate(taskPath(route.id!))} />}
         <p id="board-status" class={"status-line board-status" + (status.error ? " error" : "")}

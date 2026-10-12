@@ -6,7 +6,7 @@ export const COLUMN_TYPES = ["terminal", "task", "plan", "files", "diff"] as con
 export type ColumnType = (typeof COLUMN_TYPES)[number];
 
 // Stored layouts may name a type this build cannot render; it stays stored and is hidden.
-export const AVAILABLE_COLUMN_TYPES: readonly ColumnType[] = ["terminal", "task", "plan"];
+export const AVAILABLE_COLUMN_TYPES: readonly ColumnType[] = ["terminal", "task", "plan", "diff"];
 
 export const COLUMN_LABELS: Readonly<Record<ColumnType, string>> = {
   terminal: "Terminal",
@@ -119,6 +119,14 @@ export function openPlanTab(ws: SessionWorkspace, now: number): SessionWorkspace
   const id = nextTabId(ws);
   const tab: Tab = { id, columns: [{ type: "terminal" }, { type: "plan" }], fractions: [.5, .5], focus: 1 };
   return { tabs: [...ws.tabs, tab], activeTab: id, touchedAt: now };
+}
+
+export function openDiffTab(ws: SessionWorkspace, now: number): SessionWorkspace {
+  const existing = ws.tabs.find(tab => tab.columns.some(column => column.type === "diff"));
+  if (existing) return focusColumn(selectTab(ws, existing.id, now), existing.id,
+    existing.columns.findIndex(column => column.type === "diff"), now);
+  const id = nextTabId(ws);
+  return { tabs: [...ws.tabs, newTab(id, "diff")], activeTab: id, touchedAt: now };
 }
 
 export function closeTab(ws: SessionWorkspace, tabId: string, now: number): SessionWorkspace {

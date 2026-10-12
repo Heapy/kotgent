@@ -55,6 +55,10 @@ export function openPlanTab(sessionId: string) {
   update(sessionId, model.openPlanTab);
 }
 
+export function openDiffTab(sessionId: string) {
+  update(sessionId, model.openDiffTab);
+}
+
 export function closeTab(sessionId: string, tabId: string) {
   update(sessionId, (ws, now) => model.closeTab(ws, tabId, now));
 }

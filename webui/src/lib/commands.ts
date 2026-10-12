@@ -1,6 +1,7 @@
 // The sole command and mnemonic registry; session actions are omitted on the task-board screen.
 
 import type { Session } from "./sessions.ts";
+import type { DiffPort, DiffWorktree } from "./diff.ts";
 
 import {
   displayName,
@@ -13,7 +14,7 @@ import {
 
 export type CommandActions = Record<
   "interrupt" | "resume" | "attach" | "detach" | "stop" | "done" | "rename" | "copyTmux"
-  | "uploadFiles" | "linkSessionTask" | "openSessionTask" | "newSession" | "importSession"
+  | "uploadFiles" | "linkSessionTask" | "openSessionTask" | "openChanges" | "newSession" | "importSession"
   | "freeTerminal" | "openSessions" | "openBoard" | "openMutexes" | "newTask" | "newProject" | "deleteProject"
   | "restoreProject" | "toggleShowDone" | "help" | "phone" | "preferences", () => unknown
 > & { selectSession: (id: string) => unknown };
@@ -200,6 +201,14 @@ function sessionCommands(activeSession: Session | null, attachedId: string | nul
       run: () => actions.linkSessionTask(),
     },
     {
+      id: "session.open-changes", group: "session", chord: null,
+      title: "Open changes",
+      subtitle: "opens the Git Diff workspace for this session's checkout",
+      hint: null,
+      disabled: disabledWhenNoSession(activeSession),
+      run: () => actions.openChanges(),
+    },
+    {
       id: "session.open-task", group: "session", chord: "j",
       title: "Open this session's task",
       subtitle: "jumps to the task this session is linked to",
@@ -208,6 +217,40 @@ function sessionCommands(activeSession: Session | null, attachedId: string | nul
       run: () => actions.openSessionTask(),
     },
   ];
+}
+
+export interface DiffCheckoutChoice {
+  sessionId: string;
+  commonDir: string;
+  worktree: DiffWorktree;
+}
+
+// Resolve through session IDs only. Git's canonical checkout identity deduplicates nested cwd paths
+// and symlink aliases, while different clones of the same project remain distinct choices.
+export async function loadDiffCheckouts(
+  sessionIds: readonly string[], read: DiffPort["worktrees"], signal: AbortSignal,
+) {
+  const choices: DiffCheckoutChoice[] = [];
+  const unavailable: { sessionId: string; message: string }[] = [];
+  for (const sessionId of new Set(sessionIds)) {
+    signal.throwIfAborted();
+    try {
+      const inventory = await read(sessionId, signal);
+      signal.throwIfAborted();
+      const worktree = inventory.worktrees.find(w => w.id === inventory.currentWorktreeId);
+      if (!worktree || worktree.unavailable || worktree.prunable) {
+        throw new Error(worktree?.unavailable?.message ?? "The linked checkout is unavailable.");
+      }
+      const commonDir = inventory.repository.commonDir;
+      if (!choices.some(c => c.commonDir === commonDir && c.worktree.id === worktree.id)) {
+        choices.push({ sessionId, commonDir, worktree });
+      }
+    } catch (error) {
+      signal.throwIfAborted();
+      unavailable.push({ sessionId, message: error instanceof Error ? error.message : "Could not read this checkout." });
+    }
+  }
+  return { choices, unavailable };
 }
 
 const BOARD_ONLY = new Set([

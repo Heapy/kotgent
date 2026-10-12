@@ -5,6 +5,8 @@ import type { ComponentChildren, JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
+import { loadDiffCheckouts } from "../lib/commands.ts";
+import { diffApi } from "../lib/diff.ts";
 import { navigate, planPath, sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -29,6 +31,7 @@ export interface TaskDetailProps {
   // Null embeds the detail in a workspace column, which has its own close control.
   onClose: (() => void) | null;
   onOpenPlan?: () => void;
+  onOpenChanges?: (sessionId: string, worktreeId: string) => void;
 }
 
 const ACTIVITY_FALLBACK: Record<string, string> = {
@@ -102,6 +105,7 @@ export function TaskDetail({
   onAnnounce,
   onClose,
   onOpenPlan,
+  onOpenChanges,
 }: TaskDetailProps) {
   const panelClass = onClose ? "task-detail" : "task-detail task-detail-embedded";
   const [response, setDetail] = useState<ApiResponse<TaskDetailData>>(null);
@@ -166,6 +170,46 @@ export function TaskDetail({
   const dependents = (detail && detail.dependents) || [];
   const activity = (detail && detail.activity) || [];
   const linked = linkedSessions(taskRef, sessions, detail);
+  const linkedKey = JSON.stringify(linked.map(s => s.id).sort());
+  const changesRequest = useRef<AbortController | null>(null);
+  const [changes, setChanges] = useState<Awaited<ReturnType<typeof loadDiffCheckouts>> | null>(null);
+  const [changesLoading, setChangesLoading] = useState(false);
+  const [checkoutIndex, setCheckoutIndex] = useState(0);
+  const cancelChanges = () => {
+    changesRequest.current?.abort();
+    changesRequest.current = null;
+    setChangesLoading(false);
+    setChanges(null);
+  };
+  useEffect(() => {
+    cancelChanges();
+    return () => { changesRequest.current?.abort(); changesRequest.current = null; };
+  }, [taskRef, linkedKey]);
+  const openChanges = async () => {
+    if (!onOpenChanges || changesRequest.current) return;
+    const controller = new AbortController();
+    changesRequest.current = controller;
+    setChangesLoading(true);
+    setChanges(null);
+    try {
+      const result = await loadDiffCheckouts(linked.map(s => s.id), diffApi.worktrees, controller.signal);
+      if (controller.signal.aborted) return;
+      if (result.choices.length === 1 && result.unavailable.length === 0) {
+        const choice = result.choices[0]!;
+        onOpenChanges(choice.sessionId, choice.worktree.id);
+      } else {
+        setCheckoutIndex(0);
+        setChanges(result);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onAnnounce("Could not open changes: " + errorMessage(error), true);
+    } finally {
+      if (changesRequest.current === controller) {
+        changesRequest.current = null;
+        setChangesLoading(false);
+      }
+    }
+  };
   const dirty = !!entry && (titleDraft !== (entry.title || "") || bodyDraft !== (entry.body || ""));
 
   // Only a live row seen and then lost proves deletion; initial absence may precede the baseline.
@@ -322,6 +366,8 @@ export function TaskDetail({
         <div id="task-detail-tools">
           <button class="button button-small task-open-plan" type="button"
                   onClick={onOpenPlan ?? (() => navigate(planPath(taskRef)))}>Plan</button>
+          {onOpenChanges && <button class="button button-small task-open-changes" type="button"
+            disabled={changesLoading} onClick={() => void openChanges()}>Open changes</button>}
           <select id="task-detail-state" aria-label="State" disabled={busy}
                   value={entry.state} onChange={changeState}>
             {TASK_STATES.map((state) => (
@@ -336,6 +382,28 @@ export function TaskDetail({
                   onClick={startSession}>Start session</button>
         </div>,
       ])}
+
+      {(changesLoading || changes) && <section class="task-changes" aria-label="Linked checkouts">
+        {changesLoading && <p role="status">Finding linked checkouts…</p>}
+        {changes && <>
+          {changes.choices.length > 0 ? <>
+            <label class="field">Checkout<select value={checkoutIndex}
+              onChange={e => setCheckoutIndex(Number(e.currentTarget.value))}>
+              {changes.choices.map((choice, index) => <option key={choice.sessionId} value={index}>
+                {choice.worktree.path} · {choice.worktree.branchRef?.replace(/^refs\/heads\//, "") ?? (choice.worktree.detached ? "Detached HEAD" : choice.worktree.bare ? "Bare" : "Unborn HEAD")}
+              </option>)}
+            </select></label>
+            <button class="button button-small" type="button" onClick={() => {
+              const choice = changes.choices[checkoutIndex];
+              if (choice) onOpenChanges?.(choice.sessionId, choice.worktree.id);
+            }}>Open selected checkout</button>
+          </> : <p role="status">{linked.length ? "No linked checkout is available." : "Link a session to this task to open its changes."}</p>}
+          {changes.unavailable.map(failure => <p class="field-hint" key={failure.sessionId}>
+            {displayName({ tmuxSession: "", name: "", ...linked.find(s => s.id === failure.sessionId), id: failure.sessionId })}: {failure.message}
+          </p>)}
+        </>}
+        <button class="button button-quiet button-small" type="button" onClick={cancelChanges}>Cancel</button>
+      </section>}
 
       <form id="task-detail-form" onSubmit={saveEdits}>
         <label class="field">
