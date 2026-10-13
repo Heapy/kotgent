@@ -147,7 +147,11 @@ class Harness(
             return HarnessContext(fakes, boundPort, taskService, mutexes, background,
                 scenarioCommand = { scenario.command(it, fakes) }) { restart() }
         } catch (failure: Throwable) {
-            stop()
+            try {
+                stop()
+            } catch (cleanupFailure: Throwable) {
+                if (cleanupFailure !== failure) failure.addSuppressed(cleanupFailure)
+            }
             throw failure
         }
     }

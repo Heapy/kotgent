@@ -750,11 +750,29 @@ TypeScript Diff tests cover selection,
 Refresh, cancellation and history paging races, including non-HEAD branch cursors, moved/deleted
 branches and late replies after switching logs. Branch and commit filtering use the Turkish-fold
 probe to enforce locale-independent matching. `DiffTest` drives the assembled Vite UI and real Git reader
-through the `diff` harness scenario. The scenario creates one private temporary directory containing all
+through the `diff` and `diff-history` harness scenarios. Compiled Kotlin builds the commit graph with
+one `git fast-import`, without a Python or JVM scripting startup in each test. `diff` has four commits;
+only the pagination test uses `diff-history` with 105. Both preserve the real merge, distinct parent
+trees and branch bases. Git auto-maintenance is disabled in the fixture environment so no detached
+maintenance writes race with cleanup. Each command retains its existing bounded deadline and reports
+the failed command/stage; cleanup failures are suppressed on the original startup error.
+The scenario creates one private temporary directory containing all
 repositories/worktrees, uses fake session stores and a deterministic PTY, and removes only that directory
 on normal shutdown or startup failure. It never starts the product daemon or a provider. `diff-edit`,
 `diff-head` and `diff-unlink` acknowledge completion before the browser continues. The real reader remains
 read-only; only those fixture operations write Git state.
+
+For an opt-in startup stress check after the normal Web UI/native build, run
+`kotgent mutex run kotlin-build -- kotlinr scripts/repro-diff-startup.main.kts --parallelism=16 --rounds=3`.
+The standalone script needs the Kotlin scripting runner (`kotlinr`), uses only JDK APIs, and stores
+per-process stdout/stderr and timings in its printed temporary diagnostics directory. Its first run
+compiles the script before measurements begin. Use `--scenario=diff` for the small fixture or a pre-fix
+binary, and `--binary=/absolute/path/to/harness` to compare binaries. It starts only isolated test
+harnesses, closes stdin for normal shutdown and bounds each process lifetime. It does not change CI
+parallelism or production timeouts; elapsed times are diagnostic evidence, not CI performance assertions.
+On the local macOS ARM64 host, the same 16-worker script reproduced 16/16 startup failures in the old
+binary at 10.9 seconds. The batched 105-commit fixture passed 48/48 starts across three rounds at
+0.61–1.05 seconds, without increasing the process or handshake deadlines.
 
 Browser assertions cover All/Staged/Unstaged (including staged reversal and the separate untracked
 inventory), a worktree without a session, clean locked/detached and unavailable worktrees, pinned history

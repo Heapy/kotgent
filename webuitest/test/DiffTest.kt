@@ -197,7 +197,7 @@ class DiffTest {
         page.assertOneTerminal()
     }
 
-    @Test fun historyPagesRemainPinnedAndCommitParentsAndBranchBasesAreSelectable() = diffBrowser("diff-history") { harness, page ->
+    @Test fun historyPagesRemainPinnedAndCommitParentsAndBranchBasesAreSelectable() = diffBrowser("diff-history", scenario = "diff-history") { harness, page ->
         page.openDiff()
         page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Log").setExact(true)).click()
         assertThat(page.locator(".diff-history li")).hasCount(100)
@@ -405,9 +405,9 @@ private fun Page.releaseOnTaskRender(key: String, task: String, unlinked: Boolea
       observer.observe(document.querySelector('#app'), {subtree:true,childList:true,characterData:true});
     }""", listOf(key, task, unlinked))
 }
-private fun diffBrowser(trace: String, phone: Boolean = false, body: (Harness, Page) -> Unit) {
+private fun diffBrowser(trace: String, phone: Boolean = false, scenario: String = DIFF_SCENARIO, body: (Harness, Page) -> Unit) {
     var fixtureDirectory: java.nio.file.Path? = null
-    Harness(DIFF_SCENARIO).use { harness ->
+    Harness(scenario).use { harness ->
         onChromium { browser ->
             println("$trace: ${System.getProperty("os.name")}/${System.getProperty("os.arch")} Chromium ${browser.version()}")
             (if (phone) browser.touchContext() else browser.fineContext(1600, 900)).use { context ->

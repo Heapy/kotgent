@@ -37,6 +37,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         usageScenario(),
         workspaceScenario(),
         diffScenario(),
+        diffScenario(longHistory = true),
         planReviewScenario(),
         planFindingsScenario(),
         planFindingsScenario(ExecutionMode.autonomous),
