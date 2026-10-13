@@ -15,6 +15,7 @@
 .diff-refresh > span { display: inline-block; font-size: 18px; line-height: 18px; }
 .diff-panel .diff-source { flex-shrink: 0; margin: 0; padding: 4px 14px 9px; color: var(--muted); font: 10px/16px ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: var(--diff-surface); border-bottom: 1px solid var(--diff-line); }
 .diff-compare-controls { border-bottom: 1px solid var(--diff-line); }
+.diff-panel .diff-branches-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .diff-display-controls { display: flex; align-items: center; gap: 14px; margin-left: auto; }
 .diff-panel .diff-check { flex-direction: row; align-items: center; min-height: 30px; gap: 5px; font-size: 11px; }
 .diff-check input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
@@ -87,9 +88,15 @@
 .diff-plus { color: #91c69a; }
 .diff-minus { color: #e79b9e; }
 .diff-viewed-mark { color: #91c69a; font-size: 11px; }
-.diff-panel .diff-file-tree .diff-file-row { padding-top: 4px; padding-bottom: 4px; margin-bottom: 0; border-radius: 3px; width: max-content; min-width: 100%; max-width: none; }
+/* One intrinsic track keeps every row's background and counters aligned while scrolling. */
+.diff-file-tree { --diff-row-background: #1b1e24; display: grid; grid-template-columns: minmax(max-content, 1fr); align-content: start; }
+.diff-panel .diff-file-tree .diff-file-row { padding-top: 4px; padding-bottom: 4px; margin-bottom: 0; border-radius: 3px; max-width: none; clip-path: inset(0 round 3px); }
+.diff-file-tree .diff-file-row:hover { --diff-row-background: #252934; }
+.diff-file-tree .diff-file-row[aria-current="true"] { --diff-row-background: #2c293d; }
 .diff-file-tree .diff-file-label { flex: 1 0 auto; }
 .diff-file-tree .diff-stats { margin-left: auto; }
+.diff-file-tree .diff-folder-count, .diff-file-tree .diff-stats { position: sticky; right: 8px; padding-left: 8px; background: var(--diff-row-background); }
+.diff-file-tree .diff-folder-count::after, .diff-file-tree .diff-stats::after { content: ""; position: absolute; top: 0; bottom: 0; left: 100%; width: 14px; background: inherit; }
 .diff-folder-name { flex: 1; }
 .diff-chevron { width: 10px; flex-shrink: 0; text-align: center; font: 16px/18px monospace; color: #a4aab7; }
 .diff-folder-icon { width: 16px; height: 16px; flex-shrink: 0; color: #b6a585; }
@@ -125,6 +132,19 @@
 .diff-wrap .diff-unified th:nth-child(3) { width: 7ch; }
 .diff-wrap .diff-split col:nth-child(2), .diff-wrap .diff-split col:nth-child(4) { width: calc((100% - 10ch) / 2); }
 .diff-special { padding: 40px 18px; color: var(--muted); text-align: center; }
+.diff-images { padding: 12px; }
+.diff-image-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.diff-image-tools input { min-width: 0; width: 120px; accent-color: var(--accent); }
+.diff-image-tools output { min-width: 4ch; }
+.diff-image-pair, .diff-image-captions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.diff-image-pair figure { margin: 0; min-width: 0; }
+.diff-image-pair figcaption, .diff-image-captions > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding-bottom: 8px; }
+.diff-image-pair figcaption span, .diff-image-captions span { color: var(--muted); font-size: 10px; }
+.diff-image-canvas { max-width: 100%; overflow: hidden; border: 1px solid var(--diff-line); background: repeating-conic-gradient(#252831 0% 25%, #1b1e24 0% 50%) 0 0 / 16px 16px; }
+.diff-image-canvas > p { padding: 24px 8px; color: var(--muted); text-align: center; }
+.diff-image-canvas img { display: block; max-width: 100%; height: auto; }
+.diff-image-overlay { position: relative; max-width: 100%; }
+.diff-image-overlay img { position: absolute; top: 0; left: 0; }
 .diff-footer { position: relative; display: flex; gap: 12px; align-items: center; flex-shrink: 0; height: 30px; padding: 0 12px; background: var(--diff-surface); border-top: 1px solid var(--diff-line); color: var(--muted); font-size: 10px; }
 .diff-identities { display: flex; gap: 14px; flex-shrink: 1; min-width: 0; }
 .diff-comparison { min-width: 0; }
@@ -156,7 +176,9 @@
   .diff-patch-tools > .diff-stats { display: none; }
 }
 @container diff (max-width: 680px) {
+  .diff-image-pair { grid-template-columns: minmax(0, 1fr); }
   .diff-branches { display: none; }
+  .diff-panel .diff-branches-toggle { display: none; }
   .diff-panel .diff-mobile-branch { display: flex; }
   .diff-history { flex-basis: 190px; min-height: 130px; }
   .diff-history-toolbar { gap: 6px; }

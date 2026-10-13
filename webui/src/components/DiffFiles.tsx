@@ -19,7 +19,7 @@ function fileDescription(file: DiffFile) {
 function FileLabel({ file, tree, viewed }: { file: DiffFile; tree: boolean; viewed: boolean }) {
   const path = filePath(file), slash = path.lastIndexOf("/");
   const renamed = file.oldPath && file.newPath && file.oldPath !== file.newPath;
-  return <><DiffFileStatus file={file}/><span class="diff-file-label">
+  return <>{tree && <span class="diff-chevron" aria-hidden="true"/>}<DiffFileStatus file={file}/><span class="diff-file-label">
     <span class="diff-file-name" aria-hidden="true">{path.slice(slash + 1)}</span>
     <span class="diff-file-path diff-sr-only">{path}</span>
     {!tree && <small>{renamed ? `${file.oldPath} → ${file.newPath}` : slash < 0 ? fileDescription(file) : path.slice(0, slash)}</small>}

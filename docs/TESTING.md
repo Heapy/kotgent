@@ -736,7 +736,15 @@ commit IDs, results and any remaining blockers when performing this check:
 ## Git Diff viewer
 
 `DiffTest` also checks List/Tree switching, nested folder disclosure, arrow-key navigation,
-filter-driven expansion and reading-state restoration. Held worktree/patch responses assert unchanged
+filter-driven expansion and reading-state restoration. It checks that sticky tree counters stay at the
+visible right edge without painting outside the selected row, and that Branches can be hidden and
+restored across tab remounts. Image checks use real PNGs through the server to cover equal-scale
+Before/After views, overlay opacity, mobile stacking, missing sides and decoding failures.
+`DiffRoutesTest` checks binary image bytes, MIME headers, authentication and stale snapshots, including
+changes past the old 2 MiB boundary. Reader tests cover the inclusive 20 MiB image limit.
+`ImagePreviewTest` checks raster headers and dimension limits; `GitDiffReaderTest` checks image bytes
+across local scopes, pinned history, renames, additions, deletions, size limits and cache restart.
+Held worktree/patch responses assert unchanged
 patch bounds during refresh and file selection, including the phone refresh path. `diff-tree.test.ts`
 covers duplicate Git paths, rename/deletion hierarchy, literal unusual names and 5,000-file inventories.
 

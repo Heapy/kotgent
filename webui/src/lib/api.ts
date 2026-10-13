@@ -67,6 +67,16 @@ function requestTimeoutError() {
 }
 
 export async function apiRequest<T = unknown>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>> {
+  const text = await requestBody(path, options, response => response.text());
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return text; }
+}
+
+export function apiBlob(path: string, options?: ApiRequestOptions): Promise<Blob> {
+  return requestBody(path, options, response => response.blob());
+}
+
+async function requestBody<T>(path: string, options: ApiRequestOptions | undefined, body: (response: Response) => Promise<T>): Promise<T> {
   const opts: ApiRequestOptions = Object.assign({ credentials: "same-origin" } satisfies ApiRequestOptions, options || {});
   opts.headers = Object.assign({}, opts.headers || {});
   // Let the browser choose multipart/binary headers for non-string bodies.
@@ -84,11 +94,13 @@ export async function apiRequest<T = unknown>(path: string, options?: ApiRequest
   if (requestSignal) opts.signal = requestSignal;
 
   let resp: Response;
-  let text: string;
+  let result: T | undefined;
+  let text = "";
   try {
     // Web IDL treats an undefined signal as absent; transition contexts pass that value through.
     resp = await fetch(apiPath(path), opts as RequestInit);
-    text = await resp.text();
+    if (resp.ok) result = await body(resp);
+    else text = await resp.text();
   } catch (error) {
     if (timeoutSignal && requestSignal && requestSignal.aborted && requestSignal.reason === timeoutSignal.reason) {
       throw requestTimeoutError();
@@ -109,6 +121,5 @@ export async function apiRequest<T = unknown>(path: string, options?: ApiRequest
     failed.status = resp.status;
     throw failed;
   }
-  if (!text) return null;
-  try { return JSON.parse(text); } catch (_) { return text; }
+  return result!;
 }

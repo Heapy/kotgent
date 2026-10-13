@@ -15,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import io.kotgent.proc.CapturedProcess
 import io.kotgent.store.FakeEventStore
+import io.ktor.client.call.body
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -44,6 +45,7 @@ import platform.posix.fopen
 import platform.posix.fwrite
 import platform.posix.symlink
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -64,7 +66,9 @@ class DiffRoutesTest {
             return r.stdout.decodeToString().removeSuffix("\n")
         }
         fun write(name: String, content: String) {
-            val bytes = content.encodeToByteArray()
+            writeBytes(name, content.encodeToByteArray())
+        }
+        fun writeBytes(name: String, bytes: ByteArray) {
             val file = assertNotNull(fopen("$root/$name", "wb"))
             try { if (bytes.isNotEmpty()) bytes.usePinned { assertEquals(bytes.size.toULong(), fwrite(it.addressOf(0), 1u, bytes.size.convert(), file)) } }
             finally { fclose(file) }
@@ -139,6 +143,34 @@ class DiffRoutesTest {
                 assertEquals(0, CapturedProcess.run(listOf("/bin/rm", "-rf", dir), env).exitCode)
             }
         }
+    }
+
+    @Test fun imagesUseAuthenticatedBinaryResponsesBoundToSnapshotAndFile() = fixture(production = true) {
+        val bytes = kotlin.io.encoding.Base64.decode(IMAGE_RED).copyOf(3 * 1024 * 1024)
+        writeBytes("photo.png", bytes)
+        val files = files()
+        val file = files.files.single { it.newPath == "photo.png" }
+        val query = arrayOf("worktreeId" to root, "snapshot" to files.snapshot.id, "fileId" to file.fileId, "version" to "after")
+        val metadata = patch(files, file.fileId).bodyAsText()
+        assertTrue(metadata.length < 4096)
+        assertTrue(!metadata.contains("base64"))
+        val image = get("image", *query)
+        assertEquals(HttpStatusCode.OK, image.status)
+        assertEquals("image/png", image.headers[HttpHeaders.ContentType])
+        assertEquals("no-store", image.headers[HttpHeaders.CacheControl])
+        assertEquals("nosniff", image.headers["X-Content-Type-Options"])
+        assertContentEquals(bytes, image.body<ByteArray>())
+        assertEquals(HttpStatusCode.Unauthorized, get("image", *query, bearer = false).status)
+        assertEquals(HttpStatusCode.Forbidden, get("image", *query, bearer = false, cookie = true, origin = "https://evil.example").status)
+        get("image", *query.dropLast(1).toTypedArray(), "version" to "invalid").problem(HttpStatusCode.BadRequest, DiffReason.invalid_request)
+        get("image", *query, "path" to "/etc/passwd").problem(HttpStatusCode.BadRequest, DiffReason.invalid_request)
+        get("image", *query.map { if (it.first == "fileId") "fileId" to "unknown" else it }.toTypedArray())
+            .problem(HttpStatusCode.BadRequest, DiffReason.unknown_file)
+        get("image", *query.dropLast(1).toTypedArray(), "version" to "before")
+            .problem(HttpStatusCode.UnprocessableEntity, DiffReason.unsupported_path)
+        bytes[bytes.lastIndex] = 1
+        writeBytes("photo.png", bytes)
+        get("image", *query).problem(HttpStatusCode.Conflict, DiffReason.snapshot_changed)
     }
 
     @Test fun populatedDiskCacheStillRequiresAuthenticationAndCurrentSessionSource() = fixture(diskCache = true, production = true) {

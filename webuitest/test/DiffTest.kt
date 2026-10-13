@@ -8,6 +8,85 @@ import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 
 @org.junit.jupiter.api.Tag("diff-viewer")
 class DiffTest {
+    @Test fun imagesCompareBothVersionsAndOverlayWithoutOverflowingThePhone() = diffBrowser("diff-images") { harness, page ->
+        val inventory = page.context().request().get(harness.baseUrl + "/api/v1/sessions/s-diff/diff/worktrees")
+        val root = java.nio.file.Path.of(com.google.gson.JsonParser.parseString(inventory.text()).asJsonObject
+            .getAsJsonObject("data").get("currentWorktreeId").asString)
+        fun png(name: String, width: Int, height: Int, color: java.awt.Color) {
+            val image = java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val graphics = image.createGraphics()
+            try {
+                graphics.color = color; graphics.fillRoundRect(20, 20, width - 40, height - 40, 24, 24)
+                graphics.color = java.awt.Color.WHITE; graphics.fillOval(40, 40, 64, 64)
+            } finally { graphics.dispose() }
+            assertEquals(true, javax.imageio.ImageIO.write(image, "png", root.resolve(name).toFile()))
+        }
+        fun git(vararg args: String) {
+            val process = ProcessBuilder(listOf("/usr/bin/git", "-C", root.toString(), "-c", "user.name=Fixture",
+                "-c", "user.email=fixture@example.test") + args).apply {
+                val _ = environment().keys.removeIf { it.startsWith("GIT_") }
+                environment()["HOME"] = "/nonexistent"
+                environment()["GIT_CONFIG_NOSYSTEM"] = "1"
+            }.redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            assertEquals(0, process.waitFor(), output)
+        }
+        png("image.png", 320, 200, java.awt.Color(166, 122, 224, 180))
+        git("add", "--", "image.png"); git("commit", "--only", "-m", "Image before", "--", "image.png")
+        png("image.png", 400, 240, java.awt.Color(100, 180, 150, 180))
+        png("added.png", 320, 200, java.awt.Color.BLUE)
+        val _ = java.nio.file.Files.writeString(root.resolve("invalid.png"), "<svg onload='alert(1)'/>")
+        val corrupt = java.nio.file.Files.readAllBytes(root.resolve("added.png")).copyOf(33)
+        val _ = java.nio.file.Files.write(root.resolve("corrupt.png"), corrupt)
+        page.evaluate("""() => {
+            window.imageUrls = { created: [], revoked: [] };
+            const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+            URL.createObjectURL = blob => { const url = create(blob); window.imageUrls.created.push(url); return url; };
+            URL.revokeObjectURL = url => { window.imageUrls.revoked.push(url); revoke(url); };
+        }""")
+        page.openDiff()
+        page.file("image.png").click()
+        val before = page.getByRole(AriaRole.IMG, Page.GetByRoleOptions().setName("Before image").setExact(true))
+        val after = page.getByRole(AriaRole.IMG, Page.GetByRoleOptions().setName("After image").setExact(true))
+        page.waitForFunction("() => [...document.querySelectorAll('.diff-images img')].length === 2 && [...document.querySelectorAll('.diff-images img')].every(img => img.complete && img.naturalWidth > 0)")
+        assertEquals(true, before.getAttribute("src")!!.startsWith("blob:"))
+        assertEquals(true, after.getAttribute("src")!!.startsWith("blob:"))
+        val firstUrls = listOf(before.getAttribute("src"), after.getAttribute("src"))
+        assertEquals(320, before.evaluate("img => img.naturalWidth"))
+        assertEquals(400, after.evaluate("img => img.naturalWidth"))
+        assertEquals(true, kotlin.math.abs(before.boundingBox().width / 320 - after.boundingBox().width / 400) < 0.01,
+            "side-by-side images use the same scale")
+        assertThat(page.locator(".diff-images")).containsText("320 × 200 px")
+        assertThat(page.locator(".diff-images")).containsText("400 × 240 px")
+        val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("diff-images-side.png")))
+        page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Overlay").setExact(true)).click()
+        val opacity = page.getByRole(AriaRole.SLIDER, Page.GetByRoleOptions().setName("After opacity"))
+        opacity.press("Home")
+        assertThat(after).hasCSS("opacity", "0")
+        opacity.press("End")
+        assertThat(after).hasCSS("opacity", "1")
+        assertEquals(true, after.boundingBox().width > before.boundingBox().width, "overlay keeps the images at the same scale")
+        val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("diff-images-overlay.png")))
+        page.setViewportSize(390, 844)
+        assertEquals(true, page.evaluate("() => document.documentElement.scrollWidth <= innerWidth"))
+        page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Side by side").setExact(true)).click()
+        assertEquals(true, after.boundingBox().y > before.boundingBox().y, "the phone stacks the two versions")
+        val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("diff-images-phone.png")))
+        for (name in listOf("added.png", "invalid.png", "corrupt.png")) {
+            page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Back to files")).click()
+            page.file(name).click()
+            assertThat(before).hasCount(0)
+            assertThat(page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Overlay").setExact(true))).isDisabled()
+            when (name) {
+                "added.png" -> { assertThat(after).isVisible(); assertThat(page.patch()).containsText("File did not exist") }
+                "invalid.png" -> assertThat(page.patch()).containsText("Not a supported PNG, JPEG, GIF or WebP image")
+                else -> assertThat(page.patch()).containsText("Cannot decode this image")
+            }
+        }
+        assertEquals(true, page.evaluate("urls => urls.every(url => window.imageUrls.revoked.includes(url))", firstUrls),
+            "switching files releases both prior Blob URLs")
+    }
+
     @Test fun visibleBranchesOpenTheirOwnLogsWithoutChangingTheCheckout() = diffBrowser("diff-branches") { harness, page ->
         val inventory = page.context().request().get(harness.baseUrl + "/api/v1/sessions/s-diff/diff/worktrees")
         val root = com.google.gson.JsonParser.parseString(inventory.text()).asJsonObject
@@ -45,6 +124,27 @@ class DiffTest {
         page.getByLabel("Filter loaded commits", exact()).fill("")
         page.getByLabel("Filter branches", exact()).fill("ORIGIN")
         assertThat(branches.locator("li")).hasCount(1)
+        val toggle = page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName(java.util.regex.Pattern.compile("^(Hide|Show) branches$")))
+        val mainWidth = page.locator(".diff-main").boundingBox().width
+        toggle.click()
+        assertThat(branches).isHidden()
+        assertThat(toggle).hasAttribute("aria-expanded", "false")
+        assertThat(toggle).isFocused()
+        assertEquals(true, page.locator(".diff-main").boundingBox().width > mainWidth + 100, "hiding branches gives the diff more room")
+        assertThat(page.patch()).containsText("side content")
+        toggle.press("Enter")
+        assertThat(branches).isVisible()
+        assertThat(page.getByLabel("Filter branches", exact())).hasValue("ORIGIN")
+        toggle.click()
+        page.locator("#workspace-tab-t1").click()
+        page.openDiff()
+        assertThat(branches).isHidden()
+        assertThat(toggle).hasAttribute("aria-expanded", "false")
+        assertThat(page.patch()).containsText("side content")
+        val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("diff-branches-hidden.png")))
+        toggle.click()
+        assertThat(branches).isVisible()
+        assertThat(toggle).hasAttribute("aria-expanded", "true")
         page.getByLabel("Filter branches", exact()).fill("")
         assertThat(page.locator(".diff-source")).hasText(checkout)
         page.assertOneTerminal()
@@ -53,6 +153,7 @@ class DiffTest {
 
     @Test fun phoneBranchLogKeepsHistoryAvailableWhileReadingACommit() = diffBrowser("diff-log-phone", phone = true) { _, page ->
         page.openDiff()
+        assertThat(page.locator(".diff-branches-toggle")).isHidden()
         page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Log").setExact(true)).click()
         page.getByLabel(java.util.regex.Pattern.compile("^History branch")).selectOption("refs/heads/side")
         assertThat(page.locator(".diff-history li")).hasCount(2)
@@ -111,6 +212,59 @@ class DiffTest {
         assertThat(page.locator(".diff-folder-row")).hasCount(0)
         assertThat(page.file("src/nested/Two.kt")).hasAttribute("aria-current", "true")
         page.assertOneTerminal()
+    }
+
+    @Test fun deepTreeRowsShareTheFullScrollableWidth() = diffBrowser("diff-tree-width") { harness, page ->
+        val inventory = page.context().request().get(harness.baseUrl + "/api/v1/sessions/s-diff/diff/worktrees")
+        val root = java.nio.file.Path.of(com.google.gson.JsonParser.parseString(inventory.text()).asJsonObject
+            .getAsJsonObject("data").get("currentWorktreeId").asString)
+        val directory = "core/src/main/kotlin/io/heapy/kotdoc/images"
+        val _ = java.nio.file.Files.createDirectories(root.resolve(directory))
+        val _ = java.nio.file.Files.writeString(root.resolve("$directory/ImageHdr.kt"), "class ImageHdr\n")
+        val _ = java.nio.file.Files.writeString(root.resolve("$directory/SystemFloatMath.kt"), "class SystemFloatMath\n")
+        page.openDiff()
+        page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Tree").setExact(true)).click()
+        val tree = page.getByRole(AriaRole.TREE, Page.GetByRoleOptions().setName("Changed files"))
+        assertThat(page.file("$directory/SystemFloatMath.kt")).isVisible()
+        val parentName = page.locator(".diff-folder-row[title='$directory'] .diff-folder-name").boundingBox()
+        val childName = page.file("$directory/ImageHdr.kt").locator(".diff-file-name").boundingBox()
+        assertEquals(true, childName.x > parentName.x + 10, "a child file name is indented beyond its parent folder name")
+        assertEquals(true, tree.evaluate("el => el.scrollWidth > el.clientWidth"), "deep paths need horizontal scrolling")
+        assertEquals(true, tree.evaluate("""el => {
+          const rows = [...el.querySelectorAll('[role=treeitem]')].map(row => row.getBoundingClientRect());
+          return rows.every(row => Math.abs(row.width - rows[0].width) < 1);
+        }"""), "all folder and file rows fill the same scrollable track")
+        fun assertCountersAtTheVisibleRightEdge() {
+            assertEquals(true, tree.evaluate("""el => {
+              const right = el.getBoundingClientRect().left + el.clientLeft + el.clientWidth;
+              return [...el.querySelectorAll('.diff-folder-count, .diff-stats')].every(counter => {
+                const gap = right - counter.getBoundingClientRect().right;
+                return gap >= 6 && gap <= 16;
+              });
+            }"""), "folder counts and file stats stay at the visible right edge")
+        }
+        assertCountersAtTheVisibleRightEdge()
+        val _ = tree.evaluate("el => { el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2; }")
+        assertCountersAtTheVisibleRightEdge()
+        val _ = tree.evaluate("el => { el.scrollLeft = el.scrollWidth; }")
+        assertCountersAtTheVisibleRightEdge()
+        assertEquals(true, tree.evaluate("""el => {
+          const right = el.getBoundingClientRect().left + el.clientLeft + el.clientWidth;
+          return [...el.querySelectorAll('[role=treeitem]')].every(row => row.getBoundingClientRect().right >= right - 8);
+        }"""), "row backgrounds still reach the right edge after scrolling")
+        val _ = tree.evaluate("el => { el.scrollLeft = 0; }")
+        page.file("$directory/SystemFloatMath.kt").focus()
+        assertEquals(0, tree.evaluate("el => el.scrollLeft"), "focusing a deep file keeps the left side of the tree visible")
+        page.file("$directory/ImageHdr.kt").click()
+        assertThat(page.patch()).containsText("class ImageHdr")
+        val _ = tree.evaluate("el => { el.scrollLeft = el.scrollWidth; }")
+        assertEquals(false, page.file("$directory/ImageHdr.kt").evaluate("""row => {
+          const rect = row.getBoundingClientRect();
+          return row.contains(document.elementFromPoint(rect.right + 2, rect.top + rect.height / 2));
+        }"""), "the sticky counter background never protrudes beyond the selected row")
+        val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("diff-tree-width.png")))
+        page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("List").setExact(true)).click()
+        assertEquals(true, page.locator(".diff-file-list").evaluate("el => el.scrollWidth <= el.clientWidth"), "List stays within the sidebar")
     }
 
     @Test fun refreshAndPatchLoadingDoNotMoveTheViewer() = diffBrowser("diff-loading") { _, page ->

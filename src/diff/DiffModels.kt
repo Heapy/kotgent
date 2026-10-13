@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 const val DIFF_COMMIT_PAGE_SIZE = 100
 const val DIFF_MAX_FILES = 5_000
 const val DIFF_MAX_PATCH_BYTES = 2 * 1024 * 1024
+const val DIFF_MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const val DIFF_MAX_PATCH_LINES = 20_000
 const val DIFF_PROCESS_TIMEOUT_MILLIS = 10_000L
 const val DIFF_PROCESS_STDOUT_BYTES = 8 * 1024 * 1024
@@ -192,4 +193,20 @@ data class DiffPatch(
     val file: DiffFile,
     val hunks: List<DiffHunk> = emptyList(),
     val limited: DiffProblem? = null,
+    val images: DiffImages? = null,
 )
+
+@Serializable
+data class DiffImage(val mediaType: String, val byteLength: Int, val width: Int, val height: Int)
+
+/** A null side in DiffImages means absent; an existing but unreadable side has a problem. */
+@Serializable
+data class DiffImageSide(val image: DiffImage? = null, val problem: DiffProblem? = null)
+
+@Serializable
+data class DiffImages(val before: DiffImageSide? = null, val after: DiffImageSide? = null)
+
+/** Raw raster bytes are transported separately, never serialized into patch JSON or disk metadata. */
+data class DiffImageContent(val image: DiffImage, val bytes: ByteArray)
+
+enum class DiffImageVersion { before, after }

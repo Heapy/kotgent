@@ -7,6 +7,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -39,6 +40,17 @@ fun Route.diffRoutes(service: DiffService, json: Json = TRANSPORT_JSON) {
                 service.files(it, call.requiredDiff("worktreeId"), selection)
             }
         }
+        get("/image") {
+            val result = call.diffQuery(setOf("worktreeId", "snapshot", "fileId", "version")) {
+                service.image(it, call.requiredDiff("worktreeId"), call.requiredDiff("snapshot"), call.requiredDiff("fileId"),
+                    DiffImageVersion.valueOf(call.requiredDiff("version")))
+            }
+            val content = result.data
+            if (content == null) call.respondDiff(json, DiffResponse<Unit>(error = result.error)) else {
+                call.response.headers.append("X-Content-Type-Options", "nosniff")
+                call.respondBytes(content.bytes, ContentType.parse(content.image.mediaType))
+            }
+        }
         get("/patch") {
             call.diffRead<DiffPatch>(json, setOf("worktreeId", "snapshot", "fileId")) {
                 service.patch(it, call.requiredDiff("worktreeId"), call.requiredDiff("snapshot"), call.requiredDiff("fileId"))
@@ -54,8 +66,14 @@ private suspend inline fun <reified T> ApplicationCall.diffRead(
     allowed: Set<String>,
     block: (SessionId) -> DiffResponse<T>,
 ) {
+    respondDiff(json, diffQuery(allowed, block))
+}
+
+private suspend inline fun <T> ApplicationCall.diffQuery(
+    allowed: Set<String>, block: (SessionId) -> DiffResponse<T>,
+): DiffResponse<T> {
     response.headers.append(HttpHeaders.CacheControl, "no-store")
-    val result = try {
+    return try {
         val query = request.queryParameters
         require(query.entries().all { [key, values] -> key in allowed && values.size == 1 &&
             values.single().isNotEmpty() && values.single().length <= 4096 && '\u0000' !in values.single() })
@@ -65,6 +83,9 @@ private suspend inline fun <reified T> ApplicationCall.diffRead(
     } catch (_: IllegalArgumentException) {
         DiffResponse<T>(error = DiffProblem(DiffErrorCode.invalid, DiffReason.invalid_request, "Invalid diff query"))
     }
+}
+
+private suspend inline fun <reified T> ApplicationCall.respondDiff(json: Json, result: DiffResponse<T>) {
     val status = when {
         result.error == null -> HttpStatusCode.OK
         result.error.reason == DiffReason.unknown_session -> HttpStatusCode.NotFound

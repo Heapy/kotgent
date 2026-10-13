@@ -1,16 +1,18 @@
 import { splitLines } from "../lib/diff.ts";
 import type { DiffPatch as Patch, DiffLine } from "../lib/diff.ts";
+import { DiffImages } from "./DiffImages.tsx";
 
 function Code({ line }: { line: DiffLine | null }) {
   return <code>{line?.text ?? ""}{line?.noNewline && <span class="diff-no-newline"> ⏎ No newline at end of file</span>}</code>;
 }
-export function DiffPatch({ patch, layout, wrap }: { patch: Patch; layout: "unified" | "split"; wrap: boolean }) {
+export function DiffPatch({ sessionId, patch, layout, wrap }: { sessionId: string; patch: Patch; layout: "unified" | "split"; wrap: boolean }) {
   const file = patch.file;
   return <div class={`diff-code ${wrap ? "diff-wrap" : ""}`}>
     {(file.oldMode !== file.newMode) && <p>Mode: {file.oldMode ?? "absent"} → {file.newMode ?? "absent"}</p>}
     {patch.limited && <p role="status">Partial patch: {patch.limited.message}</p>}
-    {file.problem && <p role="status">{file.problem.message}</p>}
-    {file.kind !== "text" ? <p class="diff-special">{{ binary: "Binary file — no text preview", conflict: "Unresolved conflict — resolve in your checkout", symlink: "Symbolic link — target is not followed", submodule: "Submodule — nested content is not loaded", unavailable: "File content unavailable", limited: "File preview exceeds the reading limit" }[file.kind]}</p>
+    {file.problem && !patch.images && <p role="status">{file.problem.message}</p>}
+    {patch.images ? <DiffImages key={`${patch.snapshot.id}:${file.fileId}`} sessionId={sessionId} patch={patch}/>
+      : file.kind !== "text" ? <p class="diff-special">{{ binary: "Binary file — no text preview", conflict: "Unresolved conflict — resolve in your checkout", symlink: "Symbolic link — target is not followed", submodule: "Submodule — nested content is not loaded", unavailable: "File content unavailable", limited: "File preview exceeds the reading limit" }[file.kind]}</p>
       : !patch.hunks.length ? <p>{file.oldMode !== file.newMode ? "Mode-only change; no text hunks." : "No text hunks in this change."}</p>
       : <table class={`diff-lines diff-${layout}`} aria-label={`${layout === "split" ? "Split" : "Unified"} patch`}>
         <colgroup>{layout === "split" ? <><col style="width:5ch"/><col/><col style="width:5ch"/><col/></> : <><col style="width:5ch"/><col style="width:5ch"/><col style="width:3ch"/><col/></>}</colgroup>

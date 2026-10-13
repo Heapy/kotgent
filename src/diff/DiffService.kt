@@ -76,6 +76,20 @@ class DiffService(
     }
 
     suspend fun patch(session: SessionId, worktree: String, snapshot: String, fileId: String): DiffResponse<DiffPatch> = read {
+        selectedFile(session, worktree, snapshot, fileId) { source, tree, files, file ->
+            reader.patch(source.repository, tree, files.snapshot, file).value()
+        }
+    }
+
+    suspend fun image(session: SessionId, worktree: String, snapshot: String, fileId: String,
+        version: DiffImageVersion): DiffResponse<DiffImageContent> = read {
+        selectedFile(session, worktree, snapshot, fileId) { source, tree, files, file ->
+            reader.image(source.repository, tree, files.snapshot, file, version).value()
+        }
+    }
+
+    private suspend fun <T> selectedFile(session: SessionId, worktree: String, snapshot: String, fileId: String,
+        block: suspend (Source, DiffWorktree, DiffFiles, DiffFile) -> T): T {
         val [source, tree] = resolve(session, worktree)
         val files = registryLock.withLock {
             prune()
@@ -83,7 +97,7 @@ class DiffService(
         } ?: stale()
         val file = files.files.singleOrNull { it.fileId == fileId }
             ?: throw ReadFailure(DiffProblem(DiffErrorCode.invalid, DiffReason.unknown_file, "Unknown snapshot file"))
-        reader.patch(source.repository, tree, files.snapshot, file).value()
+        return block(source, tree, files, file)
     }
 
     private suspend fun inventory(session: SessionId): Pair<Source, DiffWorktrees> {

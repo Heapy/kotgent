@@ -46,7 +46,7 @@ class GitDiffReader(
         "--ignore-submodules=dirty", "--find-renames=50%", "-l1000", "--word-diff=none",
         "--output-indicator-new=+", "--output-indicator-old=-", "--output-indicator-context= ")
 
-    private suspend fun command(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap()): CapturedProcessResult {
+    private suspend fun command(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap(), stdoutLimit: Int = DIFF_PROCESS_STDOUT_BYTES): CapturedProcessResult {
         if (!cwd.startsWith('/') || '\u0000' in cwd) gitFailure(DiffReason.invalid_request, "Invalid checkout", DiffErrorCode.invalid)
         // Keys and values are separate: a valid subsection name can itself contain '='.
         val configEnvironment = buildMap {
@@ -59,14 +59,14 @@ class GitDiffReader(
         measure?.invoke("gitCommands", 1)
         if (args.firstOrNull() in listOf("log", "diff")) measure?.invoke("${args.first()}Commands", 1)
         return CapturedProcess.run(listOf(executable) + flags + listOf("-C", cwd) + args,
-            environment + configEnvironment, DIFF_PROCESS_STDOUT_BYTES, DIFF_PROCESS_STDERR_BYTES,
+            environment + configEnvironment, stdoutLimit, DIFF_PROCESS_STDERR_BYTES,
             DIFF_PROCESS_TIMEOUT_MILLIS.milliseconds).also {
                 measure?.invoke("gitBytes", it.stdout.size.toLong() + it.stderr.size)
             }
     }
 
-    private suspend fun read(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap()): ByteArray {
-        val result = command(cwd, args, extra)
+    private suspend fun read(cwd: String, args: List<String>, extra: Map<String, String> = emptyMap(), stdoutLimit: Int = DIFF_PROCESS_STDOUT_BYTES): ByteArray {
+        val result = command(cwd, args, extra, stdoutLimit)
         if (result.exitCode != 0) gitFailure(DiffReason.git_failed, "Git read failed")
         return result.stdout
     }
@@ -282,7 +282,7 @@ class GitDiffReader(
     }
 
     @Serializable private data class HistoryPage(val commits: List<DiffCommit>, val more: Boolean)
-    @Serializable private data class PatchPayload(val hunks: List<DiffHunk>)
+    @Serializable private data class PatchPayload(val hunks: List<DiffHunk>, val images: DiffImages? = null)
     @Serializable private data class Observation(val files: List<DiffFile>, val digest: String, val limited: DiffProblem?)
 
     private suspend fun observe(source: VerifiedWorktree, comparison: DiffComparison, context: String?): Observation {
@@ -351,7 +351,7 @@ class GitDiffReader(
                     identities += file.newPath + ":gitlink:" + workingGitlink(tree.path, file.newPath)
                     continue
                 }
-                val content = localContent(tree.path, file.newPath)
+                val content = localContent(tree.path, file.newPath, if (imageCandidate(file)) DIFF_MAX_IMAGE_BYTES else DIFF_MAX_PATCH_BYTES)
                 identities += file.newPath + ":" + content.identity
                 if (file.kind == DiffFileKind.text || file.change == DiffChange.untracked) {
                     files[i] = file.copy(kind = content.kind, problem = content.problem,
@@ -380,22 +380,17 @@ class GitDiffReader(
         val source = verify(repository, worktree)
         val tree = source.tree
         val comparison = snapshot.comparison
-        if (comparison.repository != repository || comparison.worktreeId != tree.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
-        suspend fun check(): String? {
-            val context = comparisonContext(source, comparison)
-            val observation = observe(source, comparison, context)
-            if (observation.digest != snapshot.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
-            if (file !in observation.files) gitFailure(DiffReason.unknown_file, "Unknown snapshot file", DiffErrorCode.invalid)
-            return context
-        }
+        suspend fun check() = checkSnapshot(repository, source, snapshot, file)
         val context = check()
-        val key = context?.let { "patch-v1:$it:" + Json.encodeToString(comparison) + ":" + Json.encodeToString(file) }
+        val key = context?.let { "patch-v3:$it:" + Json.encodeToString(comparison) + ":" + Json.encodeToString(file) }
         key?.let { diskCache?.get<PatchPayload>(it, now()) }?.let { payload ->
             if (check() != context) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
-            return@response DiffPatch(snapshot.copy(readAt = now()), file, payload.hunks)
+            return@response DiffPatch(snapshot.copy(readAt = now()), file, payload.hunks, images = payload.images)
         }
-        val result = if (file.kind != DiffFileKind.text) DiffPatch(snapshot, file, limited = file.problem?.takeIf { it.code == DiffErrorCode.limited }) else if (file.change == DiffChange.untracked) {
-            val content = localContent(tree.path, file.newPath!!)
+        val result = if (imageCandidate(file)) DiffPatch(snapshot, file,
+            limited = file.problem?.takeIf { it.code == DiffErrorCode.limited }, images = images(tree, comparison, file))
+        else if (file.kind != DiffFileKind.text) DiffPatch(snapshot, file, limited = file.problem?.takeIf { it.code == DiffErrorCode.limited }) else if (file.change == DiffChange.untracked) {
+            val content = localContent(tree.path, file.newPath!!, DIFF_MAX_PATCH_BYTES)
             val bytes = content.bytes ?: gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
             val text = gitText(bytes)
             val lines = text.split('\n').let { if (text.endsWith('\n')) it.dropLast(1) else it }.let { if (text.isEmpty()) emptyList() else it }
@@ -415,9 +410,89 @@ class GitDiffReader(
             DiffPatch(snapshot, file, parsed.hunks, parsed.limited)
         }
         if (check() != context) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
-        if (key != null && result.limited == null && result.file.problem == null)
-            diskCache?.put(key, PatchPayload(result.hunks), now())
+        if (key != null && result.limited == null && result.file.problem == null &&
+            listOfNotNull(result.images?.before, result.images?.after).none { it.problem != null })
+            diskCache?.put(key, PatchPayload(result.hunks, result.images), now())
         result
+    }
+
+    private suspend fun checkSnapshot(repository: DiffRepository, source: VerifiedWorktree, snapshot: DiffSnapshot, file: DiffFile): String? {
+        val comparison = snapshot.comparison
+        if (comparison.repository != repository || comparison.worktreeId != source.tree.id)
+            gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        val context = comparisonContext(source, comparison)
+        val observation = observe(source, comparison, context)
+        if (observation.digest != snapshot.id) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        if (file !in observation.files) gitFailure(DiffReason.unknown_file, "Unknown snapshot file", DiffErrorCode.invalid)
+        return context
+    }
+
+    private fun imageCandidate(file: DiffFile): Boolean =
+        file.kind !in listOf(DiffFileKind.symlink, DiffFileKind.submodule, DiffFileKind.conflict) &&
+            (isDiffImagePath(file.oldPath) || isDiffImagePath(file.newPath))
+
+    override suspend fun image(repository: DiffRepository, worktree: DiffWorktree, snapshot: DiffSnapshot,
+        file: DiffFile, version: DiffImageVersion): DiffResponse<DiffImageContent> = response {
+        val source = verify(repository, worktree)
+        suspend fun check() = checkSnapshot(repository, source, snapshot, file)
+        val context = check()
+        if (!imageCandidate(file)) gitFailure(DiffReason.unsupported_encoding, "Image preview unavailable")
+        val loaded = imageSide(source.tree, snapshot.comparison, file, version)
+        if (check() != context) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        loaded?.side?.problem?.let { throw GitReadFailure(it) }
+        val metadata = loaded?.side?.image ?: gitFailure(DiffReason.unsupported_path, "Image does not exist")
+        DiffImageContent(metadata, loaded.bytes!!)
+    }
+
+    private data class LoadedImage(val side: DiffImageSide, val bytes: ByteArray? = null)
+    private fun loadedImage(bytes: ByteArray): LoadedImage {
+        val side = previewDiffImage(bytes)
+        return LoadedImage(side, bytes.takeIf { side.image != null })
+    }
+
+    private suspend fun images(tree: DiffWorktree, comparison: DiffComparison, file: DiffFile): DiffImages = DiffImages(
+        imageSide(tree, comparison, file, DiffImageVersion.before)?.side,
+        imageSide(tree, comparison, file, DiffImageVersion.after)?.side,
+    )
+
+    private suspend fun imageSide(tree: DiffWorktree, comparison: DiffComparison, file: DiffFile, version: DiffImageVersion): LoadedImage? {
+        val local = comparison.mode == DiffMode.local
+        return if (version == DiffImageVersion.before) when {
+            file.oldPath == null -> null
+            local && comparison.scope == DiffLocalScope.unstaged -> gitImage(tree.path, null, file.oldPath)
+            comparison.leftOid != null -> gitImage(tree.path, comparison.leftOid, file.oldPath)
+            else -> null // Empty tree for a root commit or unborn HEAD.
+        } else when {
+            file.newPath == null -> null
+            local && comparison.scope != DiffLocalScope.staged -> {
+                val content = localContent(tree.path, file.newPath, DIFF_MAX_IMAGE_BYTES)
+                content.bytes?.let(::loadedImage) ?: LoadedImage(DiffImageSide(problem = content.problem ?: DiffProblem(
+                    DiffErrorCode.unavailable, DiffReason.unsupported_path, "Image cannot be safely read")))
+            }
+            else -> gitImage(tree.path, comparison.rightOid, file.newPath)
+        }
+    }
+
+    /** Resolve an exact entry to an OID, then read the raw blob without clean/smudge/textconv filters. */
+    private suspend fun gitImage(root: String, revision: String?, path: String): LoadedImage {
+        val args = if (revision == null) listOf("ls-files", "--stage", "-z", "--", path)
+            else listOf("ls-tree", "-z", revision, "--", path)
+        val record = gitFields(read(root, args)).map(::gitText).singleOrNull { it.substringAfter('\t', "") == path }
+            ?: gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        val fields = record.substringBefore('\t').split(' ')
+        if (fields.size != 3 || fields[0] !in listOf("100644", "100755") ||
+            (revision == null && fields[2] != "0") || (revision != null && fields[1] != "blob"))
+            return LoadedImage(DiffImageSide(problem = DiffProblem(DiffErrorCode.unavailable, DiffReason.unsupported_path, "Image is not a regular file")))
+        val oid = fields[if (revision == null) 1 else 2]
+        if (!isDiffOid(oid)) gitFailure(DiffReason.git_failed, "Malformed image blob OID")
+        val size = line(read(root, listOf("cat-file", "-s", oid))).toLongOrNull()
+            ?: gitFailure(DiffReason.git_failed, "Malformed image size")
+        if (size < 0) gitFailure(DiffReason.git_failed, "Malformed image size")
+        if (size > DIFF_MAX_IMAGE_BYTES) return LoadedImage(DiffImageSide(problem = DiffProblem(
+            DiffErrorCode.limited, DiffReason.patch_limit, "Image exceeds the 20 MiB preview limit")))
+        val bytes = read(root, listOf("cat-file", "blob", oid), stdoutLimit = DIFF_MAX_IMAGE_BYTES)
+        if (bytes.size.toLong() != size) gitFailure(DiffReason.snapshot_changed, "Refresh", DiffErrorCode.stale)
+        return loadedImage(bytes)
     }
 
     private suspend fun comparisonContext(source: VerifiedWorktree, comparison: DiffComparison): String? {
@@ -512,8 +587,8 @@ class GitDiffReader(
 
     private data class LocalContent(val bytes: ByteArray?, val kind: DiffFileKind, val identity: String, val problem: DiffProblem? = null, val executable: Boolean = false)
 
-    private fun localContent(root: String, path: String): LocalContent {
-        val read = readWorktreeFile(root, path, DIFF_MAX_PATCH_BYTES)
+    private fun localContent(root: String, path: String, limit: Int = if (isDiffImagePath(path)) DIFF_MAX_IMAGE_BYTES else DIFF_MAX_PATCH_BYTES): LocalContent {
+        val read = readWorktreeFile(root, path, limit)
         measure?.invoke("fileBytes", read.bytes.size.toLong())
         val identity = read.kind.name + ":" + read.executable + ":" + digest(read.bytes)
         return when (read.kind) {
@@ -527,7 +602,7 @@ class GitDiffReader(
             }
             WorktreeFileKind.symlink -> LocalContent(null, DiffFileKind.symlink, identity)
             WorktreeFileKind.limited -> LocalContent(null, DiffFileKind.limited, identity,
-                DiffProblem(DiffErrorCode.limited, DiffReason.patch_limit, "File content limit reached"))
+                DiffProblem(DiffErrorCode.limited, DiffReason.patch_limit, if (limit == DIFF_MAX_IMAGE_BYTES) "Image exceeds the 20 MiB preview limit" else "File content limit reached"))
             else -> LocalContent(null, DiffFileKind.unavailable, identity,
                 DiffProblem(DiffErrorCode.unavailable, DiffReason.unsupported_path, "File cannot be safely read"))
         }

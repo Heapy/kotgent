@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 
 import type { ApiError } from "../../webui/src/lib/api.ts";
 
-import { apiRequest, errorMessage, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
+import { apiBlob, apiRequest, errorMessage, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
 import { fetchProjects, fetchTasks } from "../../webui/src/lib/tasks.ts";
 
 const realFetch = globalThis.fetch;
@@ -118,4 +118,35 @@ test("error messages preserve the selected value's text and the falsy-message fa
   ] as const) {
     assert.equal(errorMessage(error), expected);
   }
+});
+
+
+describe("binary image reads", () => {
+  test("preserve raw bytes and the server MIME type", async () => {
+    const bytes = new Uint8Array([0, 255, 137, 128, 10]);
+    globalThis.fetch = async () => new Response(bytes, { headers: { "Content-Type": "image/png" } });
+    const blob = await apiBlob("/sessions/s1/diff/image");
+    assert.equal(blob.type, "image/png");
+    assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), bytes);
+  });
+
+  test("share authentication and structured error handling with JSON reads", async () => {
+    respondWith(401);
+    await assert.rejects(apiBlob("/sessions/s1/diff/image"), isUnauthenticated);
+    assert.equal(signOuts, 1);
+    const body = JSON.stringify({ error: { code: "stale", reason: "snapshot_changed", message: "Refresh" } });
+    respondWith(409, body);
+    await assert.rejects(apiBlob("/sessions/s1/diff/image"), (error: ApiError) => error.status === 409 && error.message === body);
+  });
+
+  test("cancels while the binary response body is loading", async () => {
+    const controller = new AbortController();
+    globalThis.fetch = async (_url, options) => ({ ok: true, status: 200,
+      blob: () => new Promise((_resolve, reject) => {
+        options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+        controller.abort();
+      }),
+    }) as Response;
+    await assert.rejects(apiBlob("/sessions/s1/diff/image", { signal: controller.signal }), { name: "AbortError" });
+  });
 });

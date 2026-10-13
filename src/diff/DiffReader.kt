@@ -32,4 +32,13 @@ interface DiffReader {
         snapshot: DiffSnapshot,
         file: DiffFile,
     ): DiffResponse<DiffPatch>
+    /** Same snapshot validation as patch; only a supported regular raster can return bytes. */
+    suspend fun image(
+        repository: DiffRepository,
+        worktree: DiffWorktree,
+        snapshot: DiffSnapshot,
+        file: DiffFile,
+        version: DiffImageVersion,
+    ): DiffResponse<DiffImageContent> = DiffResponse(error = DiffProblem(
+        DiffErrorCode.unavailable, DiffReason.unsupported_encoding, "Image preview unavailable"))
 }

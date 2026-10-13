@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import { diffStore } from "../state/diff.ts";
 import { filePath, filterFiles, comparisonLabels, branchName } from "../lib/diff.ts";
 import type { DiffLocalScope, DiffComparison } from "../lib/diff.ts";
@@ -10,6 +10,7 @@ import "../diff.css";
 /** Integration owns workspace/session selection; this panel only chooses a Git source. */
 export function DiffPanel({ sessionId }: { sessionId: string }) {
   const state = diffStore.state(sessionId).value;
+  const branchesId = useId();
   const patchScroll = useRef<HTMLDivElement>(null), filesScroll = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null), filter = useRef<HTMLInputElement>(null);
   const previousPage = useRef(state.page);
@@ -52,6 +53,11 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     </div>
     <p class="diff-source" title={worktree?.path}>{worktree ? <>{worktree.path} · Checkout HEAD {worktree.headOid?.slice(0, 12) ?? "unborn"}{worktree.locked ? " · Locked (readable)" : ""}</> : "Discovering worktrees…"}</p>
     <div class="diff-controls diff-compare-controls">
+      <button type="button" class="diff-branches-toggle" aria-controls={branchesId} aria-expanded={state.branchesVisible}
+        aria-label={state.branchesVisible ? "Hide branches" : "Show branches"} title={state.branchesVisible ? "Hide branches" : "Show branches"}
+        onClick={() => reading({ branchesVisible: !state.branchesVisible })}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M6 3v10"/></svg>Branches
+      </button>
       <div class="diff-segments diff-modes" role="group" aria-label="Git view">
         <button type="button" aria-pressed={state.mode === "local"} onClick={() => choose({ mode: "local" })}>Local changes</button>
         <button type="button" aria-pressed={state.mode === "commit"} onClick={() => choose({ mode: "commit" })}>Log</button>
@@ -72,7 +78,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     {worktree?.unavailable && <p role="status">Worktree unavailable: {worktree.unavailable.message}</p>}
     {worktree?.bare && state.mode === "local" && <p role="status">Bare repositories have no local working copy.</p>}
     <div class="diff-browser">
-      <DiffBranches state={state} onSelect={historyRef => choose({ mode: "commit", historyRef })}/>
+      <DiffBranches id={branchesId} state={state} onSelect={historyRef => choose({ mode: "commit", historyRef })}/>
       <div class="diff-main">
     {state.mode !== "local" && <DiffHistory state={state} onSelect={commitOid => choose({ mode: "commit", commitOid, parent: 1 })} onMore={() => void diffStore.more(sessionId)}/>}
     {commit && <div class="diff-commit"><p>{commit.subject} · {commit.author} · {new Date(commit.authoredAt).toLocaleString()}<br/><code>{commit.oid}</code></p>{commit.parents.length ? <label>Parent<select value={state.parent} onChange={e => choose({ parent: Number(e.currentTarget.value) })}>{commit.parents.map((p, i) => <option key={p} value={i + 1}>Parent {i + 1} · {p.slice(0, 12)}</option>)}</select></label> : <p>Root commit · compared with the empty tree</p>}</div>}
@@ -104,7 +110,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         </div>
         <div class="diff-patch-scroll" tabIndex={0} role="region" aria-label="Selected patch" ref={patchScroll} onScroll={e => reading({ scrollTop: e.currentTarget.scrollTop })}>
           {!state.patch.data && <div class="diff-empty-state"><span aria-hidden="true">{loading ? "⋯" : "±"}</span><p>{loading ? "Reading changes…" : selected ? "No patch available. Check the comparison status below." : "Select a file to review its changes"}</p></div>}
-          {state.patch.data && <DiffPatch patch={state.patch.data} layout={state.layout} wrap={state.wrap}/>}
+          {state.patch.data && <DiffPatch sessionId={sessionId} patch={state.patch.data} layout={state.layout} wrap={state.wrap}/>}
         </div>
       </div>
     </div>

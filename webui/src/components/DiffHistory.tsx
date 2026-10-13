@@ -15,13 +15,13 @@ function navigate(event: JSX.TargetedKeyboardEvent<HTMLButtonElement>, list: HTM
   event.preventDefault(); event.stopPropagation(); rows[next]?.focus();
 }
 
-export function DiffBranches({ state, onSelect }: { state: DiffState; onSelect: (ref: string) => void }) {
+export function DiffBranches({ id, state, onSelect }: { id: string; state: DiffState; onSelect: (ref: string) => void }) {
   const [query, setQuery] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const refs = state.refs.data?.refs ?? [];
   const visible = filterBranches(refs, query);
   const current = state.inventory.data?.worktrees.find(w => w.id === state.worktree)?.branchRef;
-  return <aside class="diff-branches" aria-label="Branches">
+  return <aside id={id} class="diff-branches" aria-label="Branches" hidden={!state.branchesVisible}>
     <div class="diff-files-heading"><strong>Branches</strong><span class="diff-branch-count">{refs.length}</span></div>
     <label class="diff-filter"><span class="diff-sr-only">Filter branches</span><input type="search" value={query} placeholder="Filter branches…" spellcheck={false} autoCorrect="off" autocapitalize="off" onInput={e => setQuery(e.currentTarget.value)}/></label>
     <div class="diff-branch-list" ref={list}>

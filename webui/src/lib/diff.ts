@@ -1,4 +1,4 @@
-import { apiRequest } from "./api.ts";
+import { apiBlob, apiRequest } from "./api.ts";
 
 export type DiffMode = "local" | "commit" | "branch";
 export type DiffLocalScope = "all" | "staged" | "unstaged";
@@ -37,7 +37,10 @@ export interface DiffFile {
 export interface DiffFiles { snapshot: DiffSnapshot; files: DiffFile[]; limited: DiffProblem | null }
 export interface DiffLine { kind: "context" | "addition" | "deletion"; text: string; oldLine: number | null; newLine: number | null; noNewline: boolean }
 export interface DiffHunk { oldStart: number; oldCount: number; newStart: number; newCount: number; heading: string; lines: DiffLine[] }
-export interface DiffPatch { snapshot: DiffSnapshot; file: DiffFile; hunks: DiffHunk[]; limited: DiffProblem | null }
+export interface DiffImage { mediaType: string; byteLength: number; width: number; height: number }
+export interface DiffImageSide { image: DiffImage | null; problem: DiffProblem | null }
+export interface DiffImages { before: DiffImageSide | null; after: DiffImageSide | null }
+export interface DiffPatch { snapshot: DiffSnapshot; file: DiffFile; hunks: DiffHunk[]; limited: DiffProblem | null; images?: DiffImages | null }
 export type DiffResponse<T> = { data: T; error: null } | { data: null; error: DiffProblem };
 export class DiffReadError extends Error {
   readonly problem: DiffProblem;
@@ -62,6 +65,19 @@ async function read<T>(session: string, route: string, query: Record<string, str
     if (error instanceof Error && !(error instanceof DiffReadError)) {
       let body: { error?: DiffProblem } | null = null;
       try { body = JSON.parse(error.message) as { error?: DiffProblem }; } catch { /* ordinary transport failure */ }
+      if (body?.error) throw new DiffReadError(body.error);
+    }
+    throw error;
+  }
+}
+export async function readDiffImage(session: string, patch: DiffPatch, version: "before" | "after", signal: AbortSignal): Promise<Blob> {
+  const query = new URLSearchParams({ worktreeId: patch.snapshot.comparison.worktreeId, snapshot: patch.snapshot.id, fileId: patch.file.fileId, version });
+  try {
+    return await apiBlob(`/sessions/${encodeURIComponent(session)}/diff/image?${query}`, { signal });
+  } catch (error) {
+    if (error instanceof Error) {
+      let body: { error?: DiffProblem } | null = null;
+      try { body = JSON.parse(error.message) as { error?: DiffProblem }; } catch { /* transport failure */ }
       if (body?.error) throw new DiffReadError(body.error);
     }
     throw error;

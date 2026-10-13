@@ -11,13 +11,13 @@ export interface DiffState {
   inventory: DiffRead<DiffWorktrees>; refs: DiffRead<DiffRefs>; history: DiffRead<DiffCommits>;
   files: DiffRead<DiffFiles>; patch: DiffRead<DiffPatch>;
   selected: string | null; query: string; hideViewed: boolean; viewed: ReadonlySet<string>;
-  fileView: "list" | "tree"; collapsedFolders: ReadonlySet<string>;
+  fileView: "list" | "tree"; collapsedFolders: ReadonlySet<string>; branchesVisible: boolean;
   page: "files" | "patch"; layout: "unified" | "split"; wrap: boolean; scrollTop: number; filesScrollTop: number;
 }
 function initial(): DiffState {
   return { worktree: null, mode: "local", scope: "all", baseRef: "", historyRef: "", commitOid: "", parent: 1, commit: null,
     inventory: empty(), refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null,
-    query: "", hideViewed: false, fileView: "list", collapsedFolders: new Set(), viewed: new Set(), page: "files", layout: "unified", wrap: false, scrollTop: 0, filesScrollTop: 0 };
+    query: "", hideViewed: false, fileView: "list", collapsedFolders: new Set(), branchesVisible: true, viewed: new Set(), page: "files", layout: "unified", wrap: false, scrollTop: 0, filesScrollTop: 0 };
 }
 type Resource = "inventory" | "refs" | "history" | "files" | "patch";
 export const MAX_DIFF_SESSIONS = 8;
@@ -219,7 +219,7 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     update(e, { selected: id, collapsedFolders: revealDiffPaths(current.collapsedFolders, [filePath(file)]), page: "patch", ...(same ? {} : { patch: empty(), scrollTop: 0 }) });
     if (!same || !e.state.value.patch.data || e.state.value.patch.stale) void loadPatch(session, e);
   }
-  function reading(session: string, change: Partial<Pick<DiffState, "query" | "hideViewed" | "page" | "layout" | "wrap" | "scrollTop" | "filesScrollTop" | "fileView" | "collapsedFolders">>) {
+  function reading(session: string, change: Partial<Pick<DiffState, "query" | "hideViewed" | "page" | "layout" | "wrap" | "scrollTop" | "filesScrollTop" | "fileView" | "collapsedFolders" | "branchesVisible">>) {
     const e = entry(session);
     // Scroll is a restoration bookmark, not rendered data: do not rebuild 20,000 code lines per scroll event.
     const { scrollTop, filesScrollTop, ...rendered } = change;

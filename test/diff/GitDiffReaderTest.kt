@@ -32,6 +32,97 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class GitDiffReaderTest {
+    @Test fun imageVersionsFollowLocalScopesAndPinnedHistory() = fixture {
+        val red = kotlin.io.encoding.Base64.decode(IMAGE_RED)
+        val blue = kotlin.io.encoding.Base64.decode(IMAGE_BLUE)
+        val green = kotlin.io.encoding.Base64.decode(IMAGE_GREEN)
+        writeBytes("photo.png", red); val first = commit()
+        writeBytes("photo.png", blue); git("add", "photo.png")
+        writeBytes("photo.png", green)
+        suspend fun versions(selection: DiffSelection, before: String?, after: String?) {
+            val list = files(selection)
+            val images = assertNotNull(patch(list, list.files.single { it.newPath == "photo.png" }).ok().images)
+            for ([version, expected] in listOf(DiffImageVersion.before to before, DiffImageVersion.after to after)) {
+                if (expected == null) assertNull(if (version == DiffImageVersion.before) images.before else images.after)
+                else assertContentEquals(kotlin.io.encoding.Base64.decode(expected), image(list, version).ok().bytes)
+            }
+            assertNull(images.before?.problem); assertNull(images.after?.problem)
+        }
+        versions(DiffSelection(scope = DiffLocalScope.all), IMAGE_RED, IMAGE_GREEN)
+        versions(DiffSelection(scope = DiffLocalScope.staged), IMAGE_RED, IMAGE_BLUE)
+        versions(DiffSelection(scope = DiffLocalScope.unstaged), IMAGE_BLUE, IMAGE_GREEN)
+        val stale = files()
+        writeBytes("photo.png", blue)
+        assertEquals(DiffReason.snapshot_changed, patch(stale).error?.reason)
+        git("commit", "-m", "blue")
+        val tip = git("rev-parse", "HEAD")
+        writeBytes("photo.png", green)
+        versions(DiffSelection(DiffMode.commit, commitOid = tip), IMAGE_RED, IMAGE_BLUE)
+        versions(DiffSelection(DiffMode.commit, commitOid = first), null, IMAGE_RED)
+        git("branch", "base", first)
+        versions(DiffSelection(DiffMode.branch, baseRef = "refs/heads/base"), IMAGE_RED, IMAGE_BLUE)
+    }
+
+    @Test fun imageAdditionDeletionRenameAndLimitsAreExplicit() = fixture {
+        writeBytes("old\tname.png", kotlin.io.encoding.Base64.decode(IMAGE_RED)); commit()
+        git("mv", "old\tname.png", "new\nname.png")
+        val renamed = files(DiffSelection(scope = DiffLocalScope.staged))
+        val images = assertNotNull(patch(renamed).ok().images)
+        assertEquals(3, images.before?.image?.width)
+        assertEquals(3, images.after?.image?.width)
+        commit()
+        git("rm", "new\nname.png")
+        val deleted = assertNotNull(patch(files()).ok().images)
+        assertEquals(3, deleted.before?.image?.width); assertNull(deleted.after)
+        writeBytes("untracked.png", kotlin.io.encoding.Base64.decode(IMAGE_BLUE))
+        val added = files()
+        val untracked = assertNotNull(patch(added, added.files.single { it.newPath == "untracked.png" }).ok().images)
+        assertNull(untracked.before); assertEquals(4, untracked.after?.image?.width)
+        writeBytes("large.png", ByteArray(DIFF_MAX_IMAGE_BYTES + 1))
+        git("add", "large.png")
+        val staged = files(DiffSelection(scope = DiffLocalScope.staged))
+        val large = assertNotNull(patch(staged, staged.files.single { it.newPath == "large.png" }).ok().images)
+        assertNull(large.after?.image); assertEquals(DiffReason.patch_limit, large.after?.problem?.reason)
+        assertEquals(0, symlink("/etc/passwd", "$root/link.png"))
+        val linked = files()
+        assertNull(patch(linked, linked.files.single { it.newPath == "link.png" }).ok().images)
+    }
+
+    @Test fun immutableImageMetadataSurvivesDiskCacheRestart() = fixture {
+        writeBytes("photo.png", kotlin.io.encoding.Base64.decode(IMAGE_RED)); commit()
+        writeBytes("photo.png", kotlin.io.encoding.Base64.decode(IMAGE_BLUE)); val tip = commit()
+        val inventory = inventory(); val tree = inventory.worktrees.single()
+        fun reader() = GitDiffReader(diskCache = DiffDiskCache(io.kotgent.host.DiskCacheFiles("$directory/cache")))
+        val cold = reader()
+        val list = cold.files(inventory.repository, tree, DiffSelection(DiffMode.commit, commitOid = tip)).ok()
+        val first = cold.patch(inventory.repository, tree, list.snapshot, list.files.single()).ok()
+        val warm = reader().patch(inventory.repository, tree, list.snapshot, list.files.single()).ok()
+        assertEquals(first.images, warm.images)
+        assertEquals(3, warm.images?.before?.image?.width)
+        assertEquals(4, warm.images?.after?.image?.width)
+    }
+
+    @Test fun imageLimitIsIndependentOfTextAndSnapshotIncludesTheEntireImage() = fixture {
+        // A raster with trailing bytes exercises transport size independently of decoded dimensions.
+        val bytes = kotlin.io.encoding.Base64.decode(IMAGE_RED).copyOf(DIFF_MAX_IMAGE_BYTES)
+        writeBytes("large.png", bytes)
+        val local = files()
+        assertEquals(DIFF_MAX_IMAGE_BYTES, patch(local).ok().images?.after?.image?.byteLength)
+        assertContentEquals(bytes, image(local, DiffImageVersion.after).ok().bytes)
+        bytes[bytes.lastIndex] = 1
+        writeBytes("large.png", bytes)
+        assertEquals(DiffReason.snapshot_changed, image(local, DiffImageVersion.after).error?.reason)
+        git("add", "large.png")
+        val staged = files(DiffSelection(scope = DiffLocalScope.staged))
+        assertContentEquals(bytes, image(staged, DiffImageVersion.after).ok().bytes)
+        val tip = commit()
+        val committed = files(DiffSelection(DiffMode.commit, commitOid = tip))
+        assertContentEquals(bytes, image(committed, DiffImageVersion.after).ok().bytes)
+        writeBytes("large.png", bytes + byteArrayOf(0))
+        val over = files()
+        assertEquals(DiffReason.patch_limit, image(over, DiffImageVersion.after).error?.reason)
+    }
+
     private val env = mapOf("PATH" to "/usr/bin:/bin", "HOME" to "/nonexistent",
         "GIT_CONFIG_NOSYSTEM" to "1", "GIT_AUTHOR_NAME" to "Ada", "GIT_AUTHOR_EMAIL" to "ada@example.test",
         "GIT_COMMITTER_NAME" to "Ada", "GIT_COMMITTER_EMAIL" to "ada@example.test", "GIT_TERMINAL_PROMPT" to "0")
@@ -61,6 +152,10 @@ class GitDiffReaderTest {
         suspend fun files(selection: DiffSelection = DiffSelection()): DiffFiles {
             val inventory = inventory()
             return reader.files(inventory.repository, inventory.worktrees.first { it.current }, selection).ok()
+        }
+        suspend fun image(files: DiffFiles, version: DiffImageVersion, file: DiffFile = files.files.first()): DiffResponse<DiffImageContent> {
+            val inventory = inventory()
+            return reader.image(inventory.repository, inventory.worktrees.first { it.current }, files.snapshot, file, version)
         }
         suspend fun patch(files: DiffFiles, file: DiffFile = files.files.first()): DiffResponse<DiffPatch> {
             val inventory = inventory()

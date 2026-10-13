@@ -23,7 +23,8 @@ working-copy statuses are shown separately. Unborn HEAD uses an empty tree. Conf
 The toolbar exposes **Local changes**, **Log**, and **Branch changes** directly. On desktop, a branch
 sidebar groups local and already-present remote branches, with a filter and a mark for the checked-out
 branch. Selecting a branch opens its Log without checking it out. **Checkout HEAD** reads the selected
-worktree's history, including detached HEAD. On phones, **History branch** provides the same choices.
+worktree's history, including detached HEAD. The **Branches** toolbar button hides or shows the sidebar;
+its visibility survives workspace-tab remounts in page memory. On phones, **History branch** provides the same choices.
 The Log stays open while reading a commit and shows subject, branch labels, author, date and hash.
 Up/Down and Home/End move focus between rows; Enter/Space selects. **Filter loaded commits** searches
 subject, author and hash within the loaded pages; **Load more commits** extends that history.
@@ -48,7 +49,15 @@ Tree groups paths into expandable folders (click or Left/Right); Up/Down and Hom
 and Enter/Space opens a file. Folders do not change the selected patch. Search matches both rename
 paths and expands matching ancestors; next-unviewed reveals its file even inside a collapsed folder.
 List/Tree and folder expansion survive workspace-tab remounts in page memory; changing worktree
-resets folder expansion. The list retains separate entries that share a Git path.
+resets folder expansion. The list retains separate entries that share a Git path. Tree folder counts and
+file line counts stay at the visible right edge during horizontal scrolling.
+
+PNG, JPEG, GIF and WebP paths show **Before / After** images with dimensions and byte sizes. **Overlay**
+compares both versions at the same scale with adjustable After opacity; it is available when both sides
+can be displayed. Phones stack the side-by-side view vertically. Added and deleted images show the
+missing side explicitly. Unsupported or damaged images and preview limits are reported per side.
+Image bytes follow the selected comparison: HEAD/index/worktree for the local scopes, pinned objects
+for commit and branch comparisons. No filters, external viewers, or network image URLs are used.
 Loading uses the refresh icon and a permanent footer without moving the file list or patch. The
 footer keeps stale/error status visible; **Details** expands full errors. File-list and patch snapshot
 identities open from the footer without reducing the reading area. Unified/Split, wrap, path filtering, Viewed,
@@ -76,6 +85,7 @@ and Origin failures retain the existing server policy. Responses use `Cache-Cont
 | `commits` | `worktreeId`, optional `baseRef`, optional `cursor` | `DiffCommits` |
 | `files` | `worktreeId`, `mode` (default `local`), mode fields below | `DiffFiles` |
 | `patch` | `worktreeId`, `snapshot`, `fileId` | `DiffPatch` |
+| `image` | `worktreeId`, `snapshot`, `fileId`, `version` (`before` or `after`) | Raw image bytes |
 
 Files mode fields: local accepts `scope=all|staged|unstaged` (default all); commit requires full
 `commitOid` and accepts one-based `parent`; branch requires full `baseRef` such as `refs/heads/main`.
@@ -100,7 +110,7 @@ the same ordering flags for each page. Removed pinned objects yield unavailable,
 new HEAD. `nextCursor=null` ends history. Unborn history has empty commits and null cursor/nextCursor;
 it does not fabricate a commit.
 
-Every response is `{ "data": <model>, "error": null }` or
+Except for successful binary `image` responses, every response is `{ "data": <model>, "error": null }` or
 `{ "data": null, "error": { "code": "stale", "reason": "snapshot_changed", "message": "Refresh" } }`.
 Enum strings are lowercase. Null/default fields are emitted with the existing transport JSON settings.
 Times (`readAt`, `authoredAt`) are epoch milliseconds. Clients branch on code/reason, not message.
@@ -155,15 +165,22 @@ when unavailable, not guessed as zero. Mode-only text changes have no hunks. Lin
 absent sides are null. Hunk starts may be zero for empty ranges. Text excludes LF, preserves CR, and
 `noNewline` marks a final line without LF. Render all text as escaped text, never HTML.
 
-Binary, conflict, symlink and submodule entries have explicit kinds; first version shows metadata, not
-ordinary text hunks or recursive content. Never follow a symlink or recurse into submodules. Unsupported
+Binary, conflict, symlink and submodule entries have explicit kinds. Supported raster image paths include
+an optional `images` payload in the patch: nullable `before`/`after` sides mean absent files; an existing
+side contains either an `image` (media type, byte length, width and height) or a `problem`.
+Raster bytes are fetched separately from the authenticated `/image` endpoint using the snapshot, file ID
+and `before`/`after` version. Responses use the detected image content type, `nosniff` and `no-store`;
+patch JSON and disk metadata never contain base64 or image bytes. The browser cancels pending reads
+and revokes Blob URLs on file changes or unmount. Each image is limited to 20 MiB; its raster header must fit 20 million pixels and 16,384 pixels
+per dimension. The browser reports decoding errors separately. Other binary files, conflicts, symlinks
+and submodules show metadata, not ordinary text hunks or recursive content. Never follow a symlink or recurse into submodules. Unsupported
 encoding/path and unreadable content have `unavailable`/`limited` kind with a problem. A whole-read error
 must never masquerade as a clean list. A partial file list or patch sets `limited` with its reason, so
 the client cannot present it as complete; partial patches contain only complete parsed hunks.
 
-Budgets: 10 seconds per process, 8 MiB stdout and 256 KiB stderr; 5,000 file entries; 100 commits/page;
+Budgets: 10 seconds per process, 8 MiB stdout (20 MiB for image blobs) and 256 KiB stderr; 5,000 file entries; 100 commits/page;
 2 MiB or 20,000 lines per patch. The service admits 4 active reads and 16 queued reads, with a 30-second
-deadline including queue time. Local content observation reads at most 2 MiB per file, sequentially,
+deadline including queue time. Local content observation reads at most 2 MiB per text file or 20 MiB per image path, sequentially,
 retaining only content fingerprints between entries. There is no aggregate local-content byte cap:
 unrelated text or binary files do not block the file list or another file's patch. An oversized file
 is listed with its own explicit limit. File-count and request-deadline limits still apply, with
