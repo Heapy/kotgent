@@ -7,7 +7,7 @@ import type { DiffPort, DiffMode, DiffLocalScope, DiffSelection, DiffWorktrees, 
 export interface DiffRead<T> { data: T | null; state: "idle" | "loading" | "ready" | "failed"; loading: boolean; error: string | null; problem: DiffProblem | null; stale: boolean }
 const empty = <T>(): DiffRead<T> => ({ data: null, state: "idle", loading: false, error: null, problem: null, stale: false });
 export interface DiffState {
-  worktree: string | null; mode: DiffMode; scope: DiffLocalScope; baseRef: string; commitOid: string; parent: number; commit: DiffCommit | null;
+  worktree: string | null; mode: DiffMode; scope: DiffLocalScope; baseRef: string; historyRef: string; commitOid: string; parent: number; commit: DiffCommit | null;
   inventory: DiffRead<DiffWorktrees>; refs: DiffRead<DiffRefs>; history: DiffRead<DiffCommits>;
   files: DiffRead<DiffFiles>; patch: DiffRead<DiffPatch>;
   selected: string | null; query: string; hideViewed: boolean; viewed: ReadonlySet<string>;
@@ -15,7 +15,7 @@ export interface DiffState {
   page: "files" | "patch"; layout: "unified" | "split"; wrap: boolean; scrollTop: number; filesScrollTop: number;
 }
 function initial(): DiffState {
-  return { worktree: null, mode: "local", scope: "all", baseRef: "", commitOid: "", parent: 1, commit: null,
+  return { worktree: null, mode: "local", scope: "all", baseRef: "", historyRef: "", commitOid: "", parent: 1, commit: null,
     inventory: empty(), refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null,
     query: "", hideViewed: false, fileView: "list", collapsedFolders: new Set(), viewed: new Set(), page: "files", layout: "unified", wrap: false, scrollTop: 0, filesScrollTop: 0 };
 }
@@ -112,13 +112,20 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
   async function loadHistory(session: string, e: Entry, more = false) {
     const s = e.state.value;
     if (!s.worktree || s.mode === "local" || (s.mode === "branch" && !s.baseRef) || s.history.loading) return;
-    const prior = more ? s.history.data : null, cursor = prior?.nextCursor ?? null;
+    const prior = more ? s.history.data : null;
+    const branch = s.mode === "commit" && s.historyRef ? s.refs.data?.refs.find(r => r.name === s.historyRef) : null;
+    // The existing cursor contract accepts an exact repository commit at offset zero.
+    // Pin the selected branch without checking it out or resolving it again between pages.
+    const cursor = more ? prior?.nextCursor ?? null : branch ? { headOid: branch.oid, baseOid: null, offset: 0 } : null;
     if (more && (s.inventory.loading || s.refs.loading || !cursor || prior!.commits.length >= MAX_DIFF_COMMITS)) return;
     const generation = e.generation;
     e.historyIntent = more ? "more" : "first";
-    await read(e, "history", a => port.commits(session, s.worktree!, s.mode === "branch" ? s.baseRef : null, cursor, a), data => {
+    await read(e, "history", a => {
+      if (s.mode === "commit" && s.historyRef && !branch && !cursor) throw new DiffReadError({ code: "unavailable", reason: "missing_ref", message: "Selected branch is unavailable. Choose another branch or refresh." });
+      return port.commits(session, s.worktree!, s.mode === "branch" ? s.baseRef : null, cursor, a);
+    }, data => {
       assertSource(e, data);
-      if (s.mode !== e.state.value.mode || (s.mode === "branch" && s.baseRef !== e.state.value.baseRef)) throw new Error("History selection changed");
+      if (s.mode !== e.state.value.mode || s.historyRef !== e.state.value.historyRef || (s.mode === "branch" && s.baseRef !== e.state.value.baseRef)) throw new Error("History selection changed");
       if (cursor && (data.cursor?.headOid !== cursor.headOid || data.cursor?.baseOid !== cursor.baseOid || data.cursor?.offset !== cursor.offset)) throw new Error("History page changed its pinned comparison");
       if (data.nextCursor && (!data.cursor || data.nextCursor.headOid !== data.cursor.headOid || data.nextCursor.baseOid !== data.cursor.baseOid || data.nextCursor.offset <= data.cursor.offset)) throw new Error("History continuation changed its pinned comparison");
       const commits = prior ? [...prior.commits, ...data.commits.filter(c => !prior.commits.some(p => p.oid === c.oid))] : data.commits;
@@ -155,7 +162,9 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
     });
     if (!ok) return;
     const current = e.state.value, history = current.history.data;
-    const head = current.inventory.data?.worktrees.find(w => w.id === current.worktree)?.headOid;
+    const head = current.mode === "commit" && current.historyRef
+      ? current.refs.data?.refs.find(r => r.name === current.historyRef)?.oid
+      : current.inventory.data?.worktrees.find(w => w.id === current.worktree)?.headOid;
     const base = current.mode === "branch" ? current.refs.data?.refs.find(r => r.name === current.baseRef)?.oid : null;
     const sameHistory = !!history && (history.cursor?.headOid ?? null) === head && (history.cursor?.baseOid ?? null) === base;
     const historyRead = !preserve || resumeHistory === "first" || !sameHistory || current.history.error
@@ -171,20 +180,21 @@ export function createDiffStore(port: DiffPort = diffApi, capacity = MAX_DIFF_SE
       const s = e.state.value;
       const repositoryChanged = s.inventory.data && s.inventory.data.repository.commonDir !== data.repository.commonDir;
       const worktree = !repositoryChanged && data.worktrees.some(w => w.id === s.worktree) ? s.worktree : data.currentWorktreeId;
-      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, collapsedFolders: new Set(), baseRef: "", commitOid: "", commit: null, viewed: new Set(), scrollTop: 0, page: "files" });
+      if (repositoryChanged || worktree !== s.worktree) update(e, { refs: empty(), history: empty(), files: empty(), patch: empty(), selected: null, collapsedFolders: new Set(), baseRef: "", historyRef: "", commitOid: "", commit: null, viewed: new Set(), scrollTop: 0, page: "files" });
       update(e, { inventory: ready(data), worktree });
     });
     if (ok) await loadSource(session, e, preserve, resumeHistory);
     if (e.generation === generation) e.refreshIntent = null;
   }
-  function choose(session: string, change: Partial<Pick<DiffState, "worktree" | "mode" | "scope" | "baseRef" | "commitOid" | "parent">>) {
+  function choose(session: string, change: Partial<Pick<DiffState, "worktree" | "mode" | "scope" | "baseRef" | "historyRef" | "commitOid" | "parent">>) {
     const e = entry(session), before = e.state.value;
     if (change.commitOid && !before.history.data?.commits.some(c => c.oid === change.commitOid)) return;
+    if (change.mode === "commit" && before.mode === "branch" && change.commitOid) change = { ...change, historyRef: "" };
     cancel(e); e.historyIntent = null; e.refreshIntent = null;
-    const historyChanged = (change.worktree !== undefined && change.worktree !== before.worktree) || (change.mode !== undefined && change.mode !== before.mode) || (change.baseRef !== undefined && change.baseRef !== before.baseRef);
+    const historyChanged = (change.worktree !== undefined && change.worktree !== before.worktree) || (change.mode !== undefined && change.mode !== before.mode) || (change.baseRef !== undefined && change.baseRef !== before.baseRef) || (change.historyRef !== undefined && change.historyRef !== before.historyRef);
     update(e, { ...change, files: empty(), patch: empty(), selected: null, viewed: new Set(), page: "files", scrollTop: 0, filesScrollTop: 0,
       ...(historyChanged ? { history: empty(), commitOid: "", commit: null, parent: 1 } : {}),
-      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "", collapsedFolders: new Set() } : {}),
+      ...(change.worktree !== undefined ? { refs: empty(), baseRef: "", historyRef: "", collapsedFolders: new Set() } : {}),
       // Capture from the loaded history before clearing it during an atomic branch → commit transition.
       ...(change.commitOid ? { commitOid: change.commitOid, commit: before.history.data!.commits.find(c => c.oid === change.commitOid)!, parent: change.parent ?? 1 } : {}) });
     const s = e.state.value;

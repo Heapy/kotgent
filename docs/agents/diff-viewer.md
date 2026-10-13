@@ -20,7 +20,15 @@ untracked inventory. For example, `git rm --cached file` leaving a HEAD-tracked 
 both a deletion and an untracked entry for that path in All; paths are not coalesced. Index and
 working-copy statuses are shown separately. Unborn HEAD uses an empty tree. Conflicts are explicit and are never represented as resolved ordinary patches.
 
-Commits pages through the selected HEAD's history, independent of base selection. A commit compares
+The toolbar exposes **Local changes**, **Log**, and **Branch changes** directly. On desktop, a branch
+sidebar groups local and already-present remote branches, with a filter and a mark for the checked-out
+branch. Selecting a branch opens its Log without checking it out. **Checkout HEAD** reads the selected
+worktree's history, including detached HEAD. On phones, **History branch** provides the same choices.
+The Log stays open while reading a commit and shows subject, branch labels, author, date and hash.
+Up/Down and Home/End move focus between rows; Enter/Space selects. **Filter loaded commits** searches
+subject, author and hash within the loaded pages; **Load more commits** extends that history.
+
+Log pages through the selected branch tip's history (Checkout HEAD by default), independent of base selection. A commit compares
 its first parent to itself; a root compares the empty tree to itself. A merge exposes all parents and
 defaults to parent 1, with an explicit parent label. Selecting a commit does not change the checkout.
 Shallow boundaries must not be misidentified as root commits.
@@ -82,7 +90,10 @@ support SHA-1 and SHA-256. The UI selects only commits in its loaded history; ar
 graph views remain outside this version. No pinned-history context is required in the files request.
 
 `cursor` is URL-encoded JSON `{ "headOid": "…", "baseOid": null, "offset": 100 }`, not a signed
-capability. First page pins current HEAD and optional baseRef OIDs. Later pages use those same OIDs,
+capability. Without a cursor, the first page pins current HEAD and optional baseRef OIDs. A selected
+branch starts with an offset-zero cursor using its full OID from `refs`; this uses the same object
+validation as pagination. Refresh rereads its tip; a removed branch reports unavailable rather than
+silently falling back to HEAD. Later pages use those same OIDs,
 with baseRef omitted; reject baseRef plus cursor. Validate OIDs, nonnegative offset, repository object
 membership and bounded paging work. Each page contains at most 100 commits, in Git topo order with
 the same ordering flags for each page. Removed pinned objects yield unavailable, never restart at a

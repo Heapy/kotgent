@@ -1,7 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { comparisonKey, diffApi, DiffReadError, filterFiles, nextUnviewedFile, splitLines } from "../../webui/src/lib/diff.ts";
-import type { DiffFile, DiffLine, DiffComparison } from "../../webui/src/lib/diff.ts";
+import { comparisonKey, diffApi, DiffReadError, filterFiles, filterBranches, filterCommits, nextUnviewedFile, splitLines } from "../../webui/src/lib/diff.ts";
+import type { DiffFile, DiffLine, DiffComparison, DiffCommit, DiffRefs } from "../../webui/src/lib/diff.ts";
+import { underTurkishFold } from "./turkish-fold.ts";
+
+test("branch and loaded-log filtering folds names, subjects, authors and hashes independently of locale", () => underTurkishFold(() => {
+  const refs: DiffRefs["refs"] = [{name: "refs/heads/IDEA", oid: "a", kind: "local"}, {name: "refs/remotes/ORIGIN/IDEA", oid: "b", kind: "remote"}];
+  assert.deepEqual(filterBranches(refs, "idea"), refs);
+  assert.deepEqual(filterBranches(refs, "origin"), [refs[1]]);
+  assert.deepEqual(filterBranches(refs, "refs/heads"), []);
+  const commits: DiffCommit[] = [{oid: "AbCd", subject: "INITIAL version", author: "IRIS", authoredAt: 0, parents: []}];
+  for (const query of ["initial", "iris", "abcd", ""]) assert.deepEqual(filterCommits(commits, query), commits);
+  assert.deepEqual(filterCommits(commits, "missing"), []);
+}));
 
 const file = (fileId: string, oldPath: string | null, newPath: string | null): DiffFile => ({ fileId, oldPath, newPath, change: "renamed", kind: "text", oldMode: "100644", newMode: "100644", additions: null, deletions: null, indexStatus: null, worktreeStatus: null, problem: null });
 test("file filtering includes both rename paths, unusual names and stable case folding", () => {

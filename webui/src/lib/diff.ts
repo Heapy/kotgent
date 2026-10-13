@@ -78,6 +78,15 @@ export function comparisonKey(session: string, c: DiffComparison): string {
   return JSON.stringify([session, c.repository.commonDir, c.worktreeId, c.mode, c.scope, c.headOid, c.baseRef, c.baseOid, c.mergeBaseOid, c.commitOid, c.parent, c.leftOid, c.rightOid]);
 }
 export function filePath(f: DiffFile): string { return f.newPath ?? f.oldPath ?? "(unknown path)"; }
+export function branchName(ref: string): string { return ref.replace(/^refs\/(heads|remotes)\//, ""); }
+export function filterBranches(refs: DiffRefs["refs"], query: string): DiffRefs["refs"] {
+  const needle = query.toLowerCase();
+  return refs.filter(r => branchName(r.name).toLowerCase().includes(needle));
+}
+export function filterCommits(commits: DiffCommit[], query: string): DiffCommit[] {
+  const needle = query.toLowerCase();
+  return commits.filter(c => [c.subject, c.author, c.oid].some(value => value.toLowerCase().includes(needle)));
+}
 export function filterFiles(files: DiffFile[], query: string, viewed: ReadonlySet<string>, hideViewed: boolean): DiffFile[] {
   const needle = query.toLowerCase();
   return files.filter(f => (!hideViewed || !viewed.has(f.fileId)) && [f.oldPath, f.newPath].some(p => p?.toLowerCase().includes(needle)));

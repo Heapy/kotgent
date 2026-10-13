@@ -747,7 +747,9 @@ reverse comparison), while missing commit parents and uncertain ancestry remain 
 inventory exceeding 10 MiB verifies that unrelated binary/text files do not block the list or selected
 patches, per-file limits stay explicit, and same-size binary edits with restored mtime invalidate snapshots.
 TypeScript Diff tests cover selection,
-Refresh, cancellation and history paging races. `DiffTest` drives the assembled Vite UI and real Git reader
+Refresh, cancellation and history paging races, including non-HEAD branch cursors, moved/deleted
+branches and late replies after switching logs. Branch and commit filtering use the Turkish-fold
+probe to enforce locale-independent matching. `DiffTest` drives the assembled Vite UI and real Git reader
 through the `diff` harness scenario. The scenario creates one private temporary directory containing all
 repositories/worktrees, uses fake session stores and a deterministic PTY, and removes only that directory
 on normal shutdown or startup failure. It never starts the product daemon or a provider. `diff-edit`,
@@ -756,7 +758,8 @@ read-only; only those fixture operations write Git state.
 
 Browser assertions cover All/Staged/Unstaged (including staged reversal and the separate untracked
 inventory), a worktree without a session, clean locked/detached and unavailable worktrees, pinned history
-paging, root/merge-parent selection, branch/base selection, file filtering, Viewed, Refresh, selected patch
+paging, root/merge-parent selection, branch/base selection, visible local/remote branch navigation,
+non-HEAD logs, commit filtering and keyboard activation, file filtering, Viewed, Refresh, selected patch
 and scroll preservation, desktop Split, phone Files/Patch/Back, task entry, Diff tab reuse and unchanged
 terminal socket/xterm identity during workspace/source changes. Task-board navigation may reconnect
 the terminal on return; the phone test establishes its attachment baseline after task entry.
