@@ -95,13 +95,12 @@ internal fun Route.fileUploadRoutes(
         val body = call.receiveChannel()
         val id = call.parameters["id"]?.let { raw -> runCatching { SessionId(raw) }.getOrNull() }
         if (id == null) {
-            call.rejectUnconsumedUploadAndClose(body, "malformed session id", HttpStatusCode.BadRequest)
+            call.rejectUnconsumedUploadAndClose("malformed session id", HttpStatusCode.BadRequest)
             return@post
         }
         val session = store.getSession(id)
         if (session == null) {
             call.rejectUnconsumedUploadAndClose(
-                body,
                 "no such session ${id.value}",
                 HttpStatusCode.NotFound,
             )
@@ -111,7 +110,6 @@ internal fun Route.fileUploadRoutes(
         val nameProblem = uploadFileNameProblem(fileName)
         if (nameProblem != null) {
             call.rejectUnconsumedUploadAndClose(
-                body,
                 "cannot upload file: $nameProblem",
                 HttpStatusCode.BadRequest,
             )
@@ -134,7 +132,6 @@ internal fun Route.fileUploadRoutes(
             )
 
             FileUploadResult.TooLarge -> call.rejectUnconsumedUploadAndClose(
-                body,
                 "cannot upload '$fileName': files are limited to ${MAX_UPLOAD_FILE_BYTES / (1024L * 1024L)} MiB",
                 HttpStatusCode.PayloadTooLarge,
             )
@@ -145,13 +142,11 @@ internal fun Route.fileUploadRoutes(
             )
 
             FileUploadResult.TimedOut -> call.rejectUnconsumedUploadAndClose(
-                body,
                 "cannot upload '$fileName': request body timed out",
                 HttpStatusCode.RequestTimeout,
             )
 
             is FileUploadResult.Failed -> call.rejectUnconsumedUploadAndClose(
-                body,
                 "cannot upload '$fileName' to ${session.cwd}: ${result.reason}",
                 HttpStatusCode.Conflict,
             )
@@ -268,9 +263,8 @@ private fun childPath(directory: String, name: String): String =
 private fun errnoText(code: Int): String = strerror(code)?.toKString() ?: "errno=$code"
 
 private suspend fun ApplicationCall.rejectUnconsumedUploadAndClose(
-    body: ByteReadChannel,
     text: String,
     status: HttpStatusCode,
-) = respondToUnconsumedBodyAndClose(text, status, body, "closing unconsumed file upload request body")
+) = respondToUnconsumedBodyAndClose(text, status, "closing unconsumed file upload request body")
 
 private const val UPLOAD_BUFFER_BYTES: Int = 64 * 1024

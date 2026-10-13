@@ -9,7 +9,6 @@ import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.RoutingContext
-import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -21,14 +20,14 @@ import kotlin.time.Duration.Companion.milliseconds
 internal suspend fun ApplicationCall.respondToUnconsumedBodyAndClose(
     text: String,
     status: HttpStatusCode,
-    requestBody: ByteReadChannel? = null,
     reason: String = "closing unconsumed request body",
 ) {
     response.header(HttpHeaders.Connection, "close")
     try {
         respondText(text, status = status)
     } finally {
-        requestBody?.cancel(null)
+        // CIO may still be parsing an upload alongside its response writer. Cancelling the body
+        // here can reset the socket before the rejection is delivered; let connection cleanup own it.
         closePinnedCioConnection(reason)
     }
 }
@@ -64,6 +63,6 @@ internal suspend fun RoutingContext.receiveBoundedText(maxBytes: Int): String? {
         AuthExchangeBodyRead.TooLarge -> "request body too large" to HttpStatusCode.PayloadTooLarge
         AuthExchangeBodyRead.TimedOut -> "request body timed out" to HttpStatusCode.RequestTimeout
     }
-    call.respondToUnconsumedBodyAndClose(text, status, channel)
+    call.respondToUnconsumedBodyAndClose(text, status)
     return null
 }
