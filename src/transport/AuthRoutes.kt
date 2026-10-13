@@ -189,7 +189,6 @@ fun Route.authRoutes(
                     call.respondToUnconsumedExchangeAndClose(
                         "incomplete request body",
                         HttpStatusCode.BadRequest,
-                        requestBody,
                     )
                     return@post
                 }
@@ -197,7 +196,6 @@ fun Route.authRoutes(
                     call.respondToUnconsumedExchangeAndClose(
                         "request body too large",
                         HttpStatusCode.PayloadTooLarge,
-                        requestBody,
                     )
                     return@post
                 }
@@ -205,7 +203,6 @@ fun Route.authRoutes(
                     call.respondToUnconsumedExchangeAndClose(
                         "request body timed out",
                         HttpStatusCode.RequestTimeout,
-                        requestBody,
                     )
                     return@post
                 }
@@ -238,9 +235,8 @@ fun Route.authRoutes(
 private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
     text: String,
     status: HttpStatusCode,
-    requestBody: ByteReadChannel? = null,
 ) = respondToUnconsumedBodyAndClose(
-    text, status, requestBody, "closing unconsumed $AUTH_EXCHANGE_PATH request body",
+    text, status, "closing unconsumed $AUTH_EXCHANGE_PATH request body",
 )
 
 fun authorizeTicketExchange(facts: RequestFacts, publicUrl: String?): AuthDecision {

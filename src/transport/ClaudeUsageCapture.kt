@@ -11,7 +11,6 @@ import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
-import io.ktor.utils.io.ByteReadChannel
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -75,15 +74,15 @@ fun Route.claudeUsageRoutes(token: () -> String, store: UsageStore): Route = loo
         val text = when (body) {
             is AuthExchangeBodyRead.Received -> body.text
             AuthExchangeBodyRead.Incomplete -> {
-                call.rejectUsageCapture("incomplete request body", HttpStatusCode.BadRequest, channel)
+                call.rejectUsageCapture("incomplete request body", HttpStatusCode.BadRequest)
                 return@post
             }
             AuthExchangeBodyRead.TooLarge -> {
-                call.rejectUsageCapture("request body too large", HttpStatusCode.PayloadTooLarge, channel)
+                call.rejectUsageCapture("request body too large", HttpStatusCode.PayloadTooLarge)
                 return@post
             }
             AuthExchangeBodyRead.TimedOut -> {
-                call.rejectUsageCapture("request body timed out", HttpStatusCode.RequestTimeout, channel)
+                call.rejectUsageCapture("request body timed out", HttpStatusCode.RequestTimeout)
                 return@post
             }
         }
@@ -100,8 +99,7 @@ fun Route.claudeUsageRoutes(token: () -> String, store: UsageStore): Route = loo
 private suspend fun ApplicationCall.rejectUsageCapture(
     text: String,
     status: HttpStatusCode,
-    body: ByteReadChannel? = null,
-) = respondToUnconsumedBodyAndClose(text, status, body, "closing rejected Claude usage capture")
+) = respondToUnconsumedBodyAndClose(text, status, "closing rejected Claude usage capture")
 
 private fun JsonObject.stringValue(key: String): String? =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull

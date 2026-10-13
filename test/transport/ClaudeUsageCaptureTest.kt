@@ -165,16 +165,22 @@ class ClaudeUsageCaptureTest {
             setBody(bytes)
         }
         assertEquals(HttpStatusCode.PayloadTooLarge, declared.status)
-        val streamed = context.client.post(context.url) {
-            header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
-            setBody(object : OutgoingContent.WriteChannelContent() {
-                override val contentType: ContentType = ContentType.Application.Json
-                override suspend fun writeTo(channel: ByteWriteChannel) {
-                    channel.writeFully(bytes)
-                }
-            })
+        assertEquals("request body too large", declared.bodyAsText())
+        // A much larger body keeps the upload active while CIO sends the rejection.
+        // Cancelling the unread body at that point can reset the socket before the response arrives.
+        for (size in listOf(bytes.size, 16 * 1024 * 1024)) {
+            val streamed = context.client.post(context.url) {
+                header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
+                setBody(object : OutgoingContent.WriteChannelContent() {
+                    override val contentType: ContentType = ContentType.Application.Json
+                    override suspend fun writeTo(channel: ByteWriteChannel) {
+                        channel.writeFully(ByteArray(size) { 'x'.code.toByte() })
+                    }
+                })
+            }
+            assertEquals(HttpStatusCode.PayloadTooLarge, streamed.status, "chunked upload of $size bytes")
+            assertEquals("request body too large", streamed.bodyAsText())
         }
-        assertEquals(HttpStatusCode.PayloadTooLarge, streamed.status)
         assertTrue(context.store.list().isEmpty())
     }
 
