@@ -28,6 +28,10 @@ import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -289,51 +293,56 @@ class AuthRoutesTest {
     }
 
     @Test
-    fun exchangeBodyIntakeIsByteBoundedAndTimeBounded() = runBlocking {
-        withTimeout(20.seconds) {
-            val exact = "x".repeat(32)
-            assertEquals(
-                AuthExchangeBodyRead.Received(exact),
-                readAuthExchangeBody(ByteReadChannel(exact), maxBytes = exact.length, timeoutMillis = 1_000),
-                "an exactly-full body is not mistaken for overflow",
-            )
-            assertEquals(
-                AuthExchangeBodyRead.Incomplete,
-                readAuthExchangeBody(
-                    ByteReadChannel(exact),
-                    expectedBytes = exact.length.toLong() + 1,
-                    maxBytes = exact.length + 1,
-                    timeoutMillis = 1_000,
-                ),
-                "EOF before the declared Content-Length is not accepted as a complete body",
-            )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun exchangeBodyIntakeIsByteBoundedAndTimeBounded() = runTest(timeout = 20.seconds) {
+        val exact = "x".repeat(32)
+        assertEquals(
+            AuthExchangeBodyRead.Received(exact),
+            readAuthExchangeBody(ByteReadChannel(exact), maxBytes = exact.length, timeoutMillis = 1_000),
+            "an exactly-full body is not mistaken for overflow",
+        )
+        assertEquals(
+            AuthExchangeBodyRead.Incomplete,
+            readAuthExchangeBody(
+                ByteReadChannel(exact),
+                expectedBytes = exact.length.toLong() + 1,
+                maxBytes = exact.length + 1,
+                timeoutMillis = 1_000,
+            ),
+            "EOF before the declared Content-Length is not accepted as a complete body",
+        )
+        assertEquals(
+            AuthExchangeBodyRead.TooLarge,
+            readAuthExchangeBody(ByteReadChannel("$exact!"), maxBytes = exact.length, timeoutMillis = 1_000),
+            "only max+1 bytes are needed to reject an oversized streaming body",
+        )
+        val openOverflow = ByteChannel(autoFlush = true)
+        try {
+            openOverflow.writeFully("$exact!".encodeToByteArray())
             assertEquals(
                 AuthExchangeBodyRead.TooLarge,
-                readAuthExchangeBody(ByteReadChannel("$exact!"), maxBytes = exact.length, timeoutMillis = 1_000),
-                "only max+1 bytes are needed to reject an oversized streaming body",
+                readAuthExchangeBody(openOverflow, maxBytes = exact.length, timeoutMillis = 1_000),
+                "overflow is rejected without waiting for a chunked peer to close the request body",
             )
-            val openOverflow = ByteChannel(autoFlush = true)
-            try {
-                openOverflow.writeFully("$exact!".encodeToByteArray())
-                assertEquals(
-                    AuthExchangeBodyRead.TooLarge,
-                    readAuthExchangeBody(openOverflow, maxBytes = exact.length, timeoutMillis = 1_000),
-                    "overflow is rejected without waiting for a chunked peer to close the request body",
-                )
-            } finally {
-                openOverflow.cancel(null)
-            }
+        } finally {
+            openOverflow.cancel(null)
+        }
 
-            val stalled = ByteChannel()
-            try {
-                assertEquals(
-                    AuthExchangeBodyRead.TimedOut,
-                    readAuthExchangeBody(stalled, maxBytes = exact.length, timeoutMillis = 50),
-                    "a peer that never finishes its body cannot hold an admitted connection forever",
-                )
-            } finally {
-                stalled.cancel(null)
-            }
+        val stalled = ByteChannel()
+        try {
+            val reading = async { readAuthExchangeBody(stalled, maxBytes = exact.length, timeoutMillis = 50) }
+            runCurrent()
+            advanceTimeBy(49); runCurrent()
+            assertFalse(reading.isCompleted)
+            advanceTimeBy(1); runCurrent()
+            assertTrue(reading.isCompleted, "the stalled read ends at its deadline")
+            assertEquals(
+                AuthExchangeBodyRead.TimedOut,
+                reading.await(),
+                "a peer that never finishes its body cannot hold an admitted connection forever",
+            )
+        } finally {
+            stalled.cancel(null)
         }
     }
 

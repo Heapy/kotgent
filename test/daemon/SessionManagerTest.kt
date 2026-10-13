@@ -34,6 +34,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -1175,92 +1178,86 @@ class SessionManagerTest {
     }
 
     @Test
-    fun startFallsBackToProviderDiscoveryWhenNothingIsPreallocated() = runBlocking {
-        withTimeout(20.seconds) {
-            val store = SqliteEventStore.inMemory(now = { 1L })
-            val discovered = ProviderSessionId("cccccccc-cccc-7ccc-8ccc-cccccccccccc")
-            val seen = mutableListOf<SessionMeta>()
-            val mgr = SessionManager(
-                FakeTmux(), store, PaneRegistry(),
-                StubAgentFactory(cat, preallocated = null),
-                ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1),
-                importProbe, importLocator, importKinds,
-                discoverProviderId = { meta -> discovered.also { seen += meta } },
-                newSessionId = { SessionId("cx0001") },
-                now = { 1L },
-            )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun startFallsBackToProviderDiscoveryWhenNothingIsPreallocated() = runTest(timeout = 20.seconds) {
+        val store = SqliteEventStore.inMemory(now = { 1L })
+        val discovered = ProviderSessionId("cccccccc-cccc-7ccc-8ccc-cccccccccccc")
+        val seen = mutableListOf<SessionMeta>()
+        val mgr = SessionManager(
+            FakeTmux(), store, PaneRegistry(),
+            StubAgentFactory(cat, preallocated = null),
+            ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1),
+            importProbe, importLocator, importKinds,
+            discoverProviderId = { meta -> discovered.also { seen += meta } },
+            newSessionId = { SessionId("cx0001") },
+            now = { 1L },
+        )
 
-            val _ = mgr.start("codex", "/work/repo")
+        val _ = mgr.start("codex", "/work/repo")
 
-            withTimeout(5.seconds) {
-                while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5.milliseconds)
-            }
-            val events = store.read(SessionId("cx0001"), Seq(0))
-            assertEquals(1, events.size, "exactly one event: the discovered SessionBound")
-            assertEquals(AgentEvent.SessionBound(discovered), events[0].event)
-            assertEquals(discovered, store.getSession(SessionId("cx0001"))!!.providerSessionId, "resume is unblocked")
+        runCurrent()
+        val events = store.read(SessionId("cx0001"), Seq(0))
+        assertEquals(1, events.size, "exactly one event: the discovered SessionBound")
+        assertEquals(AgentEvent.SessionBound(discovered), events[0].event)
+        assertEquals(discovered, store.getSession(SessionId("cx0001"))!!.providerSessionId, "resume is unblocked")
 
-            assertEquals("codex", seen.first().agent)
-            assertEquals("/work/repo", seen.first().cwd)
-        }
+        assertEquals("codex", seen.first().agent)
+        assertEquals("/work/repo", seen.first().cwd)
     }
 
     @Test
-    fun aHookDeliveredIdWinsOverProviderDiscovery() = runBlocking {
-        withTimeout(20.seconds) {
-            val store = SqliteEventStore.inMemory(now = { 1L })
-            val fromHook = ProviderSessionId("dddddddd-dddd-7ddd-8ddd-dddddddddddd")
-            val fromDisk = ProviderSessionId("eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee")
-            val mgr = SessionManager(
-                FakeTmux(), store, PaneRegistry(),
-                StubAgentFactory(cat, preallocated = null),
-                ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 20),
-                importProbe, importLocator, importKinds,
-                discoverProviderId = { fromDisk },
-                newSessionId = { SessionId("cx0002") },
-                now = { 1L },
-            )
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun aHookDeliveredIdWinsOverProviderDiscovery() = runTest(timeout = 20.seconds) {
+        val store = SqliteEventStore.inMemory(now = { 1L })
+        val fromHook = ProviderSessionId("dddddddd-dddd-7ddd-8ddd-dddddddddddd")
+        val fromDisk = ProviderSessionId("eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee")
+        val mgr = SessionManager(
+            FakeTmux(), store, PaneRegistry(),
+            StubAgentFactory(cat, preallocated = null),
+            ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 20),
+            importProbe, importLocator, importKinds,
+            discoverProviderId = { fromDisk },
+            newSessionId = { SessionId("cx0002") },
+            now = { 1L },
+        )
 
-            val _ = mgr.start("codex", "/work/repo")
-            val _ = store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
+        val _ = mgr.start("codex", "/work/repo")
+        val _ = store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
 
-            withTimeout(5.seconds) {
-                while (store.projectionOf(SessionId("cx0002")).providerSessionId == null) delay(5.milliseconds)
-            }
-            assertEquals(fromHook, store.projectionOf(SessionId("cx0002")).providerSessionId)
-        }
+        runCurrent()
+        assertEquals(fromHook, store.projectionOf(SessionId("cx0002")).providerSessionId)
     }
 
 
     @Test
-    fun providerIdCaptureRetriesAStallThenBindsOnDiscovery() = runBlocking {
-        withTimeout(20.seconds) {
-            val store = SqliteEventStore.inMemory(now = { 1L })
-            val idCapture = ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1)
-            val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-            var calls = 0
-            val result = idCapture.captureWithFallback(SessionId("late01")) {
-                if (++calls >= 3) provider else null
-            }
-
-            assertEquals(CaptureResult.Bound(provider), result)
-            assertEquals(3, calls, "polled until discovery succeeded")
-            assertEquals(provider, store.projectionOf(SessionId("late01")).providerSessionId, "the discovered id is bound in the log")
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun providerIdCaptureRetriesAStallThenBindsOnDiscovery() = runTest(timeout = 20.seconds) {
+        val store = SqliteEventStore.inMemory(now = { 1L })
+        val idCapture = ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1)
+        val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        var calls = 0
+        val result = idCapture.captureWithFallback(SessionId("late01")) {
+            if (++calls >= 3) provider else null
         }
+
+        assertEquals(CaptureResult.Bound(provider), result)
+        assertEquals(3, calls, "polled until discovery succeeded")
+        assertEquals(2L, testScheduler.currentTime, "discovery waits only between attempts")
+        assertEquals(provider, store.projectionOf(SessionId("late01")).providerSessionId, "the discovered id is bound in the log")
     }
 
     @Test
-    fun providerIdCaptureStaysPendingWhenDiscoveryNeverSucceeds() = runBlocking {
-        withTimeout(20.seconds) {
-            val store = SqliteEventStore.inMemory(now = { 1L })
-            val idCapture = ProviderIdCapture(store, this, maxAttempts = 4, retryDelayMillis = 1)
-            var calls = 0
-            val result = idCapture.captureWithFallback(SessionId("never01")) { calls++; null }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun providerIdCaptureStaysPendingWhenDiscoveryNeverSucceeds() = runTest(timeout = 20.seconds) {
+        val store = SqliteEventStore.inMemory(now = { 1L })
+        val idCapture = ProviderIdCapture(store, this, maxAttempts = 4, retryDelayMillis = 1)
+        var calls = 0
+        val result = idCapture.captureWithFallback(SessionId("never01")) { calls++; null }
 
-            assertEquals(CaptureResult.Pending, result, "a stalled discovery leaves the session id pending")
-            assertEquals(4, calls, "polled exactly maxAttempts times")
-            assertEquals(null, store.projectionOf(SessionId("never01")).providerSessionId, "nothing bound -> id pending")
-        }
+        assertEquals(CaptureResult.Pending, result, "a stalled discovery leaves the session id pending")
+        assertEquals(4, calls, "polled exactly maxAttempts times")
+        assertEquals(3L, testScheduler.currentTime, "exhaustion does not wait after the final attempt")
+        assertEquals(null, store.projectionOf(SessionId("never01")).providerSessionId, "nothing bound -> id pending")
     }
 
     @Test

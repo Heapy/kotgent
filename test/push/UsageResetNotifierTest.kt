@@ -21,8 +21,11 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -31,6 +34,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class UsageResetNotifierTest {
     private val epoch = 1_800_000_000_000L
     private val week = 604_800L
@@ -45,7 +49,7 @@ class UsageResetNotifierTest {
         var beforeInsert: suspend (UsageReset) -> Unit = {}
         var beforeAck: suspend (Long) -> Unit = {}
         var beforeWake: suspend (String) -> Unit = {}
-        var retry: suspend (Long) -> Unit = {}
+        var retry: suspend (Long) -> Unit = { delay(it) }
         var recovery: suspend () -> Unit = { delay(60_000L) }
         var pendingReads = 0
         val insertResults = mutableListOf<Boolean>()
@@ -125,16 +129,14 @@ class UsageResetNotifierTest {
         ).value
     }
 
-    private fun test(block: suspend CoroutineScope.(Fixture) -> Unit) = runBlocking {
-        withTimeout(20.seconds) {
-            val owner = SupervisorJob(coroutineContext[Job])
-            val fixture = Fixture(CoroutineScope(coroutineContext + owner))
-            try {
-                block(fixture)
-            } finally {
-                owner.cancelAndJoin()
-                fixture.driver.close()
-            }
+    private fun test(block: suspend TestScope.(Fixture) -> Unit) = runTest(timeout = 20.seconds) {
+        val owner = SupervisorJob(coroutineContext[Job])
+        val fixture = Fixture(CoroutineScope(coroutineContext + owner))
+        try {
+            block(fixture)
+        } finally {
+            owner.cancelAndJoin()
+            fixture.driver.close()
         }
     }
 
@@ -184,7 +186,18 @@ class UsageResetNotifierTest {
         fixture.beforePending = {
             if (fixture.pendingReads < 3) error("database busy")
         }
-        val running = fixture.start()
+        val starting = async { fixture.start() }
+        runCurrent()
+        assertEquals(1, fixture.pendingReads)
+        advanceTimeBy(249); runCurrent()
+        assertEquals(1, fixture.pendingReads, "no retry before 250 ms")
+        advanceTimeBy(1); runCurrent()
+        assertEquals(2, fixture.pendingReads)
+        advanceTimeBy(999); runCurrent()
+        assertEquals(2, fixture.pendingReads, "the next retry waits another 1,000 ms")
+        advanceTimeBy(1); runCurrent()
+        assertTrue(starting.isCompleted)
+        val running = starting.await()
         assertEquals(3, fixture.pendingReads)
         assertEquals(listOf(250L, 1_000L), fixture.retryDelays)
         assertEquals("usage.reset:$id", fixture.inbox.recent(0).single().id)
@@ -228,30 +241,35 @@ class UsageResetNotifierTest {
 
     @Test
     fun runtimeProjectionRecoversOnItsOwnTimerWithoutAnotherReset() = test { fixture ->
-        val recovering = Channel<Unit>()
-        val retryNow = Channel<Unit>()
-        fixture.recovery = { recovering.send(Unit); retryNow.receive() }
         val running = fixture.start()
         running.activateDelivery()
         var failing = true
         fixture.beforeInsert = { if (failing) error("inbox busy") }
         val reset = fixture.recordReset()
         assertTrue(fixture.errors.receive().contains("within a minute"))
-        recovering.receive()
+        runCurrent()
+        val reads = fixture.pendingReads
         assertTrue(fixture.inbox.recent(0).isEmpty())
-        fixture.clock += 60_000
-        retryNow.send(Unit)
+        fixture.clock += 59_999
+        advanceTimeBy(59_999); runCurrent()
+        assertEquals(reads, fixture.pendingReads, "recovery does not run before one minute")
+        fixture.clock += 1
+        advanceTimeBy(1); runCurrent()
+        assertEquals(reads + 1, fixture.pendingReads, "the timer starts a fresh projection at one minute")
         assertTrue(fixture.errors.receive().contains("within a minute"))
-        recovering.receive()
+        runCurrent()
         failing = false
-        fixture.clock += 60_000
-        retryNow.send(Unit)
+        val beforeRecovery = fixture.pendingReads
+        fixture.clock += 59_999
+        advanceTimeBy(59_999); runCurrent()
+        assertEquals(beforeRecovery, fixture.pendingReads)
+        fixture.clock += 1
+        advanceTimeBy(1); runCurrent()
+        assertEquals(beforeRecovery + 1, fixture.pendingReads)
         assertEquals("usage.reset:$reset", fixture.sent.receive())
         assertTrue(fixture.usage.pendingResetNotifications(0).isEmpty())
         assertEquals(listOf("usage.reset:$reset"), fixture.inbox.recent(0).map { it.id })
         running.close()
-        recovering.close()
-        retryNow.close()
     }
 
     @Test

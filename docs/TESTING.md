@@ -586,8 +586,12 @@ Prefer injected clocks, virtual time, deterministic random sources, temporary di
 resource names, and explicit readiness signals. Use eventual assertions around genuine concurrency; do not
 use arbitrary sleeps as synchronization.
 
-`CodexUsageCaptureTest` uses `kotlinx-coroutines-test` virtual time: the blocked scan must start before
-advancing to its timeout, and cleanup is checked at the deadline without a wall-clock race on busy runners.
+Coroutine-only timeout and retry tests use `kotlinx-coroutines-test` virtual time: start queued work with
+`runCurrent()`, check the state before its deadline, then advance to the deadline and check completion or
+cleanup before awaiting the result. This covers `CodexUsageCaptureTest`, the fake-reader queue in
+`DiffServiceTest`, retries and recovery in `UsageResetNotifierTest`, fake provider discovery in
+`SessionManagerTest`, and the in-memory body reader in `AuthRoutesTest`. Keep real sockets, subprocesses,
+tmux and browser fixtures on real time: a virtual scheduler cannot advance those external operations.
 
 In a browser, the readiness signal is observable state — a rendered node, an attribute, a request that was
 made — never the assumption that an earlier input has already been processed. Effects that run after paint

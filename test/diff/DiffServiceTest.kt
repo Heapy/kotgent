@@ -10,8 +10,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlin.time.Duration.Companion.seconds
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -76,23 +81,27 @@ class DiffServiceTest {
         assertEquals(DiffErrorCode.stale, service.patch(session, "/repo", "second", "file").error?.code)
     }
 
-    @Test fun queueCancellationAndDeadlinesReleaseCapacity() = runBlocking<Unit> {
-        withTimeout(5_000) {
-            val reader = Reader()
-            val entered = CompletableDeferred<Unit>()
-            reader.wait = { entered.complete(Unit); awaitCancellation() }
-            val service = DiffService(store(), reader, DiffServiceLimits(activeReads = 1, queuedReads = 1, deadlineMillis = 100))
-            val first = async { service.worktrees(session) }
-            entered.await()
-            val queued = async(start = CoroutineStart.UNDISPATCHED) { service.worktrees(session) }
-            assertEquals(DiffReason.queue_full, service.worktrees(session).error?.reason)
-            queued.cancelAndJoin()
-            assertEquals(DiffReason.timeout, first.await().error?.reason)
-            val cancelled = async(start = CoroutineStart.UNDISPATCHED) { service.worktrees(session) }
-            cancelled.cancelAndJoin()
-            assertTrue(cancelled.isCancelled)
-            reader.wait = null
-            assertNotNull(service.worktrees(session).data)
-        }
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun queueCancellationAndDeadlinesReleaseCapacity() = runTest(timeout = 5.seconds) {
+        val reader = Reader()
+        val entered = CompletableDeferred<Unit>()
+        reader.wait = { entered.complete(Unit); awaitCancellation() }
+        val service = DiffService(store(), reader, DiffServiceLimits(activeReads = 1, queuedReads = 1, deadlineMillis = 100))
+        val first = async { service.worktrees(session) }
+        entered.await()
+        val queued = async(start = CoroutineStart.UNDISPATCHED) { service.worktrees(session) }
+        assertEquals(DiffReason.queue_full, service.worktrees(session).error?.reason)
+        queued.cancelAndJoin()
+        advanceTimeBy(99); runCurrent()
+        assertFalse(first.isCompleted, "the active read keeps its full deadline")
+        advanceTimeBy(1); runCurrent()
+        assertTrue(first.isCompleted, "the deadline releases the active slot")
+        assertEquals(DiffReason.timeout, first.await().error?.reason)
+        val cancelled = async(start = CoroutineStart.UNDISPATCHED) { service.worktrees(session) }
+        cancelled.cancelAndJoin()
+        assertTrue(cancelled.isCancelled)
+        reader.wait = null
+        assertNotNull(service.worktrees(session).data)
     }
 }
