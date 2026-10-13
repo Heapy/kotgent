@@ -12,13 +12,16 @@ import io.kotgent.store.FakeEventStore
 import io.kotgent.store.SqliteUsageStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -76,14 +79,12 @@ class CodexUsageCaptureTest {
         }
     }
 
-    private fun test(block: suspend CoroutineScope.(Fixture) -> Unit) = runBlocking {
-        withTimeout(20.seconds) {
-            val fixture = Fixture(this)
-            try {
-                block(fixture)
-            } finally {
-                fixture.close()
-            }
+    private fun test(block: suspend TestScope.(Fixture) -> Unit) = runTest(timeout = 20.seconds) {
+        val fixture = Fixture(this)
+        try {
+            block(fixture)
+        } finally {
+            fixture.close()
         }
     }
 
@@ -263,6 +264,7 @@ class CodexUsageCaptureTest {
     }
 
     @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun timeoutCancelsBlockedWorkAndReportsWithoutCancellingTheDaemonScope() = test { f ->
         f.events.seedSession(meta())
         val cleaned = CompletableDeferred<Unit>()
@@ -280,9 +282,18 @@ class CodexUsageCaptureTest {
         )
 
         capture.onTurnCompleted(sessionId)
+        // Start the scan before advancing its deadline; runner scheduling must not consume the budget.
+        runCurrent()
+        assertEquals(1, scans)
+        advanceTimeBy(49)
+        runCurrent()
+        assertFalse(cleaned.isCompleted, "the scan remains blocked before its deadline")
+        assertTrue(f.errors.isEmpty())
+        advanceTimeBy(1)
+        runCurrent()
+        assertTrue(cleaned.isCompleted, "the deadline cancels the scan and runs its cleanup")
         f.joinCapture()
 
-        assertTrue(cleaned.isCompleted)
         assertEquals(1, scans, "timeout ends the whole bounded capture")
         assertIs<TimeoutCancellationException>(f.errors.single())
         assertTrue(f.usage.list().isEmpty())

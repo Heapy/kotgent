@@ -30,6 +30,7 @@ dependencies@linux:
 
 test-dependencies:
   - ./fakes
+  - $libs.kotlinx.coroutines.test
   - $libs.ktor.client.mock
 
 settings:

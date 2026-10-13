@@ -586,6 +586,9 @@ Prefer injected clocks, virtual time, deterministic random sources, temporary di
 resource names, and explicit readiness signals. Use eventual assertions around genuine concurrency; do not
 use arbitrary sleeps as synchronization.
 
+`CodexUsageCaptureTest` uses `kotlinx-coroutines-test` virtual time: the blocked scan must start before
+advancing to its timeout, and cleanup is checked at the deadline without a wall-clock race on busy runners.
+
 In a browser, the readiness signal is observable state — a rendered node, an attribute, a request that was
 made — never the assumption that an earlier input has already been processed. Effects that run after paint
 are overtaken by the next keystroke, and a test that types blind is testing its own timing.
