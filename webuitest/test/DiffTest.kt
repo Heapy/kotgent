@@ -307,9 +307,11 @@ class DiffTest {
         page.installResponseGate("/diff/worktrees", "unlink", fail = true)
         page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Open changes").setExact(true)).click()
         page.waitForFunction("() => window.__diffHeld_unlink === true")
+        val linkedSessions = page.locator("section.task-detail section.task-sessions")
+        assertThat(linkedSessions).containsText("diff-review")
         page.releaseOnTaskRender("unlink", "local:1", unlinked = true)
         harness.send("diff-unlink")
-        assertThat(page.locator(".task-sessions")).not().containsText("diff-review")
+        assertThat(linkedSessions).not().containsText("diff-review")
         page.waitForFunction("() => window.__diffReleased_unlink === true")
         assertThat(page).hasURL(harness.baseUrl + "/tasks/local%3A1")
         assertThat(page.locator(".task-changes")).hasCount(0)
@@ -399,7 +401,8 @@ private fun Page.releaseOnTaskRender(key: String, task: String, unlinked: Boolea
     evaluate("""([key,task,unlinked]) => {
       const observer = new MutationObserver(() => {
         if (document.querySelector('#task-detail-title')?.textContent !== task) return;
-        if (unlinked && document.querySelector('.task-sessions')?.textContent.includes('diff-review')) return;
+        const linkedSessions = document.querySelector('section.task-detail section.task-sessions');
+        if (unlinked && (!linkedSessions || linkedSessions.textContent.includes('diff-review'))) return;
         observer.disconnect(); window['__diffRelease_'+key]();
       });
       observer.observe(document.querySelector('#app'), {subtree:true,childList:true,characterData:true});
