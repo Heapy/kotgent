@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
-import { diffStore, MAX_DIFF_COMMITS } from "../state/diff.ts";
-import { filePath, filterFiles, comparisonLabels } from "../lib/diff.ts";
-import type { DiffMode, DiffLocalScope, DiffComparison } from "../lib/diff.ts";
+import { diffStore } from "../state/diff.ts";
+import { filePath, filterFiles, comparisonLabels, branchName } from "../lib/diff.ts";
+import type { DiffLocalScope, DiffComparison } from "../lib/diff.ts";
 import { DiffFiles, DiffFileStatus, DiffStats } from "./DiffFiles.tsx";
 import { DiffPatch } from "./DiffPatch.tsx";
+import { DiffBranches, DiffHistory } from "./DiffHistory.tsx";
 import "../diff.css";
 
 /** Integration owns workspace/session selection; this panel only chooses a Git source. */
@@ -22,7 +23,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     if (previousPage.current !== state.page) {
       if (state.page === "patch") {
         if (!filesScroll.current?.getClientRects().length) heading.current?.focus();
-      } else filter.current?.focus();
+      } else if (!document.activeElement?.closest(".diff-history, .diff-branches, .diff-controls")) filter.current?.focus();
       previousPage.current = state.page;
     }
   }, [state.page]);
@@ -51,7 +52,16 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     </div>
     <p class="diff-source" title={worktree?.path}>{worktree ? <>{worktree.path} · Checkout HEAD {worktree.headOid?.slice(0, 12) ?? "unborn"}{worktree.locked ? " · Locked (readable)" : ""}</> : "Discovering worktrees…"}</p>
     <div class="diff-controls diff-compare-controls">
-      <label>Compare<select value={state.mode} onChange={e => choose({ mode: e.currentTarget.value as DiffMode })}><option value="local">Local changes</option><option value="commit">Commits</option><option value="branch">Branch changes</option></select></label>
+      <div class="diff-segments diff-modes" role="group" aria-label="Git view">
+        <button type="button" aria-pressed={state.mode === "local"} onClick={() => choose({ mode: "local" })}>Local changes</button>
+        <button type="button" aria-pressed={state.mode === "commit"} onClick={() => choose({ mode: "commit" })}>Log</button>
+        <button type="button" aria-pressed={state.mode === "branch"} onClick={() => choose({ mode: "branch" })}>Branch changes</button>
+      </div>
+      {state.mode === "commit" && <label class="diff-mobile-branch">History branch<select value={state.historyRef} onChange={e => choose({ historyRef: e.currentTarget.value })}>
+        <option value="">Checkout HEAD</option>
+        {state.historyRef && !state.refs.data?.refs.some(r => r.name === state.historyRef) && <option value={state.historyRef}>{branchName(state.historyRef)} · unavailable</option>}
+        {state.refs.data?.refs.map(r => <option key={r.name} value={r.name}>{branchName(r.name)} · {r.kind}</option>)}
+      </select></label>}
       {state.mode === "local" && <label>Scope<select value={state.scope} onChange={e => choose({ scope: e.currentTarget.value as DiffLocalScope })}><option value="all">All</option><option value="staged">Staged</option><option value="unstaged">Unstaged</option></select></label>}
       {state.mode === "branch" && <label>Base branch<select value={state.baseRef} onChange={e => choose({ baseRef: e.currentTarget.value })}><option value="">Choose a base…</option>{state.refs.data?.refs.map(r => <option key={r.name} value={r.name}>{r.name.replace(/^refs\/(heads|remotes)\//, "")} · {r.kind}</option>)}</select></label>}
       <div class="diff-display-controls">
@@ -61,13 +71,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     </div>
     {worktree?.unavailable && <p role="status">Worktree unavailable: {worktree.unavailable.message}</p>}
     {worktree?.bare && state.mode === "local" && <p role="status">Bare repositories have no local working copy.</p>}
-    {state.mode !== "local" && <details class="diff-history" open={state.mode === "commit" && !state.commitOid}>
-      <summary>{state.mode === "branch" ? "Commits absent from base" : "Choose a commit"} ({state.history.data?.commits.length ?? 0})</summary>
-      <ol>{state.history.data?.commits.map(c => <li key={c.oid}><button type="button" aria-pressed={state.mode === "commit" && state.commitOid === c.oid} onClick={() => choose({ mode: "commit", commitOid: c.oid, parent: 1 })}>{c.subject} · {c.oid.slice(0, 12)}</button><small>{c.author} · <time dateTime={new Date(c.authoredAt).toISOString()}>{new Date(c.authoredAt).toLocaleString()}</time> · {c.parents.length} parent{c.parents.length === 1 ? "" : "s"}</small></li>)}</ol>
-      {state.history.data && !state.history.data.commits.length && <p>No commits in this history.</p>}
-      {state.history.data?.nextCursor && <button type="button" disabled={state.inventory.loading || state.refs.loading || state.history.loading || state.history.data.commits.length >= MAX_DIFF_COMMITS} onClick={() => void diffStore.more(sessionId)}>Load more commits</button>}
-      {(state.history.data?.commits.length ?? 0) >= MAX_DIFF_COMMITS && <p>History limited to {MAX_DIFF_COMMITS} commits. Refresh to start again.</p>}
-    </details>}
+    <div class="diff-browser">
+      <DiffBranches state={state} onSelect={historyRef => choose({ mode: "commit", historyRef })}/>
+      <div class="diff-main">
+    {state.mode !== "local" && <DiffHistory state={state} onSelect={commitOid => choose({ mode: "commit", commitOid, parent: 1 })} onMore={() => void diffStore.more(sessionId)}/>}
     {commit && <div class="diff-commit"><p>{commit.subject} · {commit.author} · {new Date(commit.authoredAt).toLocaleString()}<br/><code>{commit.oid}</code></p>{commit.parents.length ? <label>Parent<select value={state.parent} onChange={e => choose({ parent: Number(e.currentTarget.value) })}>{commit.parents.map((p, i) => <option key={p} value={i + 1}>Parent {i + 1} · {p.slice(0, 12)}</option>)}</select></label> : <p>Root commit · compared with the empty tree</p>}</div>}
     {state.mode === "commit" && !state.commitOid && <p>Select a commit to view its changes.</p>}
     {state.mode === "branch" && !state.baseRef && <p>Choose a base branch to compare.</p>}
@@ -99,6 +106,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           {!state.patch.data && <div class="diff-empty-state"><span aria-hidden="true">{loading ? "⋯" : "±"}</span><p>{loading ? "Reading changes…" : selected ? "No patch available. Check the comparison status below." : "Select a file to review its changes"}</p></div>}
           {state.patch.data && <DiffPatch patch={state.patch.data} layout={state.layout} wrap={state.wrap}/>}
         </div>
+      </div>
+    </div>
       </div>
     </div>
     <footer class="diff-footer">

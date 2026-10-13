@@ -107,6 +107,52 @@ test("history pagination retains fixed cursor and omits base from API transport;
   capped.store.retain("s"); await tick(); capped.store.choose("s", {mode: "commit"}); await tick();
   assert.equal(capped.state().history.data?.commits.length, MAX_DIFF_COMMITS);
 });
+test("branch log pins the selected ref, retains its pages on remount and refreshes its moved tip", async () => {
+  let tip = "B";
+  const calls: (DiffCommitCursor | null)[] = [];
+  const f = fixture({refs: async (_, w) => ({...refs(w), refs: refs(w).refs.map(r => ({...r, oid: tip}))}), commits: async (_, w, _base, cursor) => {calls.push(cursor); return history(w, cursor);}});
+  const release = f.store.retain("s"); await tick();
+  f.store.choose("s", {mode: "commit", historyRef: "refs/heads/other"}); await tick();
+  assert.deepEqual(calls, [{headOid: "B", baseOid: null, offset: 0}]);
+  await f.store.more("s");
+  assert.deepEqual(calls.at(-1), {headOid: "B", baseOid: null, offset: 100});
+  f.store.choose("s", {commitOid: "C"}); await tick();
+  assert.equal(f.state().files.data?.snapshot.comparison.commitOid, "C");
+  assert.equal(f.state().history.data?.cursor?.headOid, "B");
+  release(); f.store.retain("s"); await tick();
+  assert.equal(calls.length, 2);
+  tip = "B2"; await f.store.refresh("s");
+  assert.deepEqual(calls.at(-1), {headOid: "B2", baseOid: null, offset: 0});
+  assert.equal(f.state().historyRef, "refs/heads/other");
+  // Browsing another branch never changes the selected checkout or its HEAD.
+  assert.equal(f.state().worktree, "/a");
+  assert.equal(f.state().inventory.data?.worktrees[0]?.headOid, "H");
+});
+test("switching branches rejects late logs and clears the previous commit comparison", async () => {
+  const pending = deferred<DiffCommits>(); let oldSignal: AbortSignal | null = null;
+  const f = fixture({commits: async (_, w, _base, cursor, signal) => {
+    if (cursor) { oldSignal = signal; return pending.promise; }
+    return history(w);
+  }});
+  f.store.retain("s"); await tick(); f.store.choose("s", {mode: "commit"}); await tick();
+  f.store.choose("s", {commitOid: "C"}); await tick();
+  f.store.choose("s", {historyRef: "refs/heads/other"}); await tick();
+  assert.equal(f.state().commit, null); assert.equal(f.state().patch.data, null);
+  f.store.choose("s", {historyRef: ""}); await tick();
+  assert.equal((oldSignal as AbortSignal | null)?.aborted, true);
+  pending.resolve(history("/a", {headOid: "B", baseOid: null, offset: 0})); await tick();
+  assert.equal(f.state().history.data?.cursor?.headOid, "H");
+});
+test("removed history branches report unavailable instead of silently reading HEAD", async () => {
+  let removed = false, reads = 0;
+  const f = fixture({refs: async (_, w) => ({...refs(w), refs: removed ? [] : refs(w).refs}), commits: async (_, w, _base, cursor) => {reads++; return history(w, cursor);}});
+  f.store.retain("s"); await tick(); f.store.choose("s", {mode: "commit", historyRef: "refs/heads/other"}); await tick();
+  removed = true; await f.store.refresh("s");
+  assert.equal(reads, 1); assert.equal(f.state().history.problem?.reason, "missing_ref");
+  assert.equal(f.state().history.stale, true);
+  f.store.choose("s", {worktree: "/b"}); await tick();
+  assert.equal(f.state().historyRef, ""); assert.equal(f.state().history.data?.cursor?.headOid, "H");
+});
 test("comparison changes reset Viewed and next respects filters; unmounted cache is bounded", async () => {
   const f = fixture(); f.store.retain("s"); await tick(); f.store.markViewed("s", "f1", true);
   f.store.reading("s", {query: "f2"}); f.store.next("s"); await tick(); assert.equal(f.state().selected, "f2");
