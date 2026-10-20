@@ -5,6 +5,10 @@
 
 ## What kotgent is
 
+**IDE → ADE: Agentic Development Environment.** Kotgent organizes development around coding agents:
+you define the work, coordinate agent sessions, review results, and step in when needed. Tasks, plans,
+and persistent terminals share one workspace you can access across devices.
+
 **kotgent** is a local-first control plane for running Claude, Codex, Junie, or a login shell inside
 `tmux` and supervising those sessions from a terminal, a desktop browser, or an installed PWA.
 
