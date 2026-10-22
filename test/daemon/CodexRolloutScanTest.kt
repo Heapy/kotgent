@@ -1,6 +1,11 @@
 package io.kotgent.daemon
 
 import io.kotgent.host.DecodedFileRead
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.driver.native.inMemoryDriver
+import io.kotgent.db.KotgentDatabase
+import io.kotgent.store.SqliteUsageStore
+import io.kotgent.host.readDecodedTail
 import io.kotgent.host.readDecodedPrefix
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
@@ -441,6 +446,235 @@ class CodexRolloutScanTest {
     }
 
     @Test
+    fun compressedUsageKeepsDecodedOffsetsAcrossUtf8AndPartialRecordBoundaries() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        files += "$plain.zst"
+        val quota = quotaRecord(20)
+        // Put the bounded tail's first byte inside the three-byte character in a long JSON record.
+        val suffix = "x".repeat(CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES - quota.encodeToByteArray().size - 5)
+        val prefix = "{\"text\":\"" + "x".repeat(100) + "€" + suffix + "\"}\n"
+        val content = prefix + quota
+        val bytes = content.encodeToByteArray()
+        val start = bytes.size - CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES
+        assertEquals(0x82, bytes[start].toInt() and 0xff, "fixture starts inside UTF-8")
+        writeFile(plain, content)
+        writeBytes("$plain.zst", rawFrames(bytes))
+        val scan = CodexRolloutScan(codexDir)
+        val expected = scan.rateLimitsOf(id).single()
+        assertEquals(prefix.encodeToByteArray().size.toLong(), expected.source?.revision)
+        assertEquals(id.value, expected.source?.id)
+        assertEquals(1_789_149_958_392L, expected.source?.capturedAt)
+        unlink(plain)
+        assertEquals(listOf(expected), scan.rateLimitsOf(id))
+        val tail = kotlin.test.assertIs<DecodedFileRead.Window>(
+            CodexRolloutReader().tail(requireNotNull(RolloutLocation.fromPath(plain)), CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES),
+        )
+        assertEquals(CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES, tail.bytes.size)
+        assertEquals(start.toLong(), tail.logicalOffset)
+    }
+
+    @Test
+    fun cachedCanonicalUsageLocationTracksBothTransitionsAndPlainAuthority() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        files += "$plain.zst"
+        writeFile(plain, quotaRecord(20))
+        var visits = 0
+        val scan = CodexRolloutScan(codexDir, visitEntries = { dir, visit ->
+            visits++
+            visitDirectoryEntries(dir, visit)
+        })
+        val original = scan.rateLimitsOf(id)
+        val coldVisits = visits
+        writeBytes("$plain.zst", rawFrame(quotaRecord(20)))
+        unlink(plain)
+        assertEquals(original, scan.rateLimitsOf(id))
+        writeFile(plain, quotaRecord(20) + quotaRecord(30))
+        assertEquals(30.0, scan.rateLimitsOf(id).single().usedPercent)
+        for (content in listOf("", "{}\n", "malformed\n", quotaRecord(40).replace("2026-09-11T18:05:58.392Z", "invalid"))) {
+            writeFile(plain, content)
+            assertTrue(scan.rateLimitsOf(id).isEmpty(), "present plain never falls back to compressed quota")
+        }
+        assertEquals(coldVisits, visits, "cache hits resolve siblings without walking inventory")
+        unlink(plain)
+        assertEquals(original, scan.rateLimitsOf(id))
+        unlink("$plain.zst")
+        assertTrue(scan.rateLimitsOf(id).isEmpty())
+        val missingVisits = visits
+        placeRollout(codexDir, "2026", "10", "23", id, "/work/usage")
+        val moved = files.last()
+        writeBytes("$moved.zst", rawFrame(quotaRecord(50)))
+        files += "$moved.zst"
+        unlink(moved)
+        assertEquals(50.0, scan.rateLimitsOf(id).single().usedPercent)
+        assertTrue(visits > missingVisits, "missing results are not cached")
+    }
+
+    @Test
+    fun coldUsageLookupHonorsPlainEvenWhenCompressedIsEnumeratedFirst() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        val directory = plain.substringBeforeLast('/')
+        val name = plain.substringAfterLast('/')
+        files += "$plain.zst"
+        writeBytes("$plain.zst", rawFrame(quotaRecord(20)))
+        for (compressedFirst in listOf(true, false)) {
+            for (content in listOf(quotaRecord(30), "", "broken")) {
+                writeFile(plain, content)
+                var matched = 0
+                val scan = CodexRolloutScan(codexDir, visitEntries = { dir, visit ->
+                    if (dir != directory) visitDirectoryEntries(dir, visit)
+                    else {
+                        val names = if (compressedFirst) listOf("$name.zst", name) else listOf(name, "$name.zst")
+                        var keepGoing = true
+                        for (candidate in names) {
+                            matched++
+                            keepGoing = visit(candidate)
+                            if (!keepGoing) break
+                        }
+                        keepGoing
+                    }
+                })
+                assertEquals(if (content == quotaRecord(30)) listOf(30.0) else emptyList(), scan.rateLimitsOf(id).map { it.usedPercent })
+                assertEquals(1, matched, "first canonical match stops even with unusable plain content")
+            }
+        }
+        unlink(plain)
+        assertEquals(0, mkdir(plain, mode0700.convert()))
+        try {
+            assertTrue(CodexRolloutScan(codexDir).rateLimitsOf(id).isEmpty(), "nonregular plain is authoritative too")
+        } finally { rmdir(plain) }
+    }
+
+    @Test
+    fun compressedReplayCannotRefreshSqliteEvidenceAndMaterializedAppendCan() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        val content = "{\"text\":\"é€\"}\n" + quotaRecord(20).replace("\"window_minutes\":10080", "\"window_minutes\":10080,\"resets_at\":1790000000")
+        writeFile(plain, content)
+        val scan = CodexRolloutScan(codexDir)
+        val driver = inMemoryDriver(KotgentDatabase.Schema)
+        var now = 1_789_150_000_000L
+        val store = SqliteUsageStore(driver) { now }
+        fun count(table: String): Long = driver.executeQuery(null, "SELECT COUNT(*) FROM $table", { cursor ->
+            cursor.next()
+            QueryResult.Value(requireNotNull(cursor.getLong(0)))
+        }, 0).value
+        try {
+            store.observe(scan.rateLimitsOf(id).single())
+            val before = store.list().single()
+            now += 60_000
+            writeBytes("$plain.zst", rawFrame(content))
+            files += "$plain.zst"
+            unlink(plain)
+            repeat(2) { store.observe(scan.rateLimitsOf(id).single()) }
+            assertEquals(before, store.list().single(), "compression changes neither revision, receipt nor freshness")
+            assertEquals(1L, count("usage_samples"))
+            assertEquals(0L, count("usage_resets"))
+            writeFile(plain, content + quotaRecord(30).replace("18:05:58.392", "18:06:58.392")
+                .replace("\"window_minutes\":10080", "\"window_minutes\":10080,\"resets_at\":1790604800"))
+            store.observe(scan.rateLimitsOf(id).single())
+            val after = store.list().single()
+            assertEquals(30.0, after.current.usedPercent)
+            assertEquals(content.encodeToByteArray().size.toLong(), after.current.source?.revision)
+            assertEquals(now, after.receivedAt)
+            assertTrue(after.current.observedAt > before.current.observedAt)
+            assertEquals(2L, count("usage_samples"))
+            assertEquals(0L, count("usage_resets"))
+            unlink(plain)
+            now += 60_000
+            store.observe(scan.rateLimitsOf(id).single())
+            assertEquals(after, store.list().single(), "older compressed evidence cannot undo the later plain record")
+            assertEquals(2L, count("usage_samples"))
+            assertEquals(0L, count("usage_resets"), "stale lower quota with another reset timestamp is not a reset")
+        } finally {
+            driver.close()
+        }
+    }
+
+    @Test
+    fun compressedTailRequiresCompleteEofAndKeepsExistingRecordRejectionRules() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        val compressed = "$plain.zst"
+        files += compressed
+        unlink(plain)
+        val scan = CodexRolloutScan(codexDir)
+        val quota = quotaRecord(20)
+        val complete = rawFrame(quota)
+        for (broken in listOf(complete.copyOf(complete.size - 1), complete + byteArrayOf(1), complete + rawFrame("suffix").dropLast(1).toByteArray())) {
+            writeBytes(compressed, broken)
+            assertTrue(scan.rateLimitsOf(id).isEmpty(), "valid-looking quota before broken EOF must not publish")
+        }
+        writeBytes(compressed, rawFrame(quota.replace("2026-09-11T18:05:58.392Z", "invalid")))
+        assertTrue(scan.rateLimitsOf(id).isEmpty())
+        writeBytes(compressed, rawFrame(quota.replace("\"timestamp\":\"2026-09-11T18:05:58.392Z\",", "")))
+        assertTrue(scan.rateLimitsOf(id).isEmpty())
+        writeBytes(compressed, rawFrame(quota + "{broken\n"))
+        assertEquals(20.0, scan.rateLimitsOf(id).single().usedPercent, "malformed later JSON retains existing parser behavior")
+    }
+
+    @Test
+    fun tailReresolvesDisappearingRepresentationsOnceButDoesNotRetryErrors() = runBlocking {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/usage")
+        val plain = files.last()
+        val compressed = "$plain.zst"
+        files += compressed
+        writeBytes(compressed, rawFrame(quotaRecord(20)))
+        val location = requireNotNull(RolloutLocation.fromPath(plain))
+        var calls = 0
+        val toCompressed = CodexRolloutReader(tailRead = { path, zipped, bytes ->
+            if (++calls == 1) unlink(plain)
+            readDecodedTail(path, zipped, bytes)
+        })
+        assertEquals(quotaRecord(20), assertIsWindow(toCompressed.tail(location, 1024)))
+        assertEquals(2, calls)
+        calls = 0
+        val toPlain = CodexRolloutReader(tailRead = { path, zipped, bytes ->
+            if (++calls == 1) {
+                unlink(compressed)
+                writeFile(plain, quotaRecord(30))
+            }
+            readDecodedTail(path, zipped, bytes)
+        })
+        assertEquals(quotaRecord(30), assertIsWindow(toPlain.tail(location, 1024)))
+        assertEquals(2, calls)
+        for (failure in listOf(DecodedFileRead.Missing, DecodedFileRead.Unreadable, DecodedFileRead.ResourceLimit)) {
+            calls = 0
+            val reader = CodexRolloutReader(tailRead = { _, _, _ -> calls++; failure })
+            assertEquals(failure, reader.tail(location, 1024))
+            assertEquals(if (failure == DecodedFileRead.Missing) 2 else 1, calls)
+        }
+    }
+
+    private fun rawFrames(bytes: ByteArray): ByteArray {
+        val frames = bytes.asList().chunked(128 * 1024).map { chunk ->
+            val body = chunk.toByteArray()
+            val block = (body.size shl 3) or 1
+            byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte(), 0xa0.toByte()) +
+                ByteArray(4) { (body.size ushr (it * 8)).toByte() } +
+                ByteArray(3) { (block ushr (it * 8)).toByte() } + body
+        }
+        val out = ByteArray(frames.sumOf { it.size })
+        var offset = 0
+        for (frame in frames) { frame.copyInto(out, offset); offset += frame.size }
+        return out
+    }
+
+    @Test
     fun repeatedQuotaReadsReuseTheLocatedFileButStillReadItsLatestTail() = runBlocking {
         withTimeout(10.seconds) {
             val codexDir = makeCodexDir()
@@ -501,9 +735,15 @@ class CodexRolloutScanTest {
         withTimeout(15.seconds) {
             val codexDir = makeCodexDir()
             val ids = (0..128).map(::indexedUuid)
-            for (id in ids) {
-                placeRollout(codexDir, "2026", "09", "11", id, "/work/shared")
-                writeFile(files.last(), quotaRecord(20))
+            for (index in ids.indices) {
+                placeRollout(codexDir, "2026", "09", "11", ids[index], "/work/shared")
+                val plain = files.last()
+                writeFile(plain, quotaRecord(20))
+                if (index % 2 == 0) {
+                    writeBytes("$plain.zst", rawFrame(quotaRecord(20)))
+                    files += "$plain.zst"
+                    unlink(plain)
+                }
             }
             var directoryReads = 0
             val scan = CodexRolloutScan(codexDir, visitEntries = { directory, visit ->
@@ -821,7 +1061,9 @@ class CodexRolloutScanTest {
     private fun writeBytes(path: String, bytes: ByteArray) {
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            if (bytes.isNotEmpty()) bytes.usePinned {
+                assertEquals(bytes.size.toULong(), fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp))
+            }
         } finally {
             fclose(fp)
         }

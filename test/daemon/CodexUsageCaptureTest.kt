@@ -10,6 +10,17 @@ import io.kotgent.core.UsageSource
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.SqliteUsageStore
+import io.kotgent.host.DecodedFileRead
+import kotlinx.cinterop.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import platform.posix.*
+import kotlin.test.assertFailsWith
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -29,6 +40,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
+@OptIn(ExperimentalForeignApi::class)
 class CodexUsageCaptureTest {
     private val sessionId = SessionId("codex-session")
     private val providerId = ProviderSessionId("11111111-2222-4333-8444-555555555555")
@@ -55,12 +67,12 @@ class CodexUsageCaptureTest {
         source = UsageSource(providerId.value, revision, revision),
     )
 
-    private inner class Fixture(parent: CoroutineScope) {
+    private inner class Fixture(parent: CoroutineScope, now: () -> Long = { 1_000L }) {
         val job = Job(parent.coroutineContext[Job])
         val scope = CoroutineScope(parent.coroutineContext + job)
         val events = FakeEventStore()
         private val driver = inMemoryDriver(KotgentDatabase.Schema)
-        val usage = SqliteUsageStore(driver) { 1_000L }
+        val usage = SqliteUsageStore(driver, now)
         val errors = mutableListOf<Throwable>()
 
         fun capture(
@@ -86,6 +98,112 @@ class CodexUsageCaptureTest {
         } finally {
             fixture.close()
         }
+    }
+
+    @Test
+    fun cancellationAndCaptureDeadlineStopActualDecodingWithoutRefreshingUsage() = runBlocking {
+        withTimeout(20.seconds) {
+            val root = memScoped { requireNotNull(mkdtemp("/tmp/kotgent-usage.XXXXXX".cstr.ptr)?.toKString()) }
+            val directories = listOf("$root/sessions", "$root/sessions/2026", "$root/sessions/2026/10", "$root/sessions/2026/10/22")
+            for (directory in directories) assertEquals(0, mkdir(directory, 448u))
+            val plain = "${directories.last()}/rollout-2026-10-22T10-00-00-${providerId.value}.jsonl"
+            val path = "$plain.zst"
+            val f = Fixture(this, now = { 1_789_150_000_000L })
+            try {
+                f.events.seedSession(meta())
+                f.usage.observe(observation(10.0, 1))
+                val before = f.usage.list()
+                // One GiB of decoded padding in a 32 KiB synthetic RLE frame; no large input allocation.
+                writeUsageBytes(path, usageRepeatedFrame(1024 * 1024 * 1024) + usageRawFrame("\n" + usageQuota))
+                var directoryReads = 0
+                val scan = CodexRolloutScan(root, visitEntries = { directory, visit ->
+                    directoryReads++
+                    visitDirectoryEntries(directory, visit)
+                })
+                val descriptors = usageDescriptorCount()
+                val reading = async(start = CoroutineStart.UNDISPATCHED) { scan.rateLimitsOf(providerId) }
+                repeat(16) { yield() }
+                assertFalse(reading.isCompleted, "multi-chunk decoding yields before the whole transcript is read")
+                reading.cancelAndJoin()
+                assertFailsWith<CancellationException> { reading.await() }
+                assertEquals(descriptors, usageDescriptorCount(), "cancellation closes the actual native reader")
+
+                // Warm the canonical location so the deadline exercises decoding, not inventory lookup.
+                writeUsageBytes(path, usageRawFrame(usageQuota))
+                assertEquals(20.0, scan.rateLimitsOf(providerId).single().usedPercent)
+                writeUsageBytes(path, usageRepeatedFrame(1024 * 1024 * 1024) + usageRawFrame("\n" + usageQuota))
+                val warmReads = directoryReads
+                val capture = f.capture(scan::rateLimitsOf, timeoutMillis = 10)
+                capture.onTurnCompleted(sessionId)
+                f.joinCapture()
+                assertIs<TimeoutCancellationException>(f.errors.single())
+                assertEquals(warmReads, directoryReads, "timeout occurs on the cached content read")
+                assertEquals(before, f.usage.list(), "a deadline cannot publish partial quota or advance freshness")
+                assertEquals(descriptors, usageDescriptorCount())
+                assertTrue(f.scope.isActive)
+
+                // A quota-bearing first frame followed by a truncated frame is not publishable either.
+                writeUsageBytes(path, usageRawFrame(usageQuota) + usageRawFrame("suffix").dropLast(1).toByteArray())
+                val recovery = f.capture(scan::rateLimitsOf)
+                recovery.onTurnCompleted(sessionId)
+                f.joinCapture()
+                assertEquals(before, f.usage.list())
+                assertEquals(descriptors, usageDescriptorCount())
+
+                val paddingBytes = 16 * 1024 * 1024
+                writeUsageBytes(path, usageRepeatedFrame(paddingBytes) + usageRawFrame("\n" + usageQuota))
+                val started = TimeSource.Monotonic.markNow()
+                val window = assertIs<DecodedFileRead.Window>(
+                    CodexRolloutReader().tail(requireNotNull(RolloutLocation.fromPath(plain)), CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES),
+                )
+                println("compressed usage fixture: decoded=${paddingBytes + 1 + usageQuota.encodeToByteArray().size}, retained=${window.bytes.size}, elapsed=${started.elapsedNow()}")
+                assertEquals(CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES, window.bytes.size)
+                assertEquals((paddingBytes + 1 + usageQuota.encodeToByteArray().size - window.bytes.size).toLong(), window.logicalOffset)
+                recovery.onTurnCompleted(sessionId)
+                f.joinCapture()
+                assertEquals(20.0, f.usage.list().single().current.usedPercent)
+                assertEquals(descriptors, usageDescriptorCount(), "another capture succeeds after cancellation and corruption")
+            } finally {
+                f.close()
+                unlink(path)
+                for (directory in directories.asReversed()) rmdir(directory)
+                rmdir(root)
+            }
+        }
+    }
+
+    private val usageQuota = """{"timestamp":"2026-09-11T18:05:58.392Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":20,"window_minutes":10080}}}}""" + "\n"
+
+    private fun usageRawFrame(text: String): ByteArray {
+        val bytes = text.encodeToByteArray()
+        val block = (bytes.size shl 3) or 1
+        return "28b52ffda0".hexToByteArray() + ByteArray(4) { (bytes.size ushr (8 * it)).toByte() } +
+            ByteArray(3) { (block ushr (8 * it)).toByte() } + bytes
+    }
+
+    private fun usageRepeatedFrame(size: Int): ByteArray {
+        val blocks = size / (128 * 1024)
+        // Non-single-segment frame, 128 KiB window, four-byte content size, then RLE blocks.
+        // Its decoded size is deliberately much larger than its decoder window.
+        return "28b52ffd8038".hexToByteArray() + ByteArray(4) { (size ushr (8 * it)).toByte() } +
+            ByteArray(blocks * 4) { index ->
+                val header = (128 * 1024 shl 3) or 2 or (if (index / 4 == blocks - 1) 1 else 0)
+                if (index % 4 == 3) 'x'.code.toByte() else (header ushr (8 * (index % 4))).toByte()
+            }
+    }
+
+    private fun writeUsageBytes(path: String, bytes: ByteArray) {
+        val file = requireNotNull(fopen(path, "wb"))
+        try {
+            bytes.usePinned { assertEquals(bytes.size.toULong(), fwrite(it.addressOf(0), 1u, bytes.size.convert(), file)) }
+        } finally { fclose(file) }
+    }
+
+    private fun usageDescriptorCount(): Int {
+        val directory = requireNotNull(opendir("/dev/fd"))
+        var count = 0
+        try { while (readdir(directory) != null) count++ } finally { closedir(directory) }
+        return count
     }
 
     @Test

@@ -39,7 +39,7 @@ class CodexRolloutScan(
     private val sessionsRoot: String get() = "${codexDir.trimEnd('/')}/sessions"
     private val reader = CodexRolloutReader()
     private val usageLookupMutex = Mutex()
-    private val usagePaths = LinkedHashMap<ProviderSessionId, String>()
+    private val usagePaths = LinkedHashMap<ProviderSessionId, RolloutLocation>()
 
     fun hasRollout(providerSessionId: ProviderSessionId): Boolean =
         rolloutFiles().any { rolloutFileSessionId(it.location.canonicalPath.substringAfterLast('/')) == providerSessionId }
@@ -65,10 +65,12 @@ class CodexRolloutScan(
 
     suspend fun rateLimitsOf(providerSessionId: ProviderSessionId): List<UsageObservation> = usageLookupMutex.withLock {
         currentCoroutineContext().ensureActive()
-        var tail = usagePaths.remove(providerSessionId)?.let { path ->
-            readTailWithOffset(path, TOKEN_COUNT_TAIL_BYTES)?.also { usagePaths[providerSessionId] = path }
+        var tail = usagePaths.remove(providerSessionId)?.let { location ->
+            reader.tail(location, TOKEN_COUNT_TAIL_BYTES).also {
+                if (it != DecodedFileRead.Missing) usagePaths[providerSessionId] = location
+            }
         }
-        if (tail == null) {
+        if (tail == null || tail == DecodedFileRead.Missing) {
             val _ = visitEntries(sessionsRoot) { year ->
                 val yearPath = "$sessionsRoot/$year"
                 visitEntries(yearPath) { month ->
@@ -78,13 +80,14 @@ class CodexRolloutScan(
                         visitEntries(dayPath) file@ { name ->
                             // ID lookup needs neither neighbouring rollouts' stat calls nor their contents.
                             if (rolloutFileSessionId(name) != providerSessionId) return@file true
-                            val path = "$dayPath/$name"
-                            tail = readTailWithOffset(path, TOKEN_COUNT_TAIL_BYTES)
-                            if (tail == null) return@file true
+                            val location = RolloutLocation.fromPath("$dayPath/$name") ?: return@file true
+                            tail = reader.tail(location, TOKEN_COUNT_TAIL_BYTES)
+                            if (tail == DecodedFileRead.Missing) return@file true
                             if (usagePaths.size >= MAX_USAGE_PATHS) {
                                 val _ = usagePaths.remove(usagePaths.keys.first())
                             }
-                            usagePaths[providerSessionId] = path
+                            usagePaths[providerSessionId] = location
+                            // A present authoritative file ends lookup even if it has no usable quota.
                             false
                         }
                     }
@@ -93,7 +96,9 @@ class CodexRolloutScan(
         }
         currentCoroutineContext().ensureActive()
         // A record without ordering evidence cannot become fresh merely because its tail was scanned.
-        tail?.let { extractCodexRateLimits(it.bytes, providerSessionId.value, it.offset).filter { it.source != null } }
+        (tail as? DecodedFileRead.Window)?.let {
+            extractCodexRateLimits(it.bytes, providerSessionId.value, it.logicalOffset).filter { it.source != null }
+        }
             ?: emptyList()
     }
 
