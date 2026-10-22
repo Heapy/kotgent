@@ -18,7 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Verify installed build plugins
-        run: ./ktc-plugins verify
+        uses: Heapy/setup-ktc-plugins@5de74f161cb07ad74e72ee28bfad228f4cce3bb4 # v1.0.0
+        with:
+          sync: false
       - name: Install Node
         uses: actions/setup-node@v7
         with:
