@@ -21,10 +21,12 @@ binary=$(cat build/kexe-path)
 name="kotgent-$version-$suffix"
 stage="build/packages/$name"
 rm -rf "$stage"
-mkdir -p "$stage/resources"
+mkdir -p "$stage/resources" "$stage/licenses"
 cp "$binary" "$stage/kotgent"
 chmod 755 "$stage/kotgent"
 cp -R resources/webui "$stage/resources/webui"
+# The native binary embeds the BSD-licensed Zstandard decoder.
+cp sysnative/vendor/zstd/LICENSE "$stage/licenses/zstd.txt"
 tar -czf "build/packages/$name.tar.gz" -C build/packages "$name"
 (
     cd build/packages

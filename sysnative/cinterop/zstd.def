@@ -1,0 +1,100 @@
+package = io.kotgent.cinterop.zstd
+compilerOpts.linux = -D_GNU_SOURCE
+
+---
+#define ZSTDLIB_VISIBLE __attribute__((visibility("hidden")))
+#include "zstddeclib.c"
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+#define KG_ZSTD_CHUNK 32768
+/* Status: 0 progress, 1 EOF, -1 missing, -2 unreadable/corrupt, -3 resource limit. */
+typedef struct {
+    int fd;
+    ZSTD_DStream *decoder;
+    unsigned char input[KG_ZSTD_CHUNK];
+    size_t position, size;
+    int eof, complete, saw_frame;
+    unsigned long long input_bytes;
+} kg_zstd_reader;
+
+static int kg_regular_status(const char *path) {
+    struct stat st;
+    if (stat(path, &st)) return (errno == ENOENT || errno == ENOTDIR) ? -1 : -2;
+    return S_ISREG(st.st_mode) ? 0 : -2;
+}
+
+static void kg_reader_close(void *handle) {
+    kg_zstd_reader *r = (kg_zstd_reader *)handle;
+    if (!r) return;
+    if (r->decoder) ZSTD_freeDStream(r->decoder);
+    close(r->fd);
+    free(r);
+}
+
+static void *kg_reader_open(const char *path, int compressed, int *status) {
+    *status = -2;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) { if (errno == ENOENT || errno == ENOTDIR) *status = -1; return NULL; }
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
+    kg_zstd_reader *r = (kg_zstd_reader *)calloc(1, sizeof(*r));
+    if (!r) { close(fd); *status = -3; return NULL; }
+    r->fd = fd;
+    if (compressed) {
+        r->decoder = ZSTD_createDStream();
+        if (!r->decoder || ZSTD_isError(ZSTD_DCtx_setParameter(r->decoder, ZSTD_d_windowLogMax, 27))) {
+            kg_reader_close(r); *status = -3; return NULL;
+        }
+    }
+    *status = 0;
+    return r;
+}
+
+static long long kg_reader_seek_tail(void *handle, int capacity) {
+    kg_zstd_reader *r = (kg_zstd_reader *)handle;
+    off_t end = lseek(r->fd, 0, SEEK_END);
+    if (end < 0) return -1;
+    off_t start = end > capacity ? end - capacity : 0;
+    return lseek(r->fd, start, SEEK_SET) < 0 ? -1 : (long long)start;
+}
+
+static unsigned long long kg_reader_input_bytes(void *handle) {
+    return ((kg_zstd_reader *)handle)->input_bytes;
+}
+
+/* One bounded syscall and at most one decoder call. Kotlin owns loops, budgets and cancellation. */
+static int kg_reader_step(void *handle, void *output, int capacity, int *produced) {
+    kg_zstd_reader *r = (kg_zstd_reader *)handle;
+    *produced = 0;
+    if (!r->decoder) {
+        ssize_t n = read(r->fd, output, (size_t)capacity);
+        if (n < 0) return errno == EINTR ? 0 : -2;
+        *produced = (int)n;
+        return n == 0 ? 1 : 0;
+    }
+    if (r->position == r->size && !r->eof) {
+        ssize_t n = read(r->fd, r->input, sizeof(r->input));
+        if (n < 0) return errno == EINTR ? 0 : -2;
+        r->position = 0; r->size = (size_t)n;
+        r->input_bytes += (unsigned long long)n;
+        if (!n) r->eof = 1;
+    }
+    if (r->eof && r->complete && r->saw_frame) return 1;
+    ZSTD_inBuffer in = { r->input, r->size, r->position };
+    ZSTD_outBuffer out = { output, (size_t)capacity, 0 };
+    size_t result = ZSTD_decompressStream(r->decoder, &out, &in);
+    if (ZSTD_isError(result)) {
+        ZSTD_ErrorCode error = ZSTD_getErrorCode(result);
+        return error == ZSTD_error_frameParameter_windowTooLarge || error == ZSTD_error_memory_allocation ? -3 : -2;
+    }
+    r->complete = result == 0;
+    if (r->complete) r->saw_frame = 1;
+    int progress = in.pos != r->position || out.pos != 0;
+    r->position = in.pos;
+    *produced = (int)out.pos;
+    if (!progress) return -2; /* includes truncated/empty streams at EOF; never spin */
+    return 0;
+}

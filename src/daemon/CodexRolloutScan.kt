@@ -6,7 +6,9 @@ import io.kotgent.host.fileTimes
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.UsageObservation
-import io.kotgent.core.isCanonicalUuid
+import io.kotgent.host.DecodedFileRead
+import io.kotgent.host.RegularFileStatus
+import io.kotgent.host.regularFileStatus
 import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
@@ -16,22 +18,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import platform.posix.getenv
 
-
-private const val UUID_LENGTH = 36
-
-private const val ROLLOUT_PREFIX = "rollout-"
-private const val ROLLOUT_SUFFIX = ".jsonl"
-
-// The timestamp also contains dashes, so the UUID is parsed from the fixed-width suffix.
-fun rolloutFileSessionId(fileName: String): ProviderSessionId? {
-    if (!fileName.startsWith(ROLLOUT_PREFIX) || !fileName.endsWith(ROLLOUT_SUFFIX)) return null
-    val stem = fileName.substring(ROLLOUT_PREFIX.length, fileName.length - ROLLOUT_SUFFIX.length)
-    if (stem.length < UUID_LENGTH + 1) return null
-    val candidate = stem.substring(stem.length - UUID_LENGTH)
-    if (stem[stem.length - UUID_LENGTH - 1] != '-') return null
-    if (!isCanonicalUuid(candidate)) return null
-    return runCatching { ProviderSessionId(candidate) }.getOrNull()
-}
 
 fun rolloutCwd(head: String): String? = jsonStringField(head, "cwd")
 
@@ -51,11 +37,12 @@ class CodexRolloutScan(
 
     // Archived rollouts are outside this root and cannot be resumed by Codex.
     private val sessionsRoot: String get() = "${codexDir.trimEnd('/')}/sessions"
+    private val reader = CodexRolloutReader()
     private val usageLookupMutex = Mutex()
     private val usagePaths = LinkedHashMap<ProviderSessionId, String>()
 
     fun hasRollout(providerSessionId: ProviderSessionId): Boolean =
-        rolloutFiles().any { rolloutFileSessionId(it.name) == providerSessionId }
+        rolloutFiles().any { rolloutFileSessionId(it.location.canonicalPath.substringAfterLast('/')) == providerSessionId }
 
     fun discoverSessionId(cwd: String, notBeforeMillis: Long): ProviderSessionId? {
         // The launch cutoff avoids binding an older same-cwd session; slack absorbs filesystem clock rounding.
@@ -64,8 +51,8 @@ class CodexRolloutScan(
             .filter { it.mtimeMillis >= threshold }
             .sortedByDescending { it.mtimeMillis }
             .firstNotNullOfOrNull { file ->
-                val id = rolloutFileSessionId(file.name) ?: return@firstNotNullOfOrNull null
-                val head = readHead(file.path, HEAD_BYTES) ?: return@firstNotNullOfOrNull null
+                val id = rolloutFileSessionId(file.location.canonicalPath.substringAfterLast('/')) ?: return@firstNotNullOfOrNull null
+                val head = readHead(file.location, HEAD_BYTES) ?: return@firstNotNullOfOrNull null
                 if (rolloutCwd(head) == cwd) id else null
             }
     }
@@ -112,15 +99,19 @@ class CodexRolloutScan(
 
     private fun rolloutHeadOf(providerSessionId: ProviderSessionId, bytes: Int): String? =
         rolloutFiles().firstNotNullOfOrNull { file ->
-            if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
-            readHead(file.path, bytes)
+            if (rolloutFileSessionId(file.location.canonicalPath.substringAfterLast('/')) != providerSessionId) return@firstNotNullOfOrNull null
+            readHead(file.location, bytes)
         }
 
-    private data class RolloutFile(val name: String, val path: String, val mtimeMillis: Long)
+    private fun readHead(location: RolloutLocation, bytes: Int): String? =
+        (reader.prefix(location, bytes) as? DecodedFileRead.Window)?.bytes?.decodeToString()
+
+    private data class RolloutFile(val location: RolloutLocation, val mtimeMillis: Long)
 
     private fun rolloutFiles(): List<RolloutFile> {
         // Codex's fixed date hierarchy is walked explicitly rather than recursively following surprises.
         val out = ArrayList<RolloutFile>()
+        val seen = HashSet<RolloutLocation>()
         for (year in listDir(sessionsRoot)) {
             val yearPath = "$sessionsRoot/$year"
             for (month in listDir(yearPath)) {
@@ -128,9 +119,11 @@ class CodexRolloutScan(
                 for (day in listDir(monthPath)) {
                     val dayPath = "$monthPath/$day"
                     for (file in listDir(dayPath)) {
-                        if (!file.endsWith(ROLLOUT_SUFFIX)) continue
-                        val path = "$dayPath/$file"
-                        out.add(RolloutFile(file, path, mtimeMillis(path) ?: continue))
+                        val location = RolloutLocation.fromPath("$dayPath/$file") ?: continue
+                        if (!seen.add(location)) continue
+                        val selected = resolveRollout(location) ?: continue
+                        if (regularFileStatus(selected.path) != RegularFileStatus.REGULAR) continue
+                        out.add(RolloutFile(location, mtimeMillis(selected.path) ?: continue))
                     }
                 }
             }

@@ -1,5 +1,7 @@
 package io.kotgent.daemon
 
+import io.kotgent.host.DecodedFileRead
+import io.kotgent.host.readDecodedPrefix
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.ProviderSessionId
@@ -57,6 +59,130 @@ class CodexRolloutScanTest {
     private fun uuid(c: Char): ProviderSessionId =
         ProviderSessionId("$c$c$c$c$c$c$c$c-$c$c$c$c-7$c$c$c-8$c$c$c-$c$c$c$c$c$c$c$c$c$c$c$c")
 
+
+    @Test
+    fun siblingsPreferPlainRegardlessOfDirectoryOrderAndDoNotFallbackOnEmptyPlain() {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/plain")
+        val plain = files.last()
+        writeBytes("$plain.zst", rawFrame("""{"cwd":"/work/compressed","model":"gpt-compressed"}"""))
+        files += "$plain.zst"
+        val scan = CodexRolloutScan(codexDir)
+        assertEquals("/work/plain", scan.cwdOf(id))
+        writeFile(plain, "{}")
+        assertNull(scan.cwdOf(id))
+        assertNull(scan.modelOf(id))
+        unlink(plain)
+        assertEquals("/work/compressed", scan.cwdOf(id))
+        assertEquals("gpt-compressed", scan.modelOf(id))
+        // Recreating plain after the compressed sibling reverses their creation/enumeration order.
+        writeFile(plain, """{"cwd":"/work/materialized","model":"gpt-plain"}""")
+        assertEquals("/work/materialized", scan.cwdOf(id))
+        assertEquals("gpt-plain", scan.modelOf(id))
+    }
+
+    @Test
+    fun compressedModelBeyondCwdPrefixAndCorruptionIsolation() {
+        val codexDir = makeCodexDir()
+        val bad = uuid('a')
+        val good = uuid('b')
+        placeRollout(codexDir, "2026", "10", "22", bad, "/work/bad")
+        val badPlain = files.last()
+        writeFile("$badPlain.zst", "not-zstd")
+        files += "$badPlain.zst"
+        unlink(badPlain)
+        placeRollout(codexDir, "2026", "10", "22", good, "/work/good")
+        val goodPlain = files.last()
+        val content = """{"cwd":"/work/good","instructions":"""" + "x".repeat(20_000) +
+            "\"}\n" + """{"type":"turn_context","payload":{"model":"gpt-test"}}""" + "\n"
+        writeBytes("$goodPlain.zst", rawFrame(content))
+        files += "$goodPlain.zst"
+        unlink(goodPlain)
+        val scan = CodexRolloutScan(codexDir)
+        assertTrue(scan.hasRollout(bad), "availability does not validate content")
+        assertNull(scan.cwdOf(bad))
+        assertEquals("gpt-test", scan.modelOf(good))
+        assertEquals(good, scan.discoverSessionId("/work/good", 0))
+        writeFile(goodPlain, content)
+        assertEquals("gpt-test", scan.modelOf(good))
+        assertEquals("/work/good", scan.cwdOf(good))
+    }
+
+    @Test
+    fun disappearanceBetweenResolutionAndOpenReresolvesBothDirectionsOnce() {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/plain")
+        val plain = files.last()
+        val compressed = "$plain.zst"
+        files += compressed
+        writeBytes(compressed, rawFrame("""{"cwd":"/work/compressed"}"""))
+        val location = requireNotNull(RolloutLocation.fromPath(plain))
+        var calls = 0
+        val toCompressed = CodexRolloutReader(prefixRead = { path, zipped, bytes ->
+            calls++
+            if (calls == 1) unlink(plain)
+            readDecodedPrefix(path, zipped, bytes)
+        })
+        assertEquals("/work/compressed", rolloutCwd(assertIsWindow(toCompressed.prefix(location, 1024))))
+        assertEquals(2, calls)
+        calls = 0
+        val toPlain = CodexRolloutReader(prefixRead = { path, zipped, bytes ->
+            calls++
+            if (calls == 1) {
+                unlink(compressed)
+                writeFile(plain, """{"cwd":"/work/materialized"}""")
+            }
+            readDecodedPrefix(path, zipped, bytes)
+        })
+        assertEquals("/work/materialized", rolloutCwd(assertIsWindow(toPlain.prefix(location, 1024))))
+        assertEquals(2, calls)
+        calls = 0
+        val unstable = CodexRolloutReader(prefixRead = { _, _, _ -> calls++; DecodedFileRead.Missing })
+        assertEquals(DecodedFileRead.Missing, unstable.prefix(location, 1024))
+        assertEquals(2, calls, "a continuously disappearing selection gets only one retry")
+        calls = 0
+        val corrupt = CodexRolloutReader(prefixRead = { _, _, _ -> calls++; DecodedFileRead.Unreadable })
+        assertEquals(DecodedFileRead.Unreadable, corrupt.prefix(location, 1024))
+        assertEquals(1, calls, "errors are not storage transitions")
+    }
+
+    private fun assertIsWindow(read: DecodedFileRead): String =
+        kotlin.test.assertIs<DecodedFileRead.Window>(read).bytes.decodeToString()
+
+    private fun rawFrame(text: String): ByteArray {
+        val body = text.encodeToByteArray()
+        require(body.size <= 128 * 1024)
+        val size = body.size
+        val block = (size shl 3) or 1
+        return byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte(), 0xa0.toByte()) +
+            ByteArray(4) { (size ushr (it * 8)).toByte() } +
+            ByteArray(3) { (block ushr (it * 8)).toByte() } + body
+    }
+
+    @Test
+    fun compressedOnlyRolloutSupportsIdentityAvailabilityDiscoveryAndCwd() {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "10", "22", id, "/work/compressed")
+        val plain = files.last()
+        val compressed = "$plain.zst"
+        // Synthetic Zstandard frame with one raw block; no provider transcript or compressor needed.
+        val content = """{"type":"session_meta","payload":{"cwd":"/work/compressed"}}""" + "\n"
+        val body = content.encodeToByteArray()
+        val frame = byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte(), 0x20, body.size.toByte()) +
+            byteArrayOf(((body.size shl 3) or 1).toByte(), (body.size shr 5).toByte(), 0) + body
+        writeBytes(compressed, frame)
+        files += compressed
+        unlink(plain)
+        val scan = CodexRolloutScan(codexDir)
+        assertEquals(id, rolloutFileSessionId(compressed.substringAfterLast('/')))
+        assertTrue(scan.hasRollout(id))
+        assertEquals("/work/compressed", scan.cwdOf(id))
+        assertEquals(id, scan.discoverSessionId("/work/compressed", 0))
+        assertNull(scan.discoverSessionId("/work/compressed", Long.MAX_VALUE))
+    }
 
     @Test
     fun idIsReadFromTheEndOfTheRolloutFileName() {
@@ -689,7 +815,10 @@ class CodexRolloutScanTest {
     }
 
     private fun writeFile(path: String, text: String) {
-        val bytes = text.encodeToByteArray()
+        writeBytes(path, text.encodeToByteArray())
+    }
+
+    private fun writeBytes(path: String, bytes: ByteArray) {
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
             val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }

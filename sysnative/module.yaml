@@ -15,4 +15,5 @@ settings:
       - -Xreturn-value-checker=full
       - -Xname-based-destructuring=complete
 
-# Toolchain auto-discovers cinterop/pty.def; no YAML cinterop wiring is required.
+# Toolchain auto-discovers cinterop/*.def. cinterop/include links the pinned decoder source;
+# the zstd definition compiles it into the binding, with no dynamic libzstd dependency.
