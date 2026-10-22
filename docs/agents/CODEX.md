@@ -48,17 +48,39 @@ session under that one in the sidebar.
 ## Import an existing conversation
 
 Find the provider session id in the `codex resume` picker or in the trailing UUID of a rollout filename:
-`~/.codex/sessions/<date>/rollout-<timestamp>-<session-id>.jsonl`.
+`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl` or `.jsonl.zst`.
+`CODEX_HOME` defaults to `~/.codex`.
 
 ```shell
 kotgent import codex <codex-session-id>
 ```
 
-Import verifies the rollout, discovers the project directory, and resumes the conversation under
+Import checks rollout availability, discovers the project directory, and resumes the conversation under
 Kotgent. Add `--cwd /path/to/project` to override directory discovery, or `--no-start` to register it
 without launching. A conversation archived by Codex cannot be imported from its archived rollout.
 This is separate from archiving a Kotgent row, which can be restored in the Web UI. See the
 [common import behavior](../../README.md#the-cli) before importing a conversation still running elsewhere.
+
+Both plain JSONL and Zstandard-compressed JSONL support discovery, import, reconciliation, resume
+preflight, model lookup and quota capture. If both siblings exist, the plain `.jsonl` is authoritative,
+even when its metadata is unreadable; Kotgent never falls back to stale compressed content on a read
+error. Availability means a regular rollout file exists. It does not validate the entire transcript or
+guarantee that Codex can resume it. `archived_sessions` remains excluded in both formats.
+
+Reads are best effort and bounded: cwd uses the first 8 KiB of decoded content, model lookup the first
+256 KiB, and quota capture the last 256 KiB. Prefix reads do not validate the unread suffix. Compressed
+tails stream through the file with bounded memory and must finish decoding successfully before quota
+is published; the capture deadline can cancel this work. Unsupported, corrupt or over-budget reads
+produce no metadata or new quota observation. The usage cache stores the canonical `.jsonl` location
+and rechecks both representations on every access, so compression alone does not refresh quota.
+Kotgent bundles its decoder and does not require a `zstd` command or system `libzstd`; it never rewrites
+or decompresses files into the provider store.
+
+Source inspection matched the installed Codex CLI 0.163.0
+[compression implementation](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/rollout/src/compression.rs):
+it prefers plain siblings and materializes compressed content before append. Kotgent's production
+preflight is tested with fake launch components. Actual Codex resume of a compressed conversation
+remains unverified; source compatibility and file availability are not a live resume result.
 
 ## Configuration, status, and approvals
 

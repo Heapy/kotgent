@@ -1,5 +1,10 @@
 package io.kotgent.daemon
 
+import io.kotgent.adapter.AgentAdapter
+import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchOptions
+import io.kotgent.adapter.LaunchSpec
+import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionState
@@ -10,6 +15,7 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.S_IRUSR
@@ -28,6 +34,8 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -55,8 +63,9 @@ class ImportWiringTest {
         tmux: FakeTmux,
         probe: VendorStoreProbe,
         locator: VendorSessionLocator,
+        factory: AgentFactory = untouchableFactory,
     ) = SessionManager(
-        tmux, store, PaneRegistry(), untouchableFactory,
+        tmux, store, PaneRegistry(), factory,
         ProviderIdCapture(store, this),
         probe, locator,
         setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND),
@@ -119,6 +128,169 @@ class ImportWiringTest {
                 store.getSession(SessionId("wire0001"))!!.state,
                 "reconcile over the real probe keeps the imported codex session resumable",
             )
+        }
+    }
+
+    // The fake records the actual resume request; FakeTmux never executes its command.
+    private fun resumeFactory(onResume: (String, ProviderSessionId) -> Unit) = AgentFactory { kind, cwd ->
+        assertEquals(CODEX_AGENT_KIND, kind)
+        object : AgentAdapter {
+            override val events = emptyFlow<AgentEvent>()
+            override fun buildLaunchSpec(mode: LaunchMode, options: LaunchOptions): LaunchSpec {
+                val resume = mode as LaunchMode.Resume
+                onResume(cwd, resume.providerSessionId)
+                return LaunchSpec(listOf("fake-codex", "resume", resume.providerSessionId.value), emptyMap(), cwd, null)
+            }
+        }
+    }
+
+    @Test
+    fun compressedOnlyImportReconcilesAndPassesRealResumePreflight() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/custom-codex-home")
+            val cwd = makeDir("$base/repo")
+            val id = uuid('e')
+            val compressed = placeCompressedRollout(codexDir, id, cwd)
+            val probe = productionProbe(base, codexDir = codexDir)
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val tmux = FakeTmux()
+            val requests = mutableListOf<Pair<String, ProviderSessionId>>()
+            val mgr = manager(store, tmux, probe, productionLocator(base, codexDir = codexDir),
+                resumeFactory { dir, provider -> requests += dir to provider })
+
+            val imported = mgr.importSession(CODEX_AGENT_KIND, id)
+            assertEquals(cwd, imported.cwd)
+            assertEquals(id, store.projectionOf(imported.id).providerSessionId)
+            assertEquals(SessionState.resumable, imported.state)
+            assertTrue(tmux.newSessionCommands.isEmpty())
+            val _ = Reconciler(tmux, store, probe, PaneRegistry()).reconcile()
+            assertEquals(SessionState.resumable, store.getSession(imported.id)!!.state)
+
+            val resumed = mgr.resume(imported.id)
+            assertEquals(listOf(cwd to id), requests)
+            assertEquals(SessionState.ready, resumed.state)
+            assertEquals(1, tmux.newSessionCommands.size)
+            assertTrue(CodexRolloutScan(codexDir).hasRollout(id))
+            assertNull(readHead(compressed.removeSuffix(".zst"), 1), "Kotgent never materializes a plain sibling")
+        }
+    }
+
+    @Test
+    fun archivedCompressedRolloutCannotBeImportedEvenWithExplicitCwd() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/.codex")
+            val id = uuid('f')
+            val archived = makeDir("$codexDir/archived_sessions")
+            writeBytes("$archived/rollout-2026-07-29T10-00-00-${id.value}.jsonl.zst", rawFrame(sessionMetaLine(id, base)))
+            val probe = productionProbe(base)
+            val store = SqliteEventStore.inMemory()
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, probe, productionLocator(base))
+            assertFalse(probe.hasTranscript(CODEX_AGENT_KIND, base, id))
+            assertFailsWith<ImportCwdException> { mgr.importSession(CODEX_AGENT_KIND, id) }
+            assertFailsWith<TranscriptNotFoundException> { mgr.importSession(CODEX_AGENT_KIND, id, cwd = base) }
+            assertTrue(store.listSessions().isEmpty())
+            assertTrue(tmux.newSessionCommands.isEmpty())
+        }
+    }
+
+    @Test
+    fun disappearingCompressedRolloutIsRefusedBetweenDiscoveryAndImportProbe() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/.codex")
+            val id = uuid('a')
+            val path = placeCompressedRollout(codexDir, id, base)
+            val realLocator = productionLocator(base)
+            val disappearingLocator = VendorSessionLocator { kind, provider ->
+                realLocator.cwdOf(kind, provider).also { assertEquals(0, unlink(path)) }
+            }
+            val store = SqliteEventStore.inMemory()
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, productionProbe(base), disappearingLocator)
+            assertFailsWith<TranscriptNotFoundException> { mgr.importSession(CODEX_AGENT_KIND, id) }
+            assertTrue(store.listSessions().isEmpty())
+            assertTrue(tmux.newSessionCommands.isEmpty())
+        }
+    }
+
+    @Test
+    fun disappearanceAfterImportBlocksResumeAndReconciliationMarksLost() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/.codex")
+            val id = uuid('b')
+            val path = placeCompressedRollout(codexDir, id, base)
+            val probe = productionProbe(base)
+            val store = SqliteEventStore.inMemory()
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, probe, productionLocator(base), resumeFactory { _, _ -> })
+            val imported = mgr.importSession(CODEX_AGENT_KIND, id)
+            assertEquals(0, unlink(path))
+            assertFailsWith<TranscriptGoneException> { mgr.resume(imported.id) }
+            assertEquals(SessionState.lost, store.getSession(imported.id)!!.state)
+            val _ = Reconciler(tmux, store, probe, PaneRegistry()).reconcile()
+            assertEquals(SessionState.lost, store.getSession(imported.id)!!.state)
+            assertTrue(tmux.newSessionCommands.isEmpty())
+        }
+    }
+
+    @Test
+    fun corruptCompressedMetadataDoesNotHideOtherSessionsOrImplyValidatedAvailability() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/.codex")
+            val bad = uuid('c')
+            val good = uuid('d')
+            val badPath = placeCompressedRollout(codexDir, bad, base)
+            writeFile(badPath, "not a zstd frame")
+            val _ = placeCompressedRollout(codexDir, good, base)
+            val probe = productionProbe(base)
+            val locator = productionLocator(base)
+            val store = SqliteEventStore.inMemory()
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, probe, locator)
+            assertTrue(probe.hasTranscript(CODEX_AGENT_KIND, base, bad), "availability does not validate content")
+            assertNull(locator.cwdOf(CODEX_AGENT_KIND, bad))
+            assertFailsWith<ImportCwdException> { mgr.importSession(CODEX_AGENT_KIND, bad) }
+            assertTrue(store.listSessions().isEmpty())
+            val imported = mgr.importSession(CODEX_AGENT_KIND, good)
+            assertEquals(good, imported.providerSessionId)
+            assertEquals(base, imported.cwd)
+            val _ = Reconciler(tmux, store, probe, PaneRegistry()).reconcile()
+            assertEquals(SessionState.resumable, store.getSession(imported.id)!!.state)
+        }
+    }
+
+    @Test
+    fun plainSiblingIsAuthoritativeThroughoutProductionImportWiring() = runBlocking {
+        withTimeout(20.seconds) {
+            val base = makeBase()
+            val codexDir = makeDir("$base/.codex")
+            val oldCwd = makeDir("$base/old")
+            val currentCwd = makeDir("$base/current")
+            val id = uuid('e')
+            val compressed = placeCompressedRollout(codexDir, id, oldCwd)
+            val plain = compressed.removeSuffix(".zst")
+            val locator = productionLocator(base)
+            writeFile(plain, "broken metadata")
+            assertNull(locator.cwdOf(CODEX_AGENT_KIND, id), "an authoritative bad plain file cannot fall back to stale metadata")
+            val store = SqliteEventStore.inMemory()
+            val tmux = FakeTmux()
+            val probe = productionProbe(base)
+            val requests = mutableListOf<Pair<String, ProviderSessionId>>()
+            val mgr = manager(store, tmux, probe, locator, resumeFactory { dir, provider -> requests += dir to provider })
+            assertFailsWith<ImportCwdException> { mgr.importSession(CODEX_AGENT_KIND, id) }
+            writeFile(plain, sessionMetaLine(id, currentCwd))
+            val imported = mgr.importSession(CODEX_AGENT_KIND, id)
+            assertEquals(currentCwd, imported.cwd)
+            val _ = Reconciler(tmux, store, probe, PaneRegistry()).reconcile()
+            assertEquals(SessionState.resumable, store.getSession(imported.id)!!.state)
+            val _ = mgr.resume(imported.id)
+            assertEquals(listOf(currentCwd to id), requests)
+            assertEquals(1, tmux.newSessionCommands.size)
         }
     }
 
@@ -281,6 +453,25 @@ class ImportWiringTest {
         writeFile("$day/rollout-2026-07-29T10-00-00-${id.value}.jsonl", sessionMetaLine(id, recordedCwd))
     }
 
+    private fun placeCompressedRollout(codexDir: String, id: ProviderSessionId, cwd: String): String {
+        placeCodexRollout(codexDir, id, cwd)
+        val plain = files.last()
+        val compressed = "$plain.zst"
+        writeBytes(compressed, rawFrame(sessionMetaLine(id, cwd)))
+        assertEquals(0, unlink(plain))
+        return compressed
+    }
+
+    // A spec-valid raw Zstandard block makes filesystem integration independent of an installed compressor.
+    private fun rawFrame(text: String): ByteArray {
+        val body = text.encodeToByteArray()
+        require(body.size <= 128 * 1024)
+        val block = (body.size shl 3) or 1
+        return byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte(), 0xa0.toByte()) +
+            ByteArray(4) { (body.size ushr (it * 8)).toByte() } +
+            ByteArray(3) { (block ushr (it * 8)).toByte() } + body
+    }
+
     private fun placeJunieSession(junieDir: String, id: ProviderSessionId, recordedCwd: String) {
         val sessions = makeDir("$junieDir/sessions")
         val session = makeDir("$sessions/${id.value}")
@@ -296,8 +487,9 @@ class ImportWiringTest {
         """{"timestamp":"2026-07-29T10:00:00.000Z","type":"session_meta",""" +
             """"payload":{"session_id":"${id.value}","timestamp":"2026-07-29T10:00:00.000Z","cwd":"$cwd"}}""" + "\n"
 
-    private fun writeFile(path: String, text: String) {
-        val bytes = text.encodeToByteArray()
+    private fun writeFile(path: String, text: String) = writeBytes(path, text.encodeToByteArray())
+
+    private fun writeBytes(path: String, bytes: ByteArray) {
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
             val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }

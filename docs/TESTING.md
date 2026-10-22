@@ -194,6 +194,44 @@ session to `resumable`, import without `--cwd`, and starting from the Web UI's J
 model was `gpt-4.1-mini-2025-04-14` while the TUI showed "Junie Mix", so whether model capture picks the
 primary model rather than a helper is unconfirmed.
 
+Compressed Codex rollout coverage uses synthetic data only. `ZstdReaderTest` decodes a fixture made
+by the pinned upstream compressor and tests checksums, truncation, concatenated frames, resource
+limits, cancellation and descriptor cleanup. `CodexRolloutScanTest` exercises shared resolution,
+plain authority, bounded metadata/tail reads and canonical-cache transitions. `CodexUsageCaptureTest`
+and the scanner's real SQLite usage-store test protect replay, freshness and later-record advancement.
+`ImportWiringTest` uses the production locator/probe, real in-memory SQLite store and fake adapter/tmux
+to exercise compressed-only import, reconciliation and actual `SessionManager.resume` preflight,
+archive exclusion, disappearance, corrupt metadata isolation and plain coexistence. No provider is
+launched. Availability is not transcript validation or proof of successful provider resume.
+
+The bundled decompression-only Zstandard dependency is v1.5.7 at commit
+`f8745da6ff1ad1e7bab384bd1f9d742439278e99`; its source hash, reproduction instructions and BSD license
+are recorded in [the vendor README](../sysnative/vendor/zstd/README.md). Check release archives for
+`licenses/zstd.txt`, executable/resource content and absence of a dynamic `libzstd` dependency; fixture
+decoding must also pass in a release Native test binary. The existing CI matrix builds/releases Linux
+x64 on Ubuntu 22.04 and cross-links ARM64 on x64 before executing transferred test binaries and the
+archive on `ubuntu-22.04-arm`. Cross-compilation or source inspection alone is not Linux runtime evidence.
+The source compatibility baseline for compressed Codex resume is 0.163.0; actual provider resume is
+unverified and must not be inferred from fake-launch tests.
+
+Local verification on 2026-10-22 passed the ordered Web UI install/typecheck/build and full macOS
+ARM64/JVM build/test gates (1,983 Native and 281 JVM passing tests), plus all seven release-mode
+`ZstdReaderTest` cases. The macOS release archive passed checksum, version/help and resource checks;
+its executable and 36 Web UI files matched the build inputs, and `licenses/zstd.txt` matched the vendor
+license. Symbol/library inspection confirmed an embedded decoder with no dynamic `libzstd` dependency.
+Release decoder test executables also compiled and linked for Linux x64 and ARM64 with embedded
+Zstandard symbols and no `libzstd` dependency, but were not executed. Full Linux application archives
+and Linux runtime remain unverified locally: this Mac lacks the configured Ubuntu multiarch sysroot
+and a local Linux runtime. The CI route above remains required for those results.
+
+Warnings recorded during this verification: existing unused-return warnings in test/harness code,
+Vite's large-chunk warning, and `npm audit` reporting high-severity advisories for the unchanged
+`vite` and `source-map-js` dependencies. No new compiler warning remained in the changed tests or
+decoder. macOS `tar` also added 44 AppleDouble (`._*`) metadata entries to the archive through the
+existing copy/archive path; the application payload contained no unexpected files. These checks did
+not launch a real provider session, run the operator's daemon, publish a release or establish actual
+Codex resume behavior.
+
 Codex hook trust hashes were checked on 2026-09-24 against `hooks/list` from `codex app-server` for
 Codex CLI 0.146.1, 0.150.1, 0.153.0 and 0.156.1; the fixture values come from 0.156.1. The probe runs
 `codex -c '<hooks value>' app-server` over stdio, sends `initialize`, `initialized` and `hooks/list`, and
