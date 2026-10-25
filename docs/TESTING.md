@@ -383,6 +383,11 @@ notification permission prompts.
 
 Real-device release checklist:
 
+- On macOS, open two Safari PWA windows on different sessions. Check their titles in the Window
+  menu and Mission Control: each page supplies `project — session — Kotgent`, using the cwd folder
+  when no project is available. Switch and rename sessions, then open the backlog and return; titles
+  must follow the visible content independently. Verify the installed app separately: browser DOM
+  checks do not prove how Safari displays page titles in native window chrome.
 - On a phone in Safari and the installed PWA, swipe vertically over the header and past both ends
   of the terminal, drawer and workspace panels. The header must stay on screen while inner content
   scrolls. Repeat with the software keyboard open and after dismissal, and check that dialog inputs

@@ -16,6 +16,7 @@ import {
   wsUrl,
 } from "./lib/api.ts";
 import { writeClipboard } from "./lib/clipboard.ts";
+import { basename } from "./lib/paths.ts";
 import {
   ABORT_PROBE,
   ATTACH,
@@ -625,6 +626,18 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
   // Treat stale IDs absent from the live project list as no selection.
   const selectedProject = findProject(projectId);
   const selectedProjectId = selectedProject ? selectedProject.id : null;
+
+  const titleSession = sessionView ? activeSession : null;
+  const titleProject = titleSession ? findProject(titleSession.projectId) : selectedProject;
+  const pageTitle = titleSession
+    ? [titleProject?.name || basename(titleSession.cwd), displayName(titleSession), "Kotgent"]
+      .filter(Boolean).join(" — ")
+    : onBoard
+      ? [titleProject?.name, openTaskEntry?.title || "Tasks", "Kotgent"].filter(Boolean).join(" — ")
+      : onMutexes ? "Mutexes — Kotgent" : "Kotgent";
+  useLayoutEffect(() => {
+    document.title = pageTitle;
+  }, [pageTitle]);
 
   const showSession = useCallback((session: Session) => {
     selectSessionId(session.id);
