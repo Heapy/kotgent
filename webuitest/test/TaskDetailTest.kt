@@ -214,7 +214,7 @@ class TaskDetailTest {
 
             assertThat(page.locator(".task-detail")).hasCount(0)
             assertThat(page.locator(".board")).isVisible()
-            assertThat(page).hasURL(harness.baseUrl + "/tasks")
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=33333333-3333-4333-8333-333333333333")
         }
     }
 

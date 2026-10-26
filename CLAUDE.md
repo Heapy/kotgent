@@ -252,6 +252,29 @@ the common workflow and links to those guides; implementation invariants belong 
   swap is not covered, because the event fires only for lazy imports.
 - `webui/src/lib/router.ts` is the only owner of browser history. `app.tsx` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
+  `/tasks?project=<uuid>` selects a project backlog; `Route.project` is separate from the task ref in `id`.
+  The board's selected project comes from that route; create/restore/select navigate, and fallback after
+  a successful catalogue load replaces the current history entry. A ref remembers the last live board
+  project only as a return-link hint shared by Sidebar Tasks and board/new-task/new-project commands;
+  it never overrides an explicit route, and an archived/missing hint falls back to `/tasks`.
+  Task/plan routes derive their project from the task, with the first live backlog behind an archived
+  project's deep-linked task.
+  Folder task links use read-only `POST /projects/resolve` with at most 64 paths (4096 characters each,
+  2 MiB body). `ProjectLookupService.lookupProjects` returns `found`/`absent`/`failed` per path with only a project ID,
+  depends only on filesystem reads and project-by-ID reads, and is wired independently of `TaskService`. It
+  shares FS reads within the request and never registers, restores or updates a project. Background lookup
+  suppresses malformed-file warnings; startup/adoption retain their diagnostics. Unexpected lookup exceptions
+  produce one warning per failed batch with the failure count and first cause; cancellation propagates.
+  Session `projectId` is a
+  lifecycle link; folder identity is a fresh nearest-file/worktree lookup and can legitimately differ.
+  `state/folder-projects.ts` stores IDs, joins the common catalogue for names/availability, retains successful
+  identities on errors and reads newly observed paths on regrouping. Foreground return rereads all active paths;
+  project membership changes invalidate lookups, including inactive cache entries. Failed paths retry on
+  the next refresh. Foreground signals coalesce; there are no TTLs, retry timers or periodic polling.
+  Each Sidebar owns an independent observer; active paths are the union of observers, and disposing one
+  cannot remove another's paths. Drawer visibility only hides the mounted Sidebar.
+  The LRU retains at most 512 entries unless active paths alone exceed that bound. Project catalogue
+  foreground refresh also runs on sessions.
 - Keep terminal reattachment decisions in `webui/src/lib/reattach.ts`; `app.tsx` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
   not spend a grant before a candidate exists, and keep probe guards ordered. A hidden page holds a

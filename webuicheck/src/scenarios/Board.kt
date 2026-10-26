@@ -25,6 +25,7 @@ fun boardScenarios(): List<Scenario> = listOf(
     boardScenario(),
     boardEmptyScenario(),
     boardProjectsScenario(),
+    sidebarProjectsScenario(),
     taskDetailScenario(),
     taskLinkedSessionScenario(),
     taskLinkPickerScenario(),
@@ -72,6 +73,22 @@ private fun boardProjectsScenario(): Scenario = Scenario(
         tasks.seedTask(TaskRef("local:4"), spare, "Hold the repaint")
         tasks.seedTask(TaskRef("local:5"), deleted, "Fold the leftover branch in")
         tasks.seedTask(TaskRef("local:6"), deleted, "Retire the old socket", state = TaskState.review)
+    },
+)
+
+private fun sidebarProjectsScenario(): Scenario = Scenario(
+    name = "sidebar-projects",
+    seed = { fakes ->
+        boardProjectsScenario().seed(fakes)
+        val _ = fixtureProject(fakes, BOARD_EMPTY_PROJECT_ID, "Empty Fixture", "/repo/empty")
+        fakes.projectFs.addDirectories(listOf("/repo/alpha/sub", "/repo/alpha/.git/worktrees/feature",
+            "/worktrees/alpha", "/repo/scratch"))
+        fakes.projectFs.writeFile("/worktrees/alpha/.git", "gitdir: /repo/alpha/.git/worktrees/feature\n")
+        for ([id, cwd] in listOf("alpha" to "/repo/alpha/sub", "beta" to "/repo/beta",
+            "worktree" to "/worktrees/alpha", "scratch" to "/repo/scratch",
+            "archived" to "/repo/gamma", "empty" to "/repo/empty")) {
+            fixtureSession(fakes, "s-sidebar-$id", id, "codex", cwd, SEED_EPOCH_MS)
+        }
     },
 )
 

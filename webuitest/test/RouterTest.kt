@@ -66,7 +66,7 @@ class RouterTest {
         assertThat(sessions).hasAttribute("aria-current", "page")
 
         tasks.click()
-        assertThat(page).hasURL("$base/tasks")
+        assertThat(page).hasURL("$base/tasks?project=55555555-5555-4555-8555-555555555555")
         assertBoard(page)
         assertThat(tasks).hasAttribute("aria-current", "page")
         assertThat(sessions).not().hasAttribute("aria-current", "page")
@@ -126,7 +126,7 @@ class RouterTest {
         roundTrip(page, "$base/tasks") {
             assertBoard(page)
             assertThat(page.locator("section.task-detail")).hasCount(0)
-            assertThat(page).hasURL("$base/tasks")
+            assertThat(page).hasURL("$base/tasks?project=55555555-5555-4555-8555-555555555555")
         }
         roundTrip(page, "$base/tasks/$ENCODED_TASK") {
             assertTaskDetail(page)

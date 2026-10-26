@@ -17,6 +17,7 @@ restarting the daemon—must not discard the work.
   each provider session.
 - Keep an ordered, dependency-aware backlog per project so ideas become explicit work rather than context
   remembered by the operator or trapped in one session.
+- Open a project's backlog directly from its session folder, including subfolders and Git worktrees.
 - Use the full terminal and backlog comfortably from an installable phone or tablet PWA.
 - Review a task's structured plan from a phone or desktop: mark blocks viewed, ask questions, edit text,
   and approve a durable review round while the authoring agent waits. Concurrent changes preserve drafts

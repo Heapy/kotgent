@@ -236,7 +236,7 @@ class BoardTest {
 
             page.locator("#task-detail-close").click()
             assertThat(detail).hasCount(0)
-            assertThat(page).hasURL(harness.baseUrl + "/tasks")
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=11111111-1111-4111-8111-111111111111")
         }
 
     @Test

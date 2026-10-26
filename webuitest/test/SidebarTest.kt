@@ -1,10 +1,12 @@
 package io.kotgent.webuitest
 
+import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import com.microsoft.playwright.options.RequestOptions
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.regex.Pattern
 import java.util.concurrent.atomic.AtomicInteger
@@ -15,6 +17,120 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 class SidebarTest {
+
+    @Test
+    fun folderTaskLinksSelectTheProjectAndPreserveTheFolderOnReturn() {
+        signedIn("sidebar-projects", "sidebar-project-tasks") { harness, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            val alpha = folderHead(page, "/repo/alpha")
+            val beta = folderHead(page, "/repo/beta")
+            val button = beta.locator(".group-tasks")
+            assertThat(button).hasAttribute("aria-label", "Tasks for Beta Fixture")
+            assertThat(button).hasCSS("opacity", "0")
+            assertThat(button).hasCSS("pointer-events", "none")
+            beta.hover()
+            assertThat(button).hasCSS("opacity", "1")
+            assertThat(button).hasCSS("pointer-events", "auto")
+            beta.locator(".group-toggle").click()
+            assertThat(beta.locator(".group-toggle")).hasAttribute("aria-expanded", "false")
+            button.focus()
+            page.keyboard().press("Enter")
+            assertThat(page.locator(".board-project")).hasText("Beta Fixture")
+            assertThat(page.locator(".task-card")).hasCount(1)
+            assertEquals(harness.baseUrl + "/tasks?project=44444444-4444-4444-8444-444444444444", page.url())
+            page.reload()
+            assertThat(page.locator(".board-project")).hasText("Beta Fixture")
+            page.goBack()
+            assertThat(beta.locator(".group-toggle")).hasAttribute("aria-expanded", "false")
+            alpha.hover()
+            alpha.locator(".group-tasks").click()
+            assertThat(page.locator(".board-project")).hasText("Alpha Fixture")
+            assertThat(page.locator(".task-card")).hasCount(3)
+        }
+    }
+
+    @Test
+    fun folderTaskLinksResolveSubdirectoriesWorktreesAndEmptyProjectsButNeverSharedOrDeletedFolders() {
+        signedIn("sidebar-projects", "sidebar-project-resolution") { _, _, page ->
+            configureGrouping(page, basePath = "/", level = 3)
+            val sub = folderHead(page, "/repo/alpha/sub").locator(".group-tasks")
+            val worktree = folderHead(page, "/worktrees/alpha").locator(".group-tasks")
+            assertThat(sub).hasAttribute("href", "/tasks?project=33333333-3333-4333-8333-333333333333")
+            assertThat(worktree).hasAttribute("href", "/tasks?project=33333333-3333-4333-8333-333333333333")
+            for (path in listOf("/repo", "/worktrees", "/repo/scratch", "/repo/gamma")) {
+                assertThat(folderHead(page, path).locator(".group-tasks")).hasCount(0)
+            }
+            folderHead(page, "/worktrees/alpha").hover()
+            worktree.click()
+            assertThat(page.locator(".board-project")).hasText("Alpha Fixture")
+            page.goBack()
+            val empty = folderHead(page, "/repo/empty")
+            empty.hover()
+            empty.locator(".group-tasks").click()
+            assertThat(page.locator(".board-project")).hasText("Empty Fixture")
+            assertThat(page.locator(".task-card")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun regroupingKeepsKnownLinksAndArchivedCatalogueRowsCannotBeRevivedByLookup() {
+        signedIn("sidebar-projects", "sidebar-project-refresh") { harness, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            val alpha = folderHead(page, "/repo/alpha").locator(".group-tasks")
+            val beta = folderHead(page, "/repo/beta").locator(".group-tasks")
+            assertThat(alpha).hasCount(1)
+            assertThat(beta).hasCount(1)
+            val held = AtomicReference<Route?>(null)
+            page.route("**/api/v1/projects/resolve") { route -> held.set(route) }
+            configureGrouping(page, basePath = "/", level = 3)
+            page.waitForCondition { held.get() != null }
+            assertThat(alpha).hasCount(1)
+            assertThat(beta).hasCount(1)
+            held.getAndSet(null)!!.resume()
+            assertThat(folderHead(page, "/repo/alpha/sub").locator(".group-tasks")).hasCount(1)
+
+            harness.send("project-del 33333333-3333-4333-8333-333333333333")
+            page.evaluate("""() => {
+                window.dispatchEvent(new Event('blur'));
+                window.dispatchEvent(new Event('focus'));
+            }""")
+            page.waitForCondition { held.get() != null }
+            assertThat(alpha).hasCount(0)
+            assertThat(beta).hasCount(1)
+            held.get()!!.fulfill(Route.FulfillOptions().setContentType("application/json").setBody("""[
+                {"path":"/repo/alpha","status":"found","projectId":"33333333-3333-4333-8333-333333333333"},
+                {"path":"/repo/beta","status":"failed","projectId":null}
+            ]"""))
+            assertThat(alpha).hasCount(0)
+            assertThat(beta).hasCount(1)
+        }
+    }
+
+    @Test
+    fun aTouchscreenShowsFolderTaskLinksAndClosesTheDrawerAfterOpeningTheProject() {
+        Harness("sidebar-projects").use { harness ->
+            onChromium { browser ->
+                browser.newContext(Browser.NewContextOptions().setViewportSize(390, 844).setHasTouch(true)).use { context ->
+                    context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    val page = context.newPage()
+                    page.navigate(harness.baseUrl + "/")
+                    // Configure the daemon directly so the touch check starts with the actual drawer.
+                    val response = context.request().put(harness.baseUrl + "/api/v1/preferences",
+                        RequestOptions.create().setHeader("Origin", harness.baseUrl).setData(
+                            """{"basePath":"/","groupingLevel":2}"""))
+                    assertEquals(200, response.status(), response.text())
+                    page.reload()
+                    page.locator("#drawer-toggle").click()
+                    val tasks = folderHead(page, "/repo/beta").locator(".group-tasks")
+                    assertThat(tasks).hasCSS("opacity", "1")
+                    assertThat(tasks).hasCSS("pointer-events", "auto")
+                    tasks.click()
+                    assertThat(page.locator(".board-project")).hasText("Beta Fixture")
+                    assertThat(page.locator("#sidebar")).not().hasClass(Pattern.compile(".*\\bopen\\b.*"))
+                }
+            }
+        }
+    }
 
     @Test
     fun selectingAndReselectingASessionFocusesItsTerminalForTyping() {

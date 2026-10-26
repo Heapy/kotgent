@@ -25,6 +25,7 @@ class ProjectArchiveTest {
             page.pressMnemonic("KeyO")
             page.awaitBoard()
             assertThat(page.locator(".board-project")).hasText("No project")
+            assertThat(page).hasURL(harness.baseUrl + "/tasks")
 
             page.openPalette()
             val _ = page.searchFor(PROJECT_QUERY)
@@ -67,6 +68,7 @@ class ProjectArchiveTest {
             assertThat(page.locator(".board-project")).hasText("Beta Fixture")
             assertThat(page.locator(".board-project-path")).hasText("/repo/beta")
             assertThat(page.locator("#board-status")).containsText("Deleted Alpha Fixture")
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=$SPARE_PROJECT")
             assertThat(page.locator(".task-card")).hasCount(SPARE_CARDS)
 
             page.openPalette()
@@ -93,6 +95,7 @@ class ProjectArchiveTest {
             assertThat(page.locator("#delete-project-dialog")).hasCount(0)
             assertThat(page.projectRows()).hasCount(0)
             assertThat(page.locator(".board-project")).hasText("No project")
+            assertThat(page).hasURL(harness.baseUrl + "/tasks")
 
             page.openPalette()
             val _ = page.searchFor(DELETE_QUERY)
@@ -125,6 +128,9 @@ class ProjectArchiveTest {
             assertThat(page.locator(".board-project")).hasText("Gamma Fixture")
             assertThat(page.locator("#board-status")).containsText("Restored Gamma Fixture")
             assertThat(page.locator(".task-card")).hasCount(DELETED_CARDS)
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=$DELETED_PROJECT")
+            page.reload()
+            assertThat(page.locator(".board-project")).hasText("Gamma Fixture")
 
             harness.send("project-del $SELECTED_PROJECT")
             page.openPalette()

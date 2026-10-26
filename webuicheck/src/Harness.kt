@@ -12,6 +12,7 @@ import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
@@ -198,6 +199,7 @@ class Harness(
         usageStore = fakes.usage.store,
         usageClock = fakes.usage::currentTimeMillis,
         taskService = taskService,
+        projectLookupService = ProjectLookupService(fakes.projectFs, fakes.taskStore::project),
         mutexStore = mutexes,
         planStore = fakes.planStore,
         port = port,

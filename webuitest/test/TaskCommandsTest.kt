@@ -43,7 +43,7 @@ class TaskCommandsTest {
             page.pressMnemonic("KeyO")
 
             assertThat(page.locator("#command-palette")).hasCount(0)
-            assertThat(page).hasURL(Pattern.compile("/tasks$"))
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=11111111-1111-4111-8111-111111111111")
             page.awaitBoard()
             assertThat(page.taskCard("local:1")).isVisible()
 
@@ -128,7 +128,7 @@ class TaskCommandsTest {
 
             page.openPalette()
             page.pressMnemonic("KeyW")
-            assertThat(page).hasURL(Pattern.compile("/tasks$"))
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=11111111-1111-4111-8111-111111111111")
             assertThat(page.locator("#new-task-dialog")).isVisible()
             assertThat(page.locator("#new-task-title-input")).isVisible()
 
@@ -241,7 +241,7 @@ class TaskCommandsTest {
 
             page.runFirstMatch("new project", "New project")
 
-            assertThat(page).hasURL(Pattern.compile("/tasks$"))
+            assertThat(page).hasURL(harness.baseUrl + "/tasks?project=11111111-1111-4111-8111-111111111111")
             assertThat(page.locator("#new-project-dialog")).isVisible()
             assertThat(page.locator("#new-project-path")).isVisible()
             // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).

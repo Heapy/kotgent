@@ -5,6 +5,7 @@ import io.kotgent.diff.DiffReader
 import io.kotgent.diff.DiffService
 import io.kotgent.diff.GitDiffReader
 import io.kotgent.currentUiVersion
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.exe.NativeExe
@@ -90,6 +91,7 @@ class KotgentServer(
     private val planStore: PlanStore? = null,
     private val onPlanReview: (String) -> Unit = {},
     diffReader: DiffReader = GitDiffReader(),
+    private val projectLookupService: ProjectLookupService? = null,
 ) {
     private val diffService = DiffService(eventStore, diffReader)
     private var terminalRegistry: TerminalRegistry? = null
@@ -154,6 +156,7 @@ class KotgentServer(
                         val _ = authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
                                 diffRoutes(diffService, json)
+                                projectLookupService?.let { projectLookupRoutes(it, json) }
                                 fileUploadRoutes(eventStore, fileUploader, json)
                                 controlRoutes(
                                     sessionManager,
@@ -277,6 +280,7 @@ class KotgentServer(
             planStore: PlanStore? = null,
             onPlanReview: (String) -> Unit = {},
             diffReader: DiffReader = GitDiffReader(),
+            projectLookupService: ProjectLookupService? = null,
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -300,6 +304,7 @@ class KotgentServer(
             planStore = planStore,
             onPlanReview = onPlanReview,
             diffReader = diffReader,
+            projectLookupService = projectLookupService,
             host = host,
             port = port,
         )

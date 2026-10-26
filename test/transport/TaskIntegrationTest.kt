@@ -11,6 +11,7 @@ import io.kotgent.core.ProviderSessionId
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
@@ -317,6 +318,7 @@ class TaskIntegrationTest {
                 webUiDir = locateTaskIntegrationWebUiDir(),
                 taskStore = tasks,
                 taskService = service,
+                projectLookupService = ProjectLookupService(fs, tasks::project),
                 port = 0,
             ).start()
             val client = routeTestClient {

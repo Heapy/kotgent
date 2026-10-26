@@ -9,6 +9,7 @@ import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
@@ -226,6 +227,7 @@ class SpaRoutingTest {
                 webUiDir = locateSpaWebUiDir(),
                 taskStore = tasks,
                 taskService = TaskService(tasks, eventStore, UnusedProjectFs(), UnusedProjectFileWriter()),
+                projectLookupService = ProjectLookupService(UnusedProjectFs(), tasks::project),
                 port = 0,
             ).start()
             val client = routeTestClient()

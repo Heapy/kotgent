@@ -21,6 +21,7 @@ export const MUTEXES_PATH = "/mutexes";
 export interface Route {
   screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_PLAN | typeof SCREEN_SESSIONS | typeof SCREEN_MUTEXES;
   id: string | null;
+  project?: string | null;
 }
 
 function segmentsOf(pathname: unknown) {
@@ -48,6 +49,8 @@ function deepLinkId(search?: string | null) {
 export function parseRoute(pathname: unknown, search?: string | null): Route {
   const segments = segmentsOf(pathname);
   if (segments.length === 1 && segments[0] === SCREEN_TASKS) {
+    const project = new URLSearchParams(search || "").get("project");
+    if (project) return { screen: SCREEN_TASKS, id: null, project };
     return { screen: SCREEN_TASKS, id: null };
   }
   if (segments.length === 1 && segments[0] === SCREEN_MUTEXES) {
@@ -68,7 +71,7 @@ export function parseRoute(pathname: unknown, search?: string | null): Route {
 export function routePath(route: Route | null | undefined) {
   const screen = route ? route.screen : null;
   const id = route && route.id ? String(route.id) : null;
-  if (screen === SCREEN_TASKS) return "/tasks";
+  if (screen === SCREEN_TASKS) return route?.project ? projectBoardPath(route.project) : "/tasks";
   if (screen === SCREEN_MUTEXES) return MUTEXES_PATH;
   if (screen === SCREEN_TASK) return id ? taskPath(id) : "/tasks";
   if (screen === SCREEN_PLAN) return id ? planPath(id) : "/tasks";
@@ -78,6 +81,10 @@ export function routePath(route: Route | null | undefined) {
 
 export function taskPath(ref: string) {
   return "/tasks/" + encodeURIComponent(ref);
+}
+
+export function projectBoardPath(id: string) {
+  return "/tasks?project=" + encodeURIComponent(id);
 }
 
 export function planPath(ref: string) { return taskPath(ref) + "/plan"; }
@@ -108,11 +115,12 @@ function emitRoute() {
   }
 }
 
-export function navigate(path: unknown) {
+export function navigate(path: unknown, options: { replace?: boolean } = {}) {
   const target = typeof path === "string" && path.length > 0 ? path : "/";
   try {
     if (target === window.location.pathname + window.location.search) return;
-    window.history.pushState(null, "", target);
+    if (options.replace) window.history.replaceState(null, "", target);
+    else window.history.pushState(null, "", target);
   } catch (_) {
     try {
       window.location.assign(target);

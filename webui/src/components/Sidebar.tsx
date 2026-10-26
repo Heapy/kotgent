@@ -37,10 +37,12 @@ import {
 import { attentionRows, detachedParentLabel, sessionForest, workersLabel } from "../lib/tree.ts";
 import type { SessionNode } from "../lib/tree.ts";
 import { expandedTrees, toggleTree } from "../state/tree.ts";
+import { folderProjects, folderProjectStore } from "../state/folder-projects.ts";
 import {
   SCREEN_SESSIONS,
   SCREEN_TASKS,
   navigate,
+  projectBoardPath,
   routePath,
   taskPath,
 } from "../lib/router.ts";
@@ -55,6 +57,7 @@ type PushOperation = (context: PushTransition) => Promise<boolean> | undefined;
 
 interface SidebarProps {
   screen?: Route["screen"];
+  boardPath: string;
   sessions: readonly Session[];
   tasks: readonly Task[];
   projects?: readonly Project[];
@@ -87,6 +90,7 @@ interface SidebarProps {
 interface NavSwitchProps {
   screen: Route["screen"];
   sessionsPath: string;
+  boardPath: string;
 }
 
 interface ToggleIconProps {
@@ -138,6 +142,8 @@ interface ChevronProps {
 interface SessionGroupProps {
   group: SessionGroupData<SessionNode>;
   tasks: readonly Task[];
+  projectsByPath: ReadonlyMap<string, Project>;
+  onSelectProject: (id: string) => void;
   activeId: string | null;
   index: ReadonlyMap<string, Session>;
   expanded: ReadonlySet<string>;
@@ -154,13 +160,11 @@ interface SessionGroupProps {
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
-const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
-
 /** Preserve real links; route only plain clicks in-app. */
-function NavSwitch({ screen, sessionsPath }: NavSwitchProps) {
+function NavSwitch({ screen, sessionsPath, boardPath }: NavSwitchProps) {
   const links = [
     { screen: SCREEN_SESSIONS, path: sessionsPath, label: "Sessions" },
-    { screen: SCREEN_TASKS, path: TASKS_PATH, label: "Tasks" },
+    { screen: SCREEN_TASKS, path: boardPath, label: "Tasks" },
   ];
   const go = (path: string) => (event: JSX.TargetedMouseEvent<HTMLAnchorElement>) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -473,10 +477,11 @@ function SessionTreeNode({ node, nested = false, ...tree }: SessionTreeNodeProps
 }
 
 function SessionGroup({
-  group, tasks, activeId, index, expanded, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
+  group, tasks, projectsByPath, onSelectProject, activeId, index, expanded, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
   onMarkFolder, prefs, done = false,
 }: SessionGroupProps) {
   const folderMarked = isPathAdhd(group.path, prefs.adhdPaths);
+  const project = projectsByPath.get(group.path);
   // The archive tree mirrors the live one, so its folders need collapse keys of their own.
   const collapseKey = (done ? "done:" : "") + group.path;
   const collapsed = collapsedGroups.has(collapseKey);
@@ -511,6 +516,18 @@ function SessionGroup({
               : "Add " + group.path + " to ADHD mode"}
             onClick={(e) => onMarkFolder(e, group.path, !folderMarked)}
           ><AdhdIcon on={folderMarked} /></button>)}
+        {project && (
+          <a
+            class="icon-button icon-button-small group-tasks"
+            href={projectBoardPath(project.id)}
+            title={"Tasks for " + project.name}
+            aria-label={"Tasks for " + project.name}
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onSelectProject(project.id);
+            }}
+          ><Icon name="tasks" /></a>)}
         {!done && group.path &&
           (<button
             type="button"
@@ -532,6 +549,8 @@ function SessionGroup({
                 key={entry.group.path}
                 group={entry.group}
                 tasks={tasks}
+                projectsByPath={projectsByPath}
+                onSelectProject={onSelectProject}
                 activeId={activeId}
                 index={index}
                 expanded={expanded}
@@ -552,7 +571,7 @@ function SessionGroup({
 }
 
 export function Sidebar({
-  screen = SCREEN_SESSIONS,
+  screen = SCREEN_SESSIONS, boardPath,
   sessions, tasks, projects = [], projectId = null, activeId, prefs, status, currentVersion,
   drawerOpen, collapsed, showDone, sessionsReady, prefsStatus = IDLE_STATUS, onRetryPrefs,
   onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
@@ -752,6 +771,29 @@ export function Sidebar({
       : [],
     [doneSignature, grouped, onTasks, prefs.basePath, prefs.groupingLevel, showDone],
   );
+  const paths = new Set<string>();
+  const collectPaths = (groups: readonly SessionGroupData<SessionNode>[]) => {
+    for (const group of groups) {
+      if (group.path) paths.add(group.path);
+      collectPaths(group.children);
+    }
+  };
+  collectPaths(liveGroups);
+  collectPaths(doneGroups);
+  const folderPaths = JSON.stringify([...paths].sort());
+  const folderObserver = useRef<ReturnType<typeof folderProjectStore.observe> | null>(null);
+  useEffect(() => {
+    const observer = folderProjectStore.observe();
+    folderObserver.current = observer;
+    return () => { observer.dispose(); folderObserver.current = null; };
+  }, []);
+  useEffect(() => { folderObserver.current?.setPaths(JSON.parse(folderPaths) as string[]); }, [folderPaths]);
+  const projectRows = new Map(projects.map((project) => [project.id, project]));
+  const projectsByPath = new Map<string, Project>();
+  for (const [path, id] of folderProjects.value) {
+    const project = projectRows.get(id);
+    if (project && !project.archived) projectsByPath.set(path, project);
+  }
   // Live rows keep the daemon's order; the flat archive answers "what did I just finish" instead.
   const flatDoneSessions = useMemo(
     () => !grouped && showDone && !onTasks ? sessionForest(byRecentChange(doneSessions), index) : [],
@@ -818,7 +860,7 @@ export function Sidebar({
             >✕</button>
           </div>
         </div>
-        <NavSwitch screen={screen} sessionsPath={sessionsPath} />
+        <NavSwitch screen={screen} sessionsPath={sessionsPath} boardPath={boardPath} />
       </header>
 
       <div id="sidebar-scroll">
@@ -906,6 +948,8 @@ export function Sidebar({
                   key={g.path}
                   group={g}
                   tasks={tasks}
+                  projectsByPath={projectsByPath}
+                  onSelectProject={onSelectProject}
                   activeId={activeId}
                   index={index}
                   expanded={expanded}
@@ -972,6 +1016,8 @@ export function Sidebar({
                     key={g.path}
                     group={g}
                     tasks={tasks}
+                    projectsByPath={projectsByPath}
+                    onSelectProject={onSelectProject}
                     activeId={activeId}
                     index={index}
                     expanded={expanded}

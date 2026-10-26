@@ -40,6 +40,8 @@ import {
   timerFired,
 } from "./lib/reattach.ts";
 import { createSerialRefresh } from "./lib/refresh.ts";
+import { watchForeground } from "./lib/foreground.ts";
+import { folderProjectStore } from "./state/folder-projects.ts";
 import { createEventsConnection } from "./lib/events.ts";
 import { watchRefreshSources } from "./lib/resume.ts";
 import { affectsAttachment, buildCommands } from "./lib/commands.ts";
@@ -74,6 +76,7 @@ import {
   clearDeepLink,
   navigate,
   parseRoute,
+  projectBoardPath,
   routePath,
   sessionPath,
   subscribeToRoute,
@@ -357,7 +360,6 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
   const dialog = dialogSignal.value;
   const status = statusSignal.value;
   const prefs = prefsSignal.value;
-  const [projectId, setProjectId] = useState<string | null>(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
   const [attachedId, setAttachedId] = useState<string | null>(null);
@@ -507,33 +509,15 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     const first = !projectRefreshStartedRef.current;
     projectRefreshStartedRef.current = true;
     if (first || onBoard) reloadProjects();
-    if (!onBoard) return undefined;
 
-    let pageWasAway = false;
-    const markPageAway = () => {
-      pageWasAway = true;
-    };
-    const refreshAfterReturn = () => {
-      if (!pageWasAway || document.visibilityState !== "visible") return;
-      pageWasAway = false;
-      reloadProjects(false);
-    };
-    const trackVisibility = () => {
-      if (document.visibilityState === "hidden") {
-        markPageAway();
-      } else {
-        refreshAfterReturn();
-      }
-    };
-    window.addEventListener("blur", markPageAway);
-    window.addEventListener("focus", refreshAfterReturn);
-    document.addEventListener("visibilitychange", trackVisibility);
-    return () => {
-      window.removeEventListener("blur", markPageAway);
-      window.removeEventListener("focus", refreshAfterReturn);
-      document.removeEventListener("visibilitychange", trackVisibility);
-    };
+    return watchForeground(() => {
+      void reloadProjects(false);
+      void folderProjectStore.refresh();
+    });
   }, [onBoard, reloadProjects]);
+
+  const projectMembership = JSON.stringify(projects.map((project) => project.id).sort());
+  useEffect(() => { folderProjectStore.invalidate(); }, [projectMembership]);
 
   // Refresh while the picker is open because project changes have no event frame.
   const linkPickerOpen = dialog !== null && dialog.kind === "link-task";
@@ -541,15 +525,17 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     if (linkPickerOpen) reloadProjects(false);
   }, [linkPickerOpen, reloadProjects]);
 
+  // Canonicalize only after the catalogue has answered; loading/failure must preserve deep links.
   useEffect(() => {
-    if (projects.length === 0) return;
-    setProjectId((current) =>
-      current && projects.some((project) => project.id === current) ? current : projects[0]!.id);
-  }, [projects]);
+    if (route.screen !== SCREEN_TASKS || projectListStatus.state !== READY) return;
+    if (route.project && projects.some((project) => project.id === route.project)) return;
+    const fallback = projects[0]?.id;
+    navigate(fallback ? projectBoardPath(fallback) : "/tasks", { replace: true });
+  }, [route, projects, projectListStatus.state]);
 
   const selectProject = useCallback((id: string) => {
-    setProjectId(id);
     setDrawerOpen(false);
+    navigate(projectBoardPath(id));
   }, []);
 
   const projectCreated = useCallback(async (created: ApiResponse<Project>) => {
@@ -566,7 +552,7 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     if (!created || typeof created !== "object" || !created.id || !rows.some((project) => project.id === created.id)) {
       throw new Error("Project " + label + " is no longer live. Restore it before trying again.");
     }
-    setProjectId(created.id);
+    navigate(projectBoardPath(created.id));
   }, [reloadProjects]);
 
   // Project mutations have no event frame, so refresh the live list explicitly. The refresh is this
@@ -604,13 +590,9 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
       // leave a deleted project selected and interactive against its own tombstone.
       if (archived) removeProjectRow(id);
       else applyProjectRow(changed);
-      if (archived) setProjectId((current) => current === id ? null : current);
-      else setProjectId(id);
+      if (!archived) navigate(projectBoardPath(id));
 
       const rows = await reloadProjects();
-      // Restore selects its row; delete only repairs a selection that is no longer live.
-      if (rows && rows.length === 0) setProjectId(null);
-      if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
       closeDialogFrom(submittedDialog);
       const done = archived
         ? "Deleted " + label + ". Restore brings it back with its backlog."
@@ -623,9 +605,20 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
   const removeProject = useCallback((id: string) => applyProjectArchive(id, true), [applyProjectArchive]);
   const bringBackProject = useCallback((id: string) => applyProjectArchive(id, false), [applyProjectArchive]);
 
-  // Treat stale IDs absent from the live project list as no selection.
+  // Task/plan routes derive their project from the task; an archived task remains readable
+  // against the first live backlog, preserving the existing deleted-task navigation contract.
+  const projectId = route.screen === SCREEN_TASKS ? route.project ?? null
+    : onBoard ? (findProject(openTaskEntry?.project)?.id ?? projects[0]?.id ?? null) : null;
   const selectedProject = findProject(projectId);
   const selectedProjectId = selectedProject ? selectedProject.id : null;
+
+  // A return destination, never the board's selection: an explicit route remains authoritative.
+  const lastBoardProjectRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (route.screen === SCREEN_TASKS && selectedProjectId) lastBoardProjectRef.current = selectedProjectId;
+  }, [route.screen, selectedProjectId]);
+  const returnProjectId = selectedProjectId ?? findProject(lastBoardProjectRef.current)?.id ?? null;
+  const boardPath = returnProjectId ? projectBoardPath(returnProjectId) : "/tasks";
 
   const titleSession = sessionView ? activeSession : null;
   const titleProject = titleSession ? findProject(titleSession.projectId) : selectedProject;
@@ -686,21 +679,6 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     if (deepLinkRef.current === routeSessionId) deepLinkRef.current = null;
     showSession(target);
   }, [routeSessionId, sessions, activeId, showSession]);
-
-  // Apply a task route's project once per ref so later manual project selection remains authoritative.
-  const appliedTaskProjectRef = useRef<string | null>(null);
-  const openTaskRef = onBoard ? route.id : null;
-  useEffect(() => {
-    if (!openTaskRef) { appliedTaskProjectRef.current = null; return; }
-    if (appliedTaskProjectRef.current === openTaskRef) return;
-    const entry = tasks.find((task) => task.ref === openTaskRef);
-    if (!entry) return;
-    // Archived cards remain deep-linkable but cannot select a missing sidebar row. Leave this retryable
-    // so a later project refresh can adopt a restored row or resolve an initial fetch race.
-    if (!projects.some((project) => project.id === entry.project)) return;
-    appliedTaskProjectRef.current = openTaskRef;
-    setProjectId(entry.project);
-  }, [openTaskRef, tasks, projects]);
 
   // Returning to the session view must retry mark-read even if the session emitted no new frame.
   useEffect(() => {
@@ -1194,7 +1172,7 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
     [openNewSession],
   );
 
-  const openBoard = useCallback(() => navigate(routePath({ screen: SCREEN_TASKS, id: null })), []);
+  const openBoard = useCallback(() => navigate(boardPath), [boardPath]);
   const openMutexes = useCallback(() => {
     setDrawerOpen(false);
     navigate(MUTEXES_PATH);
@@ -1207,14 +1185,14 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
   // Counters let repeated commands retrigger while the board remains mounted.
   const [newTaskRequest, setNewTaskRequest] = useState(0);
   const newTask = useCallback(() => {
-    navigate(routePath({ screen: SCREEN_TASKS, id: null }));
+    openBoard();
     setNewTaskRequest((n) => n + 1);
-  }, []);
+  }, [openBoard]);
   const [newProjectRequest, setNewProjectRequest] = useState(0);
   const newProject = useCallback(() => {
-    navigate(routePath({ screen: SCREEN_TASKS, id: null }));
+    openBoard();
     setNewProjectRequest((n) => n + 1);
-  }, []);
+  }, [openBoard]);
   // Reset before remount so stale requests cannot reopen forms on a later board visit.
   useEffect(() => {
     if (!onBoard) {
@@ -1434,6 +1412,7 @@ function App({ rootElement }: { rootElement: HTMLElement }) {
         tasks={tasks}
         projects={projects}
         projectId={projectId}
+        boardPath={boardPath}
         activeId={activeId}
         prefs={prefs}
         status={status}

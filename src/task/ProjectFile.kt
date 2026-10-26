@@ -49,20 +49,24 @@ fun mainCheckoutRoot(fs: ProjectFs, dir: String): String? {
     }
 }
 
-fun resolveProject(fs: ProjectFs, cwd: String): ResolvedProject? {
+fun resolveProject(
+    fs: ProjectFs,
+    cwd: String,
+    reportInvalid: (String) -> Unit = ::warnInvalidProjectFile,
+): ResolvedProject? {
     val canonical = fs.canonicalize(cwd)?.let(::absoluteDirOrNull) ?: return null
     val visited = ArrayList<String>()
     var next: String? = canonical
     while (next != null) {
         val dir = next
         visited += dir
-        val here = readProjectIn(fs, dir)
+        val here = readProjectIn(fs, dir, reportInvalid)
         if (here != null) return ResolvedProject(here.id, here.name, dir)
         next = parentOf(dir)
     }
     val root = mainCheckoutRoot(fs, canonical) ?: return null
     if (root in visited) return null
-    return readProjectIn(fs, root)?.let { ResolvedProject(it.id, it.name, root) }
+    return readProjectIn(fs, root, reportInvalid)?.let { ResolvedProject(it.id, it.name, root) }
 }
 
 class PosixProjectFs : ProjectFs {
@@ -126,17 +130,19 @@ private fun parentOf(dir: String): String? {
 
 private fun pathIn(dir: String, name: String): String = if (dir == "/") "/$name" else "$dir/$name"
 
-private fun readProjectIn(fs: ProjectFs, dir: String): ProjectFile? {
+private fun readProjectIn(fs: ProjectFs, dir: String, reportInvalid: (String) -> Unit): ProjectFile? {
     val path = pathIn(dir, PROJECT_FILE_NAME)
     val text = fs.readFile(path, PROJECT_FILE_MAX_BYTES) ?: return null
     val parsed = parseProjectFile(text)
-    if (parsed == null) {
-        eprintln(
-            "warning: ignoring $path — expected {\"id\": \"<uuid>\", \"name\": \"<name>\"} " +
-                "(a name of at most $PROJECT_NAME_MAX_LENGTH characters, no control characters)",
-        )
-    }
+    if (parsed == null) reportInvalid(path)
     return parsed
+}
+
+private fun warnInvalidProjectFile(path: String) {
+    eprintln(
+        "warning: ignoring $path — expected {\"id\": \"<uuid>\", \"name\": \"<name>\"} " +
+            "(a name of at most $PROJECT_NAME_MAX_LENGTH characters, no control characters)",
+    )
 }
 
 private fun worktreeMainRoot(fs: ProjectFs, gitFileDir: String, gitFileText: String): String? {

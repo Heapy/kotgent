@@ -281,6 +281,7 @@ object Commands {
                             onTmuxSessionClosed = manager::onTmuxSessionClosed,
                             taskStore = taskStore,
                             taskService = taskService,
+                            projectLookupService = storage.projectLookupService.value,
                             usageStore = storage.usageStore.value,
                             notificationStore = storage.notificationStore.value,
                             onCodexTurnCompleted = sessions.codexUsageCapture.value::onTurnCompleted,

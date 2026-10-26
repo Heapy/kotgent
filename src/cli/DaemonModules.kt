@@ -19,6 +19,7 @@ import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.JunieSessionScan
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.PrivatePromptFiles
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SHELL_AGENT_KIND
@@ -150,6 +151,8 @@ internal class StorageModule {
     val notificationStore by bean { SqliteNotificationStore(driver.value) }
 
     val projectFs by bean { PosixProjectFs() }
+
+    val projectLookupService by bean { ProjectLookupService(projectFs.value, taskStore.value::project) }
 
     val taskService by bean {
         TaskService(taskStore.value, eventStore.value, projectFs.value, PosixProjectFileWriter())

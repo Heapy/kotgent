@@ -6,6 +6,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
+import io.kotgent.daemon.ProjectLookupService
 import io.kotgent.daemon.TaskService
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakeTaskStore
@@ -13,6 +14,7 @@ import io.kotgent.store.ForbiddingInterceptor
 import io.kotgent.store.RecordingInterceptor
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
+import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.ProjectFile
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
@@ -337,6 +339,82 @@ class TaskReadRoutesTest {
     }
 
     @Test
+    fun folderLookupUsesNearestProjectAndWorktreeIdentityWithoutWrites() {
+        val fs = FakeProjectFs(
+            dirs = listOf("/repo/sub", "/repo/.git/worktrees/feature", "/wt/feature", "/repo/nested"),
+            files = mapOf(
+                "/repo/.kotgent.json" to """{"id":"${project.value}","name":"kotgent"}""",
+                "/repo/nested/.kotgent.json" to """{"id":"${otherProject.value}","name":"sidecar"}""",
+                "/wt/feature/.git" to "gitdir: /repo/.git/worktrees/feature\n",
+            ),
+        )
+        val before = fs.written
+        withReadServer(projectFs = fs) { env ->
+            val expected = listOf("/repo" to project, "/repo/sub" to project,
+                "/wt/feature" to project, "/repo/nested" to otherProject)
+            val response = env.lookup(expected.map { it.first })
+            assertEquals(HttpStatusCode.OK, response.status)
+            val rows = TRANSPORT_JSON.decodeFromString(ListSerializer(ProjectLookupDto.serializer()), response.bodyAsText())
+            assertEquals(expected.map { it.first }, rows.map { it.path })
+            assertEquals(expected.map { it.second.value }, rows.map { it.projectId })
+            assertEquals(listOf("found", "found", "found", "found"), rows.map { it.status })
+            val projects = TRANSPORT_JSON.decodeFromString(ListSerializer(ProjectDto.serializer()),
+                env.get("/projects", bearer = token).bodyAsText())
+            assertEquals("/Users/dev/kotgent", projects.single { it.id == project.value }.path,
+                "lookup must not replace the registered last-seen path")
+        }
+        assertEquals(before, fs.written)
+    }
+
+    @Test
+    fun folderLookupOffersNoProjectForSharedMissingMalformedArchivedOrUnregisteredFolders() {
+        val fs = FakeProjectFs(
+            dirs = listOf("/repos/scratch"),
+            files = mapOf(
+                "/repos/live/.kotgent.json" to """{"id":"${project.value}","name":"kotgent"}""",
+                "/repos/archived/.kotgent.json" to """{"id":"${deletedProject.value}","name":"abandoned"}""",
+                "/repos/malformed/.kotgent.json" to "invalid",
+                "/repos/unregistered/.kotgent.json" to """{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"new"}""",
+            ),
+        )
+        val before = fs.written
+        withReadServer(projectFs = fs) { env ->
+            val paths = listOf("/repos", "/repos/scratch", "/repos/archived", "/repos/malformed",
+                "/repos/unregistered", "/missing")
+            val response = env.lookup(paths)
+            assertEquals(HttpStatusCode.OK, response.status)
+            val rows = TRANSPORT_JSON.decodeFromString(ListSerializer(ProjectLookupDto.serializer()), response.bodyAsText())
+            assertEquals(paths, rows.map { it.path })
+            assertTrue(rows.all { it.status == "absent" && it.projectId == null })
+            for (invalid in listOf(listOf("relative"), List(65) { "/repo" }, listOf("/" + "x".repeat(4096)), listOf("/bad\u0000"))) {
+                assertEquals(HttpStatusCode.BadRequest, env.lookup(invalid).status)
+            }
+            assertEquals("[]", env.lookup(emptyList()).bodyAsText())
+        }
+        assertEquals(before, fs.written, "reading identity never creates or rewrites a project file")
+    }
+
+    @Test
+    fun lookupBatchHasPartialFailuresAndRequiresBrowserOrigin() {
+        val backing = FakeProjectFs(files = mapOf(
+            "/repo/.kotgent.json" to """{"id":"${project.value}","name":"kotgent"}""",
+        ))
+        val fs = object : ProjectFs by backing {
+            override fun isDirectory(path: String): Boolean = if (path == "/broken") error("I/O failure") else backing.isDirectory(path)
+        }
+        withReadServer(projectFs = fs) { env ->
+            val rows = TRANSPORT_JSON.decodeFromString(ListSerializer(ProjectLookupDto.serializer()),
+                env.lookup(listOf("/broken", "/repo")).bodyAsText())
+            assertEquals(listOf("failed", "found"), rows.map { it.status })
+            assertEquals(HttpStatusCode.Unauthorized, env.lookup(listOf("/repo"), bearer = null).status)
+            val cookie = env.signIn()
+            assertEquals(HttpStatusCode.Forbidden, env.lookup(listOf("/repo"), bearer = null, cookie = cookie).status)
+            assertEquals(HttpStatusCode.OK, env.lookup(listOf("/repo"), bearer = null, cookie = cookie,
+                origin = "http://127.0.0.1:${env.port}").status)
+        }
+    }
+
+    @Test
     fun projectsWithArchivedTrueAnswersTheDeletedOnesAndNothingElse() = withReadServer { env ->
         val rows = TRANSPORT_JSON.decodeFromString(
             ListSerializer(ProjectDto.serializer()),
@@ -521,6 +599,20 @@ class TaskReadRoutesTest {
             if (pane != null) header(TASK_PANE_HEADER, pane)
         }
 
+        suspend fun lookup(
+            paths: List<String>,
+            bearer: String? = token,
+            cookie: String? = null,
+            origin: String? = null,
+        ): HttpResponse = client.request("http://127.0.0.1:$port$API_PREFIX/projects/resolve") {
+            method = HttpMethod.Post
+            if (bearer != null) header(HttpHeaders.Authorization, "Bearer $bearer")
+            if (cookie != null) header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
+            if (origin != null) header(HttpHeaders.Origin, origin)
+            contentType(ContentType.Application.Json)
+            setBody(TRANSPORT_JSON.encodeToString(ProjectLookupRequest.serializer(), ProjectLookupRequest(paths)))
+        }
+
         suspend fun signIn(): String {
             val ticket = TRANSPORT_JSON.decodeFromString(
                 TicketResponse.serializer(),
@@ -541,6 +633,7 @@ class TaskReadRoutesTest {
 
     private fun withReadServer(
         sessions: Map<SessionId, SessionMeta> = sessionRows(),
+        projectFs: ProjectFs = UnusedProjectFs,
         block: suspend (Env) -> Unit,
     ) = runBlocking {
         withTimeout(30.seconds) {
@@ -565,7 +658,7 @@ class TaskReadRoutesTest {
             )
             val routing = TaskRouting(
                 tasks = tasks,
-                service = TaskService(tasks, store, UnusedProjectFs, UnusedProjectFileWriter),
+                service = TaskService(tasks, store, projectFs, UnusedProjectFileWriter),
                 sessions = store,
                 paneLookup = { if (it == pane) paneSession else null },
                 json = TRANSPORT_JSON,
@@ -574,7 +667,10 @@ class TaskReadRoutesTest {
                 routing {
                     authRoutes(tokens, TicketStore(now = { fixedNow }), null, TRANSPORT_JSON, now = { fixedNow })
                     val _ = authenticated(tokens::current, null) {
-                        route(API_PREFIX) { taskReadRoutes(routing) }
+                        route(API_PREFIX) {
+                            taskReadRoutes(routing)
+                            projectLookupRoutes(ProjectLookupService(projectFs, tasks::project))
+                        }
                     }
                 }
             }

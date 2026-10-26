@@ -415,6 +415,7 @@ textarea:focus-visible {
 /* A hidden control takes no pointer events until it is revealed: an invisible target would turn a tap
    meant for the row into an action. */
 .group-new,
+.group-tasks,
 .group-adhd,
 .row-adhd {
   flex: 0 0 auto;
@@ -424,6 +425,25 @@ textarea:focus-visible {
 }
 .group-new {
   margin-left: auto;
+}
+.group-tasks {
+  align-items: center;
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+  text-decoration: none;
+}
+.group-tasks .ui-icon {
+  width: 15px;
+  height: 15px;
+  flex-basis: 15px;
+}
+.group-tasks:hover,
+.group-tasks:focus-visible {
+  color: var(--accent);
+  background: var(--pill-active);
 }
 .group-adhd svg {
   height: 13px;
@@ -440,6 +460,8 @@ textarea:focus-visible {
 }
 .group-head:hover > .group-new,
 .group-head:focus-within > .group-new,
+.group-head:hover > .group-tasks,
+.group-head:focus-within > .group-tasks,
 .group-head:hover > .group-adhd,
 .group-head:focus-within > .group-adhd,
 .session-row:hover .row-adhd,
@@ -455,6 +477,7 @@ textarea:focus-visible {
 }
 @media (hover: none) {
   .group-new,
+  .group-tasks,
   .group-adhd,
   .row-adhd {
     opacity: 1;
