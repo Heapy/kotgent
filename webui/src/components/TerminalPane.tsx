@@ -7,6 +7,7 @@ import { createContext } from "preact";
 import type { ComponentChildren, JSX, RefObject } from "preact";
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { terminalScreenBounds } from "../lib/xterm-dom.ts";
+import { installTerminalWheel } from "../lib/terminal-wheel.ts";
 import { resizeFrame, wsUrl } from "../lib/api.ts";
 import type { Command } from "../lib/commands.ts";
 import type { Session } from "../lib/sessions.ts";
@@ -497,8 +498,9 @@ export function TerminalPane({
     });
     observer.observe(host);
 
-    // iOS keyboard focus must happen synchronously from the completed tap, never from ws.onopen.
+    const wheelScroll = installTerminalWheel(term);
     const swipeScroll = installSwipeScroll(term);
+    // iOS keyboard focus must happen synchronously from the completed tap, never from ws.onopen.
     const focusTerminal = () => {
       if (swipeScroll.shouldFocus()) term.focus();
     };
@@ -511,6 +513,7 @@ export function TerminalPane({
       },
       hide: () => {
         refit.cancel();
+        wheelScroll.reset();
       },
     };
     visibilityRef.current = visibility;
@@ -525,6 +528,7 @@ export function TerminalPane({
       observer.disconnect();
       host.removeEventListener("click", focusTerminal);
       swipeScroll.dispose();
+      wheelScroll.dispose();
       dataSubscription.dispose();
       binarySubscription.dispose();
       resizeSubscription.dispose();

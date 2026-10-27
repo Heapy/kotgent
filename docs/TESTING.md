@@ -359,6 +359,15 @@ Browser tests that need a module-level probe use `routeWebUiProbe` in `webuitest
 It builds an entry from `webuitest/probes/` with Vite at test time and serves the bundle through Playwright
 routing. Probe code never enters `resources/webui/` or the shipped build.
 
+`TerminalSwipeTest` (tag `terminal-scroll`) checks desktop wheel distance, fractional trackpad travel,
+bounded bursts and direction reversals through xterm and the terminal WebSocket, alongside touch swipes
+and legacy mouse encoding. Desktop travel is converted to unit mouse reports because xterm 6 otherwise
+discards multi-row deltas. Pending desktop travel is capped at 24 reports, sent at most 12 per animation
+frame, with no added inertia. Near-integer travel tolerates float32 rounding in both scheduling and
+report counting. A new event after 150 ms of inactivity discards fractional residue; continuous travel
+still accumulates. These checks do not measure physical macOS trackpad momentum or Codex's
+rendering latency; compare those manually in the browser and a native terminal.
+
 The usage fixture adds a real in-memory SQLite store and a `usage` scenario command. `UsageStripTest`
 proves snapshots, live updates, durations, listener restart snapshots and stale-heartbeat behavior. It also
 checks the current-time marker against rendered bar geometry, progress without provider frames, phone

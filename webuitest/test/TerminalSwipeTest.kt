@@ -5,13 +5,97 @@ import com.microsoft.playwright.Page
 import com.microsoft.playwright.TimeoutError
 import com.microsoft.playwright.options.BoundingBox
 import java.util.concurrent.CopyOnWriteArrayList
+import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
+@Tag("terminal-scroll")
 class TerminalSwipeTest {
+
+    @Test
+    fun desktopWheelPreservesDistanceAcrossLargeAndFractionalEvents() =
+        onTerminal("terminal-wheel-distance", touch = false) { f ->
+            val box = screenBox(f.page)
+            val rowHeight = box.height / visibleRows(f.page)
+            f.page.mouse().move(box.x + box.width / 2, box.y + box.height / 2)
+            f.page.mouse().wheel(0.0, rowHeight * 8)
+            f.settle()
+            assertEquals(8, f.reportCount(65), "one large pixel event must preserve all eight rows")
+
+            val before = f.reportCount(65)
+            f.wheel(List(8) { rowHeight / 4 })
+            f.settle()
+            assertEquals(2, f.reportCount(65) - before, "fractional trackpad travel must accumulate")
+
+            f.wheel(listOf(-5.0), mode = 1)
+            f.settle()
+            assertEquals(5, f.reportCount(64), "line deltas must preserve their magnitude and direction")
+        }
+
+    @Test
+    fun desktopWheelRoundsNearWholeRowsWithoutInventingFractionalTravel() =
+        onTerminal("terminal-wheel-rounding", touch = false) { f ->
+            // Deterministic near-integer deltas also cover the float32 error from native wheel input.
+            f.wheel(listOf(1.0 - 5e-7), mode = 1)
+            f.settle()
+            assertEquals(1, f.reportCount(65), "near-one travel must schedule its first frame")
+
+            f.wheel(listOf(-8.0 + 5e-7), mode = 1)
+            f.settle()
+            assertEquals(8, f.reportCount(64), "rounding must be symmetric")
+
+            f.wheel(listOf(13.0 - 5e-7), mode = 1)
+            f.settle()
+            assertEquals(14, f.reportCount(65), "near-one remainder must schedule the second frame")
+            assertEquals(8, f.reportCount(64), "rounding must not emit an opposite-direction report")
+
+            f.wheel(listOf(0.99), mode = 1)
+            f.settle()
+            assertEquals(14, f.reportCount(65), "a real fraction must not round up")
+        }
+
+    @Test
+    fun desktopWheelExpiresOnlyIdleFractionalTravel() =
+        onTerminal("terminal-wheel-residue", touch = false, clock = true) { f ->
+            f.page.clock().pauseAt(System.currentTimeMillis() + 1000)
+            f.wheel(listOf(1.75), mode = 1)
+            f.page.clock().runFor(40)
+            f.settle()
+            assertEquals(1, f.reportCount(65))
+
+            f.wheel(listOf(0.25), mode = 1)
+            f.page.clock().runFor(40)
+            f.settle()
+            assertEquals(2, f.reportCount(65), "continuous travel keeps its fractional bank")
+
+            f.wheel(listOf(1.75), mode = 1)
+            f.page.clock().runFor(200)
+            f.settle()
+            assertEquals(3, f.reportCount(65))
+            f.wheel(listOf(0.25), mode = 1)
+            f.page.clock().runFor(40)
+            f.settle()
+            assertEquals(3, f.reportCount(65), "a new gesture cannot spend the previous residue")
+        }
+
+    @Test
+    fun desktopWheelBoundsBurstsAndReversesWithoutDrainingOldTravel() =
+        onTerminal("terminal-wheel-burst", touch = false) { f ->
+            f.wheel(List(100) { 1000.0 })
+            f.settle()
+            val count = f.reportCount(65)
+            assertTrue(count in 1..24, "one burst must have bounded work, got $count reports")
+            f.settle()
+            assertEquals(count, f.reportCount(65), "no deferred scroll tail after the burst")
+
+            f.wheel(listOf(10.0, -3.0), mode = 1)
+            f.settle()
+            assertEquals(count, f.reportCount(65), "a reversal cancels unreported forward travel")
+            assertEquals(3, f.reportCount(64))
+        }
 
     @Test
     fun aVerticalSwipeReportsOneLinePerRowInTheDirectionOfTheFinger() =
@@ -304,6 +388,24 @@ private class TerminalSwipeFixture(
 
     fun wire(): String = sent.joinToString("").replace("\u001b", "^[")
 
+    fun reportCount(button: Int): Int = Regex("\\[<$button;[0-9]+;[0-9]+M").findAll(wire()).count()
+
+    fun wheel(deltas: List<Double>, mode: Int = 0) {
+        page.evaluate(
+            """
+            ({ deltas, mode }) => {
+              const screen = document.querySelector('#terminal-host .xterm-screen');
+              const box = screen.getBoundingClientRect();
+              for (const deltaY of deltas) screen.dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true, cancelable: true, deltaY, deltaMode: mode,
+                clientX: box.left + box.width / 2, clientY: box.top + box.height / 2,
+              }));
+            }
+            """.trimIndent(),
+            mapOf("deltas" to deltas, "mode" to mode),
+        )
+    }
+
     fun activeElement(): String = page.evaluate(
         "() => { const a = document.activeElement; return a ? (a.id || a.className || a.tagName) : ''; }",
     ) as String
@@ -391,13 +493,19 @@ private fun visibleRows(page: Page): Double {
     return rows.toDouble()
 }
 
-private fun onTerminal(name: String, body: (TerminalSwipeFixture) -> Unit) {
+private fun onTerminal(
+    name: String,
+    touch: Boolean = true,
+    clock: Boolean = false,
+    body: (TerminalSwipeFixture) -> Unit,
+) {
     Harness(TERMINAL_SCENARIO).use { harness ->
         onChromium { browser ->
-            browser.touchContext().use { context ->
+            (if (touch) browser.touchContext() else browser.fineContext()).use { context ->
                 context.loginWithTicket(harness.ticket, harness.baseUrl)
                 context.traced(name) {
                     val page = context.newPage()
+                    if (clock) page.clock().install()
                     page.addInitScript(WHEEL_PROBE)
                     val sent = CopyOnWriteArrayList<String>()
                     page.onWebSocket { socket ->
