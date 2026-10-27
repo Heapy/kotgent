@@ -14,6 +14,7 @@ export interface Task {
   dependsOn: string[];
   createdAt: number;
   updatedAt: number;
+  doneAt?: number | null;
   rev: number;
 }
 
@@ -106,8 +107,18 @@ function compareFiniteNumbers(left: unknown, right: unknown) {
   return 0;
 }
 
-/** Project-local board order: rank first, then creation order, then a stable ref fallback. */
+/** Columns in board order; done is newest completion first, open work keeps its manual rank. */
 export function compareTasksByBoardOrder(left: Task | null | undefined, right: Task | null | undefined) {
+  const state = taskStateRank(left?.state || "") - taskStateRank(right?.state || "");
+  if (state !== 0) return Math.sign(state);
+  if (left?.state === "done" && right?.state === "done") {
+    // Negate valid stamps so descending order still puts absent history last.
+    const completed = compareFiniteNumbers(
+      typeof left.doneAt === "number" ? -left.doneAt : null,
+      typeof right.doneAt === "number" ? -right.doneAt : null,
+    );
+    if (completed !== 0) return completed;
+  }
   const position = compareFiniteNumbers(left && left.position, right && right.position);
   if (position !== 0) return position;
   const created = compareFiniteNumbers(left && left.createdAt, right && right.createdAt);

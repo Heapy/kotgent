@@ -23,15 +23,29 @@ CREATE INDEX backlog_deps_by_dependency ON backlog_deps(depends_on, task_ref);
 
 
 selectEntry:
-SELECT task_ref, project, position, state, created_at, updated_at, rev
-FROM backlog_entries
-WHERE task_ref = ?;
+SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev,
+       a.ts AS done_at
+FROM backlog_entries b
+LEFT JOIN task_activity a ON a.id = (
+  SELECT latest.id FROM task_activity latest
+  WHERE b.state = 'done' AND latest.task_ref = b.task_ref
+    AND latest.kind = 'transition' AND latest.to_state = 'done' AND latest.from_state <> 'done'
+  ORDER BY latest.id DESC LIMIT 1
+)
+WHERE b.task_ref = ?;
 
 selectEntriesByProject:
-SELECT task_ref, project, position, state, created_at, updated_at, rev
-FROM backlog_entries
-WHERE project = ?
-ORDER BY position, task_ref;
+SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev,
+       a.ts AS done_at
+FROM backlog_entries b
+LEFT JOIN task_activity a ON a.id = (
+  SELECT latest.id FROM task_activity latest
+  WHERE b.state = 'done' AND latest.task_ref = b.task_ref
+    AND latest.kind = 'transition' AND latest.to_state = 'done' AND latest.from_state <> 'done'
+  ORDER BY latest.id DESC LIMIT 1
+)
+WHERE b.project = ?
+ORDER BY b.position, b.task_ref;
 
 selectBacklogWithTasks:
 SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev, t.title, t.body

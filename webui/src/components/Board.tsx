@@ -121,7 +121,7 @@ export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
   label: taskStateLabel(state),
 }));
 
-/** Show only the recent tail of the unbounded done column by default. */
+/** Show only the most recent completions of the unbounded done column by default. */
 export const DONE_VISIBLE_LIMIT = 10;
 
 const DRAG_SLOP_PX = 8;
@@ -160,6 +160,14 @@ function dropResolutionAt(root: HTMLElement | null, elements: BoardElements, ent
   const owner = Array.from(elements.columns).find(([, column]) => column.contains(hit));
   if (!owner) return { column: null, target: null };
   const [state, column] = owner;
+  if (state === "done") {
+    // Completion order is automatic: entering done previews the first slot; reordering it is inert.
+    if (entries.find(entry => entry.ref === draggedRef)?.state === "done") {
+      return { column, target: null };
+    }
+    const first = entries.find(entry => entry.state === "done" && entry.ref !== draggedRef);
+    return { column, target: { state, beforeRef: first?.ref || null } };
+  }
   const rect = column.getBoundingClientRect();
   const contentY = y - rect.top + column.scrollTop;
   for (const { ref, element: card } of cardsInColumn(elements, entries, state)) {
@@ -294,6 +302,9 @@ function measureDragLayout(elements: BoardElements, entries: readonly Task[],
 /** Plan the minimal PATCH-state then /move sequence; the endpoints cannot change both at once. */
 export function dropPlan(entry: Task | null, target: DropTarget | null, columnEntries: readonly Task[]) {
   if (!entry || !target || !target.state) return null;
+  if (target.state === "done") {
+    return entry.state === "done" ? null : { state: "done", move: null };
+  }
   const others = columnEntries.filter((row) => row.ref !== entry.ref);
   const desired = target.beforeRef
     ? others.findIndex((row) => row.ref === target.beforeRef)
@@ -665,7 +676,7 @@ export function Board({
     const capped = column.state === "done" && !showAllDone &&
       column.entries.length > DONE_VISIBLE_LIMIT;
     const visible = capped
-      ? column.entries.slice(column.entries.length - DONE_VISIBLE_LIMIT)
+      ? column.entries.slice(0, DONE_VISIBLE_LIMIT)
       : column.entries;
     const over = Boolean(draggingRef && dropTarget && dropTarget.state === column.state);
     const slot = dragLayout.slot && dragLayout.slot.state === column.state

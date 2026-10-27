@@ -26,6 +26,8 @@ data class BacklogEntry(
     val createdAt: Long,
     val updatedAt: Long,
     val rev: Long,
+    /** Latest actual transition into done; absent while open or without recorded history. */
+    val doneAt: Long? = null,
 )
 
 data class TaskActivityEntry(

@@ -402,6 +402,10 @@ the common workflow and links to those guides; implementation invariants belong 
   module-scope `sessionViewOnScreen` rather than adding another mirror of the same fact.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
+- Tasks in Done sort newest completion first using `doneAt`, derived from the latest actual transition
+  into `done` in task activity. Edits, rank moves and repeated done requests do not change that timestamp;
+  reopening clears it and completing again replaces it. The collapsed column shows the first ten rows.
+  Drops into Done only change state and preview the top slot; Done has no manual reorder.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot
   as an in-flow placeholder, and the lifted copy is fixed. Use transform-free layout geometry and paint
   order; commit the previewed target on release.

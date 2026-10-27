@@ -38,6 +38,43 @@ class BoardTest {
         }
 
     @Test
+    fun doneShowsNewestCompletionsFirstAcrossUpdatesAndReloads() =
+        onTheBoard("doneShowsNewestCompletionsFirstAcrossUpdatesAndReloads") { harness, page ->
+            for (key in 11..22) {
+                harness.send("task-add local:$key")
+                assertThat(page.card("local:$key")).isVisible()
+                harness.send("task local:$key done")
+                assertThat(page.column("done").locator(".task-card").first()).hasAttribute("data-ref", "local:$key")
+            }
+            val newest = (22 downTo 13).map { "local:$it" }
+            assertEquals(newest, page.refsIn("done"))
+            page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Show all 14")).click()
+            assertEquals((22 downTo 11).map { "local:$it" } + listOf("local:8", "local:9"), page.refsIn("done"))
+            page.reload()
+            assertThat(page.column("done").locator(".task-card")).hasCount(10)
+            assertEquals(newest, page.refsIn("done"))
+            harness.send("task local:11 todo")
+            assertThat(page.column("todo").locator("[data-ref='local:11']")).isVisible()
+            harness.send("task local:11 done")
+            assertThat(page.column("done").locator(".task-card").first()).hasAttribute("data-ref", "local:11")
+            assertEquals(listOf("local:11") + (22 downTo 14).map { "local:$it" }, page.refsIn("done"))
+        }
+
+    @Test
+    fun droppingIntoDoneCompletesAtTheTopWithoutWritingAPosition() =
+        onTheBoard("droppingIntoDoneCompletesAtTheTopWithoutWritingAPosition") { _, page ->
+            val writes = page.recordTaskWrites()
+            page.dragToBottomOf("local:1", "done")
+            assertThat(page.column("done").locator(".task-card").first()).hasAttribute("data-ref", "local:1")
+            assertEquals(listOf("PATCH /tasks/local%3A1"), writes.snapshot())
+            page.pressHandleOf("local:1")
+            page.travelTo(page.column("done").bottomInside())
+            assertThat(page.column("done").locator(".board-drop-slot")).hasCount(0)
+            page.mouse().up()
+            assertEquals(listOf("local:1", "local:8", "local:9"), page.refsIn("done"))
+        }
+
+    @Test
     fun aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList() =
         onTheBoard("aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList") { harness, page ->
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))

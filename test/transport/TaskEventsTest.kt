@@ -38,6 +38,18 @@ class TaskEventsTest {
     private val beta = ProjectId.of("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
 
     @Test
+    fun completionTimeIsIncludedInEveryTaskFrame() {
+        val entry = entryOf(TaskRef("local:1"), alpha).copy(state = TaskState.done, doneAt = 123L)
+        val row = entry.toDto(null)
+        assertEquals(123L, row.doneAt)
+        val frames = listOf<EventsFrame>(TasksSnapshotDto(listOf(row)), TaskRowDto(row), TaskUpdateDto(row))
+        for (frame in frames) {
+            val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)
+            assertTrue(encoded.contains("\"doneAt\":123"), encoded)
+        }
+    }
+
+    @Test
     fun everyTaskFrameKindCarriesTheTypeDiscriminator() {
         fun typeOf(frame: EventsFrame): String? {
             val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)

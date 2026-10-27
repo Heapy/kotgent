@@ -22,7 +22,6 @@ import {
   fetchProjects,
   isOpenTaskState,
   taskStateLabel,
-  taskStateRank,
 } from "../lib/tasks.ts";
 import { qrSvg } from "../lib/qr.ts";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.tsx";
@@ -937,10 +936,7 @@ function restoreProjectBody(
 function openTasksForProject(tasks: Task[] | null | undefined) {
   return (tasks || [])
     .filter((task) => task && isOpenTaskState(task.state))
-    .sort((left, right) => {
-      const state = taskStateRank(left.state) - taskStateRank(right.state);
-      return state !== 0 ? state : compareTasksByBoardOrder(left, right);
-    });
+    .sort(compareTasksByBoardOrder);
 }
 
 function linkSessionChanged(initial: Session | null | undefined, current: Session | null | undefined) {

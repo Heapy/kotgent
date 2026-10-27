@@ -80,6 +80,36 @@ class TaskStoreTest {
 
 
     @Test
+    fun completionTimeComesFromTheLatestActualTransitionAndSurvivesReopeningTheStore() = test { f ->
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
+        assertNull(f.store.entry(first)?.doneAt)
+        f.clock = 2_000L
+        val updates = recording(f.store, 1) {
+            assertEquals(2_000L, f.store.transition(first, TaskState.done, "board", message = null)?.doneAt)
+        }
+        assertEquals(2_000L, updates.single().entry?.doneAt)
+        f.clock = 3_000L
+        val _ = f.store.transition(second, TaskState.done, "board", message = null)
+        f.clock = 4_000L
+        val _ = f.store.update(first, title = "edited", body = null)
+        val _ = f.store.comment(first, "board", "later comment")
+        val _ = f.store.move(first, io.kotgent.task.MoveTarget.Bottom)
+        val _ = f.store.transition(first, TaskState.done, "board", message = null)
+        assertEquals(2_000L, f.store.entry(first)?.doneAt, "repeating done is not a new completion")
+        assertEquals(mapOf(first to 2_000L, second to 3_000L),
+            f.store.listBacklog(alpha).associate { it.ref to it.doneAt })
+
+        val reopened = SqliteTaskStore.using(f.driver) { f.clock }
+        assertEquals(2_000L, reopened.entry(first)?.doneAt, "existing history needs no migration")
+        assertNull(reopened.transition(first, TaskState.todo, "board", message = null)?.doneAt)
+        // The latest activity ID wins even if the wall clock moved backwards.
+        f.clock = 1_500L
+        assertEquals(1_500L, reopened.transition(first, TaskState.done, "board", message = null)?.doneAt)
+        assertEquals(1_500L, reopened.listBacklog(alpha).single { it.ref == first }.doneAt)
+    }
+
+    @Test
     fun aCreatedTaskReadsBackThroughGetAndList() = test { f ->
         val created = f.store.create(alpha, "Wire the board", "the four columns")
 

@@ -334,7 +334,11 @@ class FakeTaskStore(
                 activityRows += TaskActivityEntry(
                     ++activityId, ref, now(), ActivityKind.transition, author, message, existing.state, to,
                 )
-                writeStateLocked(existing, to)
+                writeStateLocked(existing.copy(doneAt = when {
+                    to != TaskState.done -> null
+                    existing.state == TaskState.done -> existing.doneAt
+                    else -> activityRows.last().ts
+                }), to)
             }
         }
         afterTransition?.invoke()

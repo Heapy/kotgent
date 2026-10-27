@@ -193,6 +193,22 @@ describe("open-state classification", () => {
 describe("compareTasksByBoardOrder", () => {
   const sorted = (...rows: Task[]) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
 
+  test("done uses completion time rather than rank, creation or later edits", () => {
+    const older = taskRow({ ref: "local:old", state: "done", doneAt: 100, position: 1, updatedAt: 900 });
+    const recent = taskRow({ ref: "local:new", state: "done", doneAt: 200, position: 99, createdAt: 1 });
+    const unknown = taskRow({ ref: "local:unknown", state: "done", position: 0, updatedAt: 999 });
+    assert.deepEqual(sorted(unknown, older, recent), ["local:new", "local:old", "local:unknown"]);
+    assert.deepEqual(sorted(recent, taskRow({ ...older, doneAt: 300 })), ["local:old", "local:new"]);
+  });
+
+  test("completion ties and missing history keep a deterministic fallback", () => {
+    const a = taskRow({ ref: "local:a", state: "done", doneAt: 100 });
+    const b = taskRow({ ref: "local:b", state: "done", doneAt: 100 });
+    assert.deepEqual(sorted(b, a), ["local:a", "local:b"]);
+    assert.deepEqual(sorted(taskRow({ ...b, doneAt: null }), taskRow({ ref: "local:a", state: "done" })),
+      ["local:a", "local:b"]);
+  });
+
   test("position comes first", () => {
     const low = taskRow({ ref: "local:a1", position: 10, createdAt: 99 });
     const high = taskRow({ ref: "local:a2", position: 20, createdAt: 1 });

@@ -38,6 +38,7 @@ class BacklogDependencies(
             createdAt = row.created_at,
             updatedAt = row.updated_at,
             rev = row.rev,
+            doneAt = row.done_at,
         )
     }
 
@@ -67,6 +68,7 @@ class BacklogDependencies(
                 createdAt = row.created_at,
                 updatedAt = row.updated_at,
                 rev = row.rev,
+                doneAt = row.done_at,
             )
         }
     }

@@ -24,6 +24,7 @@ data class BacklogEntryDto(
     val createdAt: Long,
     val updatedAt: Long,
     val rev: Long,
+    val doneAt: Long? = null,
 )
 
 @Serializable
@@ -91,6 +92,7 @@ fun BacklogEntry.toDto(task: Task?, dependsOn: List<TaskRef> = emptyList()): Bac
     createdAt = createdAt,
     updatedAt = updatedAt,
     rev = rev,
+    doneAt = doneAt,
 )
 
 fun ProjectRecord.toDto(): ProjectDto = ProjectDto(
